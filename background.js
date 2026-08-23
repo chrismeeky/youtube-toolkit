@@ -206,12 +206,110 @@ async function getSubscribers(key, force) {
   return job;
 }
 
+/* ---------------------------------------------------------------- thumbnails */
+
+/* maxres only exists for videos uploaded with a big enough thumbnail, and YouTube 404s
+   rather than falling back, so walk down until one resolves. */
+const THUMB_SIZES = ['maxresdefault', 'sddefault', 'hqdefault', 'mqdefault'];
+
+async function thumbnailUrl(id) {
+  for (const size of THUMB_SIZES) {
+    const url = 'https://i.ytimg.com/vi/' + id + '/' + size + '.jpg';
+    try {
+      const res = await fetch(url, { method: 'HEAD' });
+      if (res.ok) return url;
+    } catch (e) {
+      /* try the next size down */
+    }
+  }
+  return null;
+}
+
+async function downloadThumbnail(video) {
+  if (!video || !video.id) return { ok: false, reason: 'no video id' };
+  const url = await thumbnailUrl(video.id);
+  if (!url) return { ok: false, reason: 'no thumbnail found' };
+
+  const filename = 'yt-thumbnails/' + F.safeFilename(video.title, video.id, 'jpg');
+  try {
+    await chrome.downloads.download({ url, filename, conflictAction: 'uniquify' });
+    return { ok: true, filename };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+}
+
+/* ---------------------------------------------------------------- transcript */
+
+/* The local yt-dlp helper (transcript-helper.py). YouTube gates its caption endpoints
+   behind proof-of-origin tokens no extension can mint, so this is the only path that works
+   consistently. If the helper isn't running the connection is refused immediately, costing
+   nothing before the in-browser attempts. */
+async function transcriptFromHelper(id, helperUrl) {
+  const base = (helperUrl || '').trim().replace(/\/$/, '');
+  if (!base) return { ok: false, reason: 'no helper configured' };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120000);
+  try {
+    const res = await fetch(base + '/transcript?v=' + encodeURIComponent(id), {
+      signal: controller.signal
+    });
+    if (!res.ok) return { ok: false, reason: 'helper ' + res.status };
+    const data = await res.json();
+    if (data.ok && (data.segments || []).length) return { ok: true, segments: data.segments };
+    return { ok: false, reason: 'helper: ' + (data.reason || 'no segments') };
+  } catch (e) {
+    return { ok: false, reason: 'helper unreachable' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* Fallback only: the content script tries first from the page's own origin, which InnerTube
+   accepts. This path exists for when that isn't possible. */
+async function transcriptFor(id) {
+  const out = await F.loadTranscript(id, fetch);
+  if (!out.ok) console.log('[YT Copy] transcript %s failed — %s', id, out.reason);
+  return out;
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg) return;
   if (msg.type === 'ytc-subs' && msg.key) {
     getSubscribers(msg.key, msg.force)
       .then((entry) => sendResponse({ key: msg.key, text: entry.text, reason: entry.reason }))
       .catch((e) => sendResponse({ key: msg.key, text: null, reason: String(e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-thumbs') {
+    const videos = msg.videos || [];
+    Promise.all(videos.map(downloadThumbnail)).then((results) => {
+      const saved = results.filter((r) => r.ok).length;
+      sendResponse({ saved, failed: results.length - saved });
+    });
+    return true;
+  }
+  if (msg.type === 'ytc-transcript-helper') {
+    chrome.storage.sync.get('helperUrl').then((store) => {
+      const url = store.helperUrl || 'http://127.0.0.1:8731';
+      transcriptFromHelper(msg.id, url).then(sendResponse);
+    });
+    return true;
+  }
+  if (msg.type === 'ytc-transcript') {
+    transcriptFor(msg.id)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: e.message }));
+    return true;
+  }
+  if (msg.type === 'ytc-save-text') {
+    // data: URL rather than a blob — a content script's blob URL isn't reachable from here.
+    const url = 'data:text/plain;charset=utf-8,' + encodeURIComponent(msg.text || '');
+    chrome.downloads
+      .download({ url, filename: 'yt-transcripts/' + msg.filename, conflictAction: 'uniquify' })
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, reason: e.message }));
     return true;
   }
   if (msg.type === 'ytc-clear-subs') {

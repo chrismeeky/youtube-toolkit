@@ -44,6 +44,16 @@
     <label class="check"><input type="checkbox" id="absoluteDate" /> <span>Absolute date (23 hours ago → 2026-08-22)</span></label>
     <label class="check"><input type="checkbox" id="quoteTitle" /> <span>Wrap title in quotes</span></label>
     <label class="check"><input type="checkbox" id="showButtons" /> <span>Show Copy button on cards</span></label>
+    <label class="check"><input type="checkbox" id="showThumb" /> <span>Show thumbnail download button</span></label>
+    <label class="check"><input type="checkbox" id="showTranscript" /> <span>Show transcript button (watch pages)</span></label>
+    <label class="check"><input type="checkbox" id="transcriptTimestamps" /> <span>Include timestamps in transcripts</span></label>
+    <label class="check"><input type="checkbox" id="transcriptSave" /> <span>Save transcripts as .txt instead of copying</span></label>
+    <label class="row"><span>Helper</span><input type="text" id="helperUrl" spellcheck="false" /></label>
+    <p class="hint">
+      YouTube blocks caption requests from extensions, so transcripts come from a local
+      yt-dlp helper. Run <code>python3 transcript-helper.py</code> in the extension folder.
+      <button type="button" id="testHelper" class="linkbtn">Test</button>
+    </p>
     <label class="check"><input type="checkbox" id="toast" /> <span>Show confirmation toast</span></label>
   </section>
 

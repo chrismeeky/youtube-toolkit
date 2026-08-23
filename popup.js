@@ -7,7 +7,8 @@
   let settings = F.merge(null);
 
   const TOGGLES = ['csvHeader', 'numericViews', 'absoluteDate', 'quoteTitle', 'showButtons',
-    'toast', 'showSubs', 'showRatio'];
+    'toast', 'showSubs', 'showRatio', 'showThumb', 'showTranscript',
+    'transcriptTimestamps', 'transcriptSave'];
 
   function buildFieldChecks() {
     $('fields').innerHTML = F.FIELD_ORDER.map(
@@ -34,6 +35,7 @@
     $('layout').value = settings.layout;
     $('separator').value = encodeURIComponent(settings.separator);
     $('customTemplate').value = settings.customTemplate;
+    $('helperUrl').value = settings.helperUrl;
     for (const id of TOGGLES) $(id).checked = !!settings[id];
 
     const isCustom = settings.layout === 'custom';
@@ -60,6 +62,7 @@
     settings.layout = $('layout').value;
     settings.separator = decodeURIComponent($('separator').value);
     settings.customTemplate = $('customTemplate').value;
+    settings.helperUrl = $('helperUrl').value.trim();
     for (const id of TOGGLES) settings[id] = $(id).checked;
   }
 
@@ -114,6 +117,19 @@
       }).catch(() => {});
     } catch (e) {
       status('Clipboard blocked — try again');
+    }
+  });
+
+  $('testHelper').addEventListener('click', async () => {
+    const base = ($('helperUrl').value || '').trim().replace(/\/$/, '');
+    if (!base) { status('Set a helper URL first'); return; }
+    status('Checking…');
+    try {
+      const res = await fetch(base + '/health');
+      const data = await res.json();
+      status(data.ok ? `Helper running (yt-dlp ${data.ytdlp || '?'})` : 'Helper up, yt-dlp missing');
+    } catch (e) {
+      status('Helper not running');
     }
   });
 

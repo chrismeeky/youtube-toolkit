@@ -14,7 +14,12 @@
     quoteTitle: false,
     toast: true,
     showSubs: true,               // subscriber badge on each card
-    showRatio: true               // views ÷ subscribers pill
+    showRatio: true,              // views ÷ subscribers pill
+    showThumb: true,              // thumbnail download button
+    showTranscript: true,         // transcript button on watch pages
+    transcriptTimestamps: false,  // prefix each line with its timestamp
+    transcriptSave: false,        // save as .txt instead of copying
+    helperUrl: 'http://127.0.0.1:8731'   // local yt-dlp transcript helper
   };
 
   const SEPARATORS = [
@@ -63,6 +68,290 @@
     return Math.round(n * mult);
   }
 
+  /* ------------------------------------------------------------ transcript parsing */
+
+  function stampMs(ms) {
+    const total = Math.floor((ms || 0) / 1000);
+    const s = String(total % 60).padStart(2, '0');
+    const m = Math.floor(total / 60) % 60;
+    const h = Math.floor(total / 3600);
+    return h ? h + ':' + String(m).padStart(2, '0') + ':' + s : m + ':' + s;
+  }
+
+  /* timedtext XML is double-encoded — an apostrophe arrives as "&amp;#39;" — so decode
+     until it stops changing. */
+  function decodeEntities(text) {
+    const once = (t) => t
+      .replace(/&#(\d+);/g, (all, code) => String.fromCharCode(code))
+      .replace(/&#x([\da-f]+);/gi, (all, code) => String.fromCharCode(parseInt(code, 16)))
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&');
+    let out = String(text);
+    for (let i = 0; i < 3; i++) {
+      const next = once(out);
+      if (next === out) break;
+      out = next;
+    }
+    return out;
+  }
+
+  function parseJson3(body) {
+    let data;
+    try { data = JSON.parse(body); } catch (e) { return []; }
+    return (data.events || [])
+      .map((ev) => ({
+        time: stampMs(ev.tStartMs),
+        text: (ev.segs || []).map((sg) => sg.utf8 || '').join('').replace(/\s+/g, ' ').trim()
+      }))
+      .filter((seg) => seg.text);
+  }
+
+  function parseTimedTextXml(body) {
+    const out = [];
+    const re = /<text[^>]*start="([\d.]+)"[^>]*>([\s\S]*?)<\/text>/g;
+    let m;
+    while ((m = re.exec(body))) {
+      const text = decodeEntities(m[2].replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim();
+      if (text) out.push({ time: stampMs(parseFloat(m[1]) * 1000), text });
+    }
+    return out;
+  }
+
+  function jsonValue(html, key) {
+    const m = html.match(new RegExp('"' + key + '"\\s*:\\s*"([^"]+)"'));
+    if (!m) return '';
+    try { return JSON.parse('"' + m[1] + '"'); } catch (e) { return m[1]; }
+  }
+
+  /* API key, client version and the transcript params, all of which the watch page carries. */
+  function innertubeConfig(html) {
+    const paramsMatch = html.match(/"getTranscriptEndpoint"\s*:\s*\{\s*"params"\s*:\s*"([^"]+)"/);
+    let params = '';
+    if (paramsMatch) {
+      try { params = JSON.parse('"' + paramsMatch[1] + '"'); } catch (e) { params = paramsMatch[1]; }
+    }
+    return {
+      key: jsonValue(html, 'INNERTUBE_API_KEY'),
+      version: jsonValue(html, 'INNERTUBE_CLIENT_VERSION') ||
+        jsonValue(html, 'INNERTUBE_CONTEXT_CLIENT_VERSION') || '2.20240101.00.00',
+      params
+    };
+  }
+
+  /* The documented path, via the whole player response. Falls back to scanning for the
+     captionTracks array when the object can't be isolated. */
+  function playerResponseFrom(html) {
+    const m = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});(?:\s*(?:var|const|let)\s|\s*<\/script>)/s);
+    if (!m) return null;
+    try { return JSON.parse(m[1]); } catch (e) { return null; }
+  }
+
+  function captionTracksFrom(html) {
+    const player = playerResponseFrom(html);
+    const listed = player && player.captions &&
+      player.captions.playerCaptionsTracklistRenderer &&
+      player.captions.playerCaptionsTracklistRenderer.captionTracks;
+    if (listed && listed.length) return listed;
+
+    const at = html.indexOf('"captionTracks":');
+    if (at < 0) return [];
+    const start = html.indexOf('[', at);
+    let depth = 0;
+    let end = start;
+    for (; end < html.length; end++) {
+      const c = html[end];
+      if (c === '[') depth++;
+      else if (c === ']' && --depth === 0) { end++; break; }
+    }
+    try {
+      return JSON.parse(html.slice(start, end));
+    } catch (e) {
+      // A bracket inside a track name breaks the match; fall back to the URL itself.
+      const m = html.slice(at).match(/"baseUrl":"(https:[^"]+timedtext[^"]*)"/);
+      return m ? [{ baseUrl: JSON.parse('"' + m[1] + '"') }] : [];
+    }
+  }
+
+  /* Prefer human-written captions over auto-generated, English over whatever is first. */
+  function pickCaptionTrack(tracks) {
+    const score = (t) => {
+      const lang = (t.languageCode || '').toLowerCase();
+      return (t.kind === 'asr' ? 0 : 2) + (lang.startsWith('en') ? 1 : 0);
+    };
+    return (tracks || []).slice().sort((a, b) => score(b) - score(a))[0] || null;
+  }
+
+  /* Walk for segments rather than following a fixed path — the nesting around them is
+     seven levels deep and changes between builds. */
+  function transcriptSegmentsFrom(node, out) {
+    out = out || [];
+    if (!node || typeof node !== 'object') return out;
+    const seg = node.transcriptSegmentRenderer;
+    if (seg) {
+      const runs = (seg.snippet && seg.snippet.runs) || [];
+      const text = runs.map((r) => r.text || '').join('').replace(/\s+/g, ' ').trim();
+      if (text) out.push({ time: stampMs(Number(seg.startMs) || 0), text });
+    }
+    for (const key of Object.keys(node)) transcriptSegmentsFrom(node[key], out);
+    return out;
+  }
+
+  /* One orchestration, run from either context by passing in that context's fetch.
+     A page-context request carries youtube.com as its origin and behaves like the site's
+     own; an extension service worker sends chrome-extension:// and gets 403s. */
+
+  async function tryInnertube(doFetch, id, cfg, auth, label, notes) {
+    if (!cfg.key || !cfg.params) return null;
+    const body = JSON.stringify({
+      context: {
+        client: {
+          clientName: 'WEB',
+          clientVersion: cfg.version || '2.20240101.00.00',
+          hl: 'en',
+          gl: cfg.gl || 'US',
+          visitorData: cfg.visitorData || undefined,
+          originalUrl: 'https://www.youtube.com/watch?v=' + id
+        },
+        user: { lockedSafetyMode: false },
+        request: { useSsl: true }
+      },
+      params: cfg.params
+    });
+
+    const base = {
+      'Content-Type': 'application/json',
+      'X-Youtube-Client-Name': '1',
+      'X-Youtube-Client-Version': cfg.version || '2.20240101.00.00'
+    };
+    if (cfg.visitorData) base['X-Goog-Visitor-Id'] = cfg.visitorData;
+
+    const attempts = [{ tag: 'session', credentials: 'include', headers: base }];
+    if (auth) {
+      attempts.push({
+        tag: 'signed',
+        credentials: 'include',
+        headers: Object.assign({}, base, { Authorization: auth, 'X-Origin': 'https://www.youtube.com' })
+      });
+    }
+    attempts.push({ tag: 'anon', credentials: 'omit', headers: base });
+
+    for (const attempt of attempts) {
+      try {
+        const res = await doFetch(
+          'https://www.youtube.com/youtubei/v1/get_transcript?key=' + encodeURIComponent(cfg.key) +
+          '&prettyPrint=false',
+          { method: 'POST', credentials: attempt.credentials, headers: attempt.headers, body }
+        );
+        if (!res.ok) { notes.push('api ' + res.status + ' [' + label + '/' + attempt.tag + ']'); continue; }
+        const segments = transcriptSegmentsFrom(await res.json());
+        if (segments.length) return segments;
+        notes.push('api empty [' + label + '/' + attempt.tag + ']');
+      } catch (e) {
+        notes.push('api ' + e.message + ' [' + label + ']');
+      }
+    }
+    return null;
+  }
+
+  async function tryCaptionTracks(doFetch, tracks, label, notes) {
+    const track = pickCaptionTrack(tracks);
+    if (!track || !track.baseUrl) return null;
+    for (const attempt of [
+      { fmt: '&fmt=json3', credentials: 'include' },
+      { fmt: '&fmt=json3', credentials: 'omit' },
+      { fmt: '', credentials: 'include' }
+    ]) {
+      try {
+        const res = await doFetch(track.baseUrl + attempt.fmt, { credentials: attempt.credentials });
+        if (!res.ok) { notes.push('timedtext ' + res.status + ' [' + label + ']'); continue; }
+        const body = await res.text();
+        const segments = attempt.fmt ? parseJson3(body) : parseTimedTextXml(body);
+        if (segments.length) return segments;
+        notes.push('timedtext empty ' + body.length + 'b [' + label + ']');
+      } catch (e) {
+        notes.push('timedtext ' + e.message + ' [' + label + ']');
+      }
+    }
+    return null;
+  }
+
+  async function loadTranscript(id, doFetch, opts) {
+    const extras = opts || {};
+    const notes = [];
+    if (!id) return { ok: false, reason: 'no video id' };
+
+    /* The live page first. Its InnerTube params belong to this session and this video;
+       params scraped from a re-fetched copy of the page get rejected with a 400, and its
+       caption URLs are the ones the player itself is entitled to use. */
+    const page = extras.page;
+    if (page) {
+      const live = await tryInnertube(doFetch, id, {
+        key: page.apiKey, version: page.clientVersion, visitorData: page.visitorData, params: page.params
+      }, extras.auth, 'live', notes);
+      if (live) return { ok: true, segments: live };
+
+      const tracks = await tryCaptionTracks(doFetch, page.captionTracks || [], 'live', notes);
+      if (tracks) return { ok: true, segments: tracks };
+    }
+
+    let html = '';
+    for (const credentials of ['include', 'omit']) {
+      try {
+        const res = await doFetch('https://www.youtube.com/watch?v=' + id + '&hl=en', { credentials });
+        if (!res.ok) { notes.push('watch page ' + res.status); continue; }
+        html = await res.text();
+        if (html.indexOf('"getTranscriptEndpoint"') >= 0 || html.indexOf('"captionTracks":') >= 0) break;
+      } catch (e) {
+        notes.push('watch page ' + e.message);
+      }
+    }
+    if (!html) return { ok: false, reason: notes.join('; ') || 'could not load the video page' };
+
+    const cfg = innertubeConfig(html);
+    const fetched = await tryInnertube(doFetch, id, {
+      key: cfg.key, version: cfg.version, params: cfg.params,
+      visitorData: jsonValue(html, 'VISITOR_DATA'), gl: jsonValue(html, 'GL')
+    }, extras.auth, 'fetched', notes);
+    if (fetched) return { ok: true, segments: fetched };
+
+    const tracks = await tryCaptionTracks(doFetch, captionTracksFrom(html), 'fetched', notes);
+    if (tracks) return { ok: true, segments: tracks };
+
+    return { ok: false, reason: notes.join('; ') };
+  }
+
+  /* Transcript segments -> text. Timestamps are optional because the usual reason to grab a
+     transcript is to paste it somewhere that only wants the words. */
+  function formatTranscript(segments, opts) {
+    const s = opts || {};
+    const lines = (segments || [])
+      .map((seg) => {
+        const body = String(seg.text || '').replace(/\s+/g, ' ').trim();
+        if (!body) return '';
+        return s.timestamps && seg.time ? seg.time + '  ' + body : body;
+      })
+      .filter(Boolean);
+
+    const header = s.title
+      ? s.title + (s.url ? '\n' + s.url : '') + '\n\n'
+      : '';
+    return header + lines.join('\n');
+  }
+
+  /* A filename that every OS will accept, without losing the title. */
+  function safeFilename(title, id, ext) {
+    const base = String(title || '')
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')   // illegal on Windows or in paths
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 110)
+      .replace(/[. ]+$/, '');                        // trailing dots/spaces break Windows
+    const stem = base ? base + ' [' + id + ']' : id;
+    return stem + '.' + ext;
+  }
+
   /* 183000 -> "183K" (YouTube-style compact form) */
   function compact(n) {
     if (n == null || isNaN(n)) return '';
@@ -75,7 +364,10 @@
 
   /* Two different questions.
 
-     isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken: how long to cache a failure. Throttled/blocked/truncated recovers
+     isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken,
+    safeFilename, formatTranscript, stampMs, decodeEntities, parseJson3, parseTimedTextXml,
+    innertubeConfig, captionTracksFrom, pickCaptionTrack, transcriptSegmentsFrom, loadTranscript,
+    playerResponseFrom: how long to cache a failure. Throttled/blocked/truncated recovers
      quickly; anything else waits longer.
 
      isRetryableFailure: whether asking again could plausibly change the answer. Only a hard
@@ -381,6 +673,9 @@
   root.YTCopyFormat = {
     DEFAULTS, SEPARATORS, LAYOUTS, FIELD_ORDER, FIELD_LABELS, SAMPLE,
     merge, formatOne, formatList, viewsToNumber, relativeToISO, compact, parseSubscribers,
-    isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken
+    isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken,
+    safeFilename, formatTranscript, stampMs, decodeEntities, parseJson3, parseTimedTextXml,
+    innertubeConfig, captionTracksFrom, pickCaptionTrack, transcriptSegmentsFrom, loadTranscript,
+    playerResponseFrom
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -39,6 +39,46 @@
 
 html.ytc-hide-buttons .ytc-btn { display: none; }
 
+/* thumbnail download shares the Copy button's shape */
+.ytc-thumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border: 1px solid #d0d0d0;
+  border-radius: 5px;
+  font: inherit;
+  color: #606060;
+  background: transparent;
+  cursor: pointer;
+  transition: color .12s ease, background .12s ease, border-color .12s ease;
+}
+.ytc-thumb:hover { background: #0f0f0f; border-color: #0f0f0f; color: #fff; }
+.ytc-thumb.ytc-btn--done { background: #1e9e4a; border-color: #1e9e4a; color: #fff; }
+html.ytc-hide-thumbs .ytc-thumb { display: none; }
+
+.ytc-transcript {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border: 1px solid #d0d0d0;
+  border-radius: 5px;
+  font: inherit;
+  color: #606060;
+  background: transparent;
+  cursor: pointer;
+  transition: color .12s ease, background .12s ease, border-color .12s ease;
+}
+.ytc-transcript:hover { background: #0f0f0f; border-color: #0f0f0f; color: #fff; }
+.ytc-transcript.ytc-busy { opacity: .6; cursor: progress; }
+.ytc-transcript.ytc-busy .ytc-btn__label::after { content: "…"; }
+html.ytc-hide-transcript .ytc-transcript { display: none; }
+html[dark] .ytc-transcript { border-color: #4a4a4a; color: #aaa; }
+html[dark] .ytc-transcript:hover { background: #fff; border-color: #fff; color: #0f0f0f; }
+html[dark] .ytc-thumb { border-color: #4a4a4a; color: #aaa; }
+html[dark] .ytc-thumb:hover { background: #fff; border-color: #fff; color: #0f0f0f; }
+
 /* selection checkbox */
 .ytc-check {
   display: none;

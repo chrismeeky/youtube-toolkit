@@ -19,6 +19,17 @@ clipboard output is laid out.
 `Alt+Shift+S`). A checkbox appears in every card's control row; tick the ones you want, then
 **Copy selected** (or `Alt+Shift+C`). `Esc` leaves select mode.
 
+**Thumbnails** — click **Thumb** on any card to save its thumbnail, or tick several videos
+and use **Download thumbs** in the select bar. On a watch page the same row appears under the
+video title, so you can copy or save the thumbnail for the video you're actually watching. Files land in `Downloads/yt-thumbnails/`, named
+`<title> [<video id>].jpg`.
+
+**Transcript** — on a watch page, click **Transcript** to copy the video's transcript. Nothing
+else happens: no panel opens, the description stays collapsed, the page doesn't scroll.
+Timestamps are off by default, since the usual reason to grab a transcript is to paste the
+words somewhere else; both that and *save as .txt* are popup settings. Saved files go to
+`Downloads/yt-transcripts/`.
+
 **Everything on screen** — popup → **Copy all on page**. Only currently-rendered videos are
 included, so scroll first to load more.
 
@@ -113,6 +124,17 @@ Two consoles tell you where it broke:
 
 A lookup that fails is cached as a failure for 6 hours; *Clear cache* in the popup resets it.
 
+### Thumbnail resolution
+
+YouTube only generates `maxresdefault` for videos uploaded with a large enough source image,
+and 404s rather than falling back, so the fetcher walks down — `maxres` → `sd` → `hq` → `mq` —
+and saves the first that resolves. A video with none of them reports as unavailable rather
+than saving a broken file.
+
+Filenames are sanitised for every OS: characters illegal on Windows are stripped, the title is
+capped at 110 characters, trailing dots and spaces are removed, and the video id is appended so
+two videos with the same title can't collide.
+
 ## Settings (popup)
 
 | Setting | What it does |
@@ -124,6 +146,10 @@ A lookup that fails is cached as a failure for 6 hours; *Clear cache* in the pop
 | Absolute date | `23 hours ago` → `2026-08-22` |
 | Wrap title in quotes | Useful when pasting into CSV-ish tools |
 | Show Copy button | Hide the Copy button and work only through select mode |
+| Show thumbnail button | Hide the **Thumb** button on cards |
+| Show transcript button | Hide the **Transcript** button on watch pages |
+| Include timestamps | Prefix each transcript line with its timestamp |
+| Save transcripts as .txt | Download instead of copying to the clipboard |
 | Confirmation toast | The little "Copied" pill at the bottom of the page |
 
 Settings save instantly, sync across your Chrome profile, and the popup shows a live preview.
@@ -166,6 +192,8 @@ Markdown with URLs:
 | `content.js` | Reads video cards from the page, injects the Copy button / checkboxes / action bar |
 | `content.css` | Styling for the injected UI |
 | `popup.html` / `popup.css` / `popup.js` | Settings UI with live preview |
+| `page.js` | Tiny `world: "MAIN"` script; reads live-page values the isolated world can't see |
+| `transcript-helper.py` | Local yt-dlp wrapper on `127.0.0.1:8731`; the reliable transcript path |
 | `background.js` | Keyboard shortcuts, plus the subscriber-count fetch queue and cache |
 
 ## Notes
@@ -183,6 +211,12 @@ Markdown with URLs:
 - Card detection covers search results, home/subscription grids, channel Videos tabs,
   watch-page sidebars, playlists, and both YouTube's classic `ytd-*` renderers and the newer
   `yt-lockup-view-model` markup.
+- The watch page's metadata block is treated as a card: same row, same Copy and Thumb
+  buttons, minus the checkbox (there's nothing to multi-select). Its video id comes from the
+  address bar rather than a thumbnail link — applied only to that block, so a sidebar card
+  that hasn't hydrated yet can't inherit the main video's id. Its subscriber count is read
+  from `#owner-sub-count`, which the page already shows, so no fetch and no chance of picking
+  the wrong channel's number.
 - Channel detection parses every anchor on the card rather than matching one selector:
   links appear as `/@handle`, `/channel/UC…`, legacy `/c/Name` and `/user/Name`, and
   sometimes as absolute URLs. Collab videos list several channels; the first one wins.
@@ -229,6 +263,63 @@ Markdown with URLs:
   gets redirected to `consent.youtube.com`, and Chrome fails the whole fetch with a bare
   `Failed to fetch` if the redirect target isn't permitted. Fetching happens in the service worker so
   one queue and one cache are shared across every open YouTube tab.
+- Transcripts are fetched **from the page's own origin** by the content script, falling back
+  to the service worker. These endpoints answer a request that looks like the site's own and
+  return 403 to one carrying a `chrome-extension://` origin. Credentials matter per endpoint:
+  caption URLs want cookies, while `get_transcript` rejects cookies sent without a
+  `SAPISIDHASH` header, so that one call is deliberately anonymous.
+- Transcripts are fetched without driving YouTube's transcript panel.
+  Clicking YouTube's own button works, but it opens a panel, expands the description and
+  Sources are tried in order:
+  1. **The local helper** (`transcript-helper.py`), which shells out to `yt-dlp`. This is the
+     only path that works consistently — see below.
+  2. `youtubei/v1/get_transcript` using the API key and transcript params read from the
+     **live page** (`window.ytcfg`, `window.ytInitialData`) by a `world: "MAIN"` content
+     script, sent with session cookies, then signed with a `SAPISIDHASH` header, then
+     anonymously.
+  3. The live player response's caption URLs.
+  4. The same, from a re-fetched watch page (the service worker fallback).
+  5. `timedtext` with `fmt=json3` and then as XML.
+
+  Steps 2–5 are kept because they cost nothing when the helper isn't running and they do
+  work on some videos. Responses are walked recursively for `transcriptSegmentRenderer`
+  rather than followed down a fixed path, since that nesting is seven levels deep and changes
+  between builds.
+
+### Why a local helper
+
+YouTube gates its caption endpoints behind proof-of-origin tokens that a browser extension
+cannot mint. In practice `timedtext` returns HTTP 200 with a **zero-byte body** and
+`get_transcript` returns 400, no matter how faithfully the request is reproduced — signed
+with `SAPISIDHASH`, carrying live session params, sent from the page's own origin. Every
+in-browser avenue was tried and measured before conceding this.
+
+`yt-dlp` tracks those changes and is maintained for precisely this problem, so the helper is
+a thin wrapper around it:
+
+```
+python3 transcript-helper.py        # listens on 127.0.0.1:8731
+```
+
+It binds to localhost only and exposes two routes: `/transcript?v=ID` and `/health`. The
+popup's **Test** button reports whether it's running and which `yt-dlp` version it found. If
+it isn't running, the transcript button says so instead of failing vaguely.
+
+This mirrors what the other projects on this machine already do: *Quack* falls back to a
+Python `youtube_transcript_api` backend, and *YouTube automation* shells out to `yt-dlp`.
+Neither extracts transcripts in the browser.
+
+  Caption tracks come from `ytInitialPlayerResponse` by its documented path, falling back to
+  scanning for the `captionTracks` array. Manual captions are preferred over auto-generated,
+  English over whatever comes first. An already-open panel is read directly — that's free.
+- A failed transcript reports every attempt in the toast and in the service worker console
+  (`timedtext 403; transcript API 400`), so a break can be diagnosed rather than guessed at.
+- On watch pages the control row is anchored after `#top-row`, which puts it above the
+  description rather than below it.
+- Thumbnail downloads use the `downloads` permission and fetch only from `i.ytimg.com`. This
+  saves the still image YouTube already serves for a video — it does not download video or
+  audio, which YouTube's terms prohibit and which no longer works reliably in any case
+  (ciphered URLs, throttling parameters, proof-of-origin tokens, SABR streaming).
 - No analytics, no third-party servers. Permissions: `storage` (your settings), `clipboardWrite`,
   and host access to `youtube.com` — the host permission is what lets the popup see that the
   active tab is a YouTube page at all (`tab.url` is empty without it).

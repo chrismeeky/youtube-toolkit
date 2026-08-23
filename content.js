@@ -21,6 +21,20 @@
     'ytm-shorts-lockup-view-model'
   ].join(',');
 
+  /* The primary video on a watch page isn't a card renderer, but its metadata block plays
+     the same role: title, views, date, channel. Treat it as one. */
+  const WATCH_SELECTOR = 'ytd-watch-metadata, #above-the-fold';
+
+  function watchCard() {
+    if (!/^\/watch/.test(location.pathname)) return null;
+    return document.querySelector('ytd-watch-metadata') ||
+      document.querySelector('#above-the-fold');
+  }
+
+  function isWatchCard(card) {
+    return !!card && typeof card.matches === 'function' && card.matches(WATCH_SELECTOR);
+  }
+
   function isOutermost(el) {
     const parent = el.parentElement && el.parentElement.closest(CARD_SELECTOR);
     return !parent;
@@ -36,7 +50,8 @@
       card.querySelector('a.yt-lockup-metadata-view-model-wiz__title') ||
       card.querySelector('[class*="lockup-metadata"][class*="title"]') ||
       card.querySelector('h3 a, h3 span[role="text"]') ||
-      card.querySelector('a#video-title-link');
+      card.querySelector('a#video-title-link') ||
+      card.querySelector('#title h1, h1');
     if (!el) return '';
     // The `title` attribute is the untruncated version when YouTube clamps the text.
     const attr = el.getAttribute('title') || (el.querySelector('[title]') || {}).title;
@@ -47,7 +62,14 @@
     const a =
       card.querySelector('a#video-title, a#video-title-link, a#thumbnail[href]') ||
       card.querySelector('a[href*="/watch?v="], a[href*="/shorts/"]');
-    if (!a) return { url: '', id: '' };
+    if (!a) {
+      // Only for the watch card — a sidebar card mid-hydration must not inherit this id.
+      if (isWatchCard(card)) {
+        const v = new URL(location.href).searchParams.get('v');
+        if (v) return { url: 'https://www.youtube.com/watch?v=' + v, id: v };
+      }
+      return { url: '', id: '' };
+    }
     const href = a.getAttribute('href') || '';
     if (!href) return { url: '', id: '' };
     const abs = new URL(href, location.origin);
@@ -251,6 +273,196 @@
     return btn;
   }
 
+  async function saveThumbs(videos, label) {
+    if (!videos.length) { toast('Nothing to download', true); return; }
+    chrome.runtime.sendMessage({ type: 'ytc-thumbs', videos }, (res) => {
+      if (chrome.runtime.lastError || !res) { toast('Download failed', true); return; }
+      if (!res.saved) { toast('No thumbnail found', true); return; }
+      toast(label || ('Saved ' + res.saved + ' thumbnail' + (res.saved > 1 ? 's' : '')) +
+        (res.failed ? ' (' + res.failed + ' unavailable)' : ''));
+    });
+  }
+
+  function makeThumbButton(card) {
+    const btn = document.createElement('button');
+    btn.className = 'ytc-thumb';
+    btn.type = 'button';
+    btn.title = 'Download this thumbnail (highest resolution available)';
+    btn.innerHTML =
+      '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">' +
+      '<path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/>' +
+      '</svg><span class="ytc-btn__label">Thumb</span>';
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const v = readCard(card);
+      if (!v || !v.id) { toast('Could not read this video', true); return; }
+      saveThumbs([{ id: v.id, title: v.title }], 'Saved thumbnail');
+      btn.classList.add('ytc-btn--done');
+      setTimeout(() => btn.classList.remove('ytc-btn--done'), 1200);
+    });
+    return btn;
+  }
+
+  /* ------------------------------------------------------------- transcript */
+
+  function transcriptSegments() {
+    const nodes = document.querySelectorAll('ytd-transcript-segment-renderer');
+    return Array.from(nodes)
+      .map((n) => ({
+        time: text(n.querySelector('.segment-timestamp')),
+        text: text(n.querySelector('.segment-text')) ||
+          text(n.querySelector('yt-formatted-string:not(.segment-timestamp)'))
+      }))
+      .filter((seg) => seg.text);
+  }
+
+  function askBackgroundTranscript(id) {
+    return askBackground('ytc-transcript', id);
+  }
+
+  /* YouTube signs its own InnerTube calls with a SAPISIDHASH built from a session cookie —
+     an unsigned request gets a 400. The cookie is readable here, so build the same header. */
+  async function sapisidHash() {
+    const jar = document.cookie || '';
+    const m = jar.match(/(?:^|;\s*)SAPISID=([^;]+)/) ||
+      jar.match(/(?:^|;\s*)__Secure-3PAPISID=([^;]+)/) ||
+      jar.match(/(?:^|;\s*)__Secure-1PAPISID=([^;]+)/);
+    if (!m || !window.crypto || !window.crypto.subtle) return '';
+    const origin = 'https://www.youtube.com';
+    const seconds = Math.floor(Date.now() / 1000);
+    try {
+      const digest = await window.crypto.subtle.digest(
+        'SHA-1',
+        new TextEncoder().encode(seconds + ' ' + m[1] + ' ' + origin)
+      );
+      const hex = Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      return 'SAPISIDHASH ' + seconds + '_' + hex;
+    } catch (e) {
+      return '';
+    }
+  }
+
+  /* Ask the MAIN-world script for values only the live page holds. */
+  function pageData() {
+    return new Promise((resolve) => {
+      const id = 'ytc' + Math.random().toString(36).slice(2);
+      let settled = false;
+      const finish = (payload) => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('message', onMessage);
+        resolve(payload);
+      };
+      const onMessage = (event) => {
+        if (event.source && event.source !== window) return;
+        const data = event.data;
+        // The random id is what actually pairs request and reply.
+        if (!data || data.type !== 'YTC_PAGE_DATA' || data.id !== id) return;
+        finish(data.payload || null);
+      };
+      window.addEventListener('message', onMessage);
+      window.postMessage({ type: 'YTC_PAGE_REQUEST', id }, '*');
+      // The reply is same-tick when page.js is present; this only bounds the case where it
+      // isn't (an older Chrome without world:"MAIN" support).
+      setTimeout(() => finish(null), 400);
+    });
+  }
+
+  /* Fetch from the page's own origin first. YouTube's transcript API rejects requests
+     carrying a chrome-extension:// origin, which is what the service worker sends. */
+  function askBackground(type, id) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type, id }, (res) => {
+        if (chrome.runtime.lastError) resolve({ ok: false, reason: 'extension not loaded' });
+        else resolve(res || { ok: false, reason: 'no response' });
+      });
+    });
+  }
+
+  async function askTranscript(id) {
+    /* The local helper first. YouTube's caption endpoints are gated behind tokens an
+       extension can't produce, so the in-browser attempts below only work sometimes — but
+       they cost nothing when the helper isn't running (connection refused is immediate). */
+    const viaHelper = await askBackground('ytc-transcript-helper', id);
+    if (viaHelper.ok) return viaHelper;
+
+    const [auth, page] = await Promise.all([sapisidHash(), pageData()]);
+    const here = await F.loadTranscript(id, (url, init) => fetch(url, init), { auth, page });
+    if (here.ok) return here;
+
+    const there = await askBackgroundTranscript(id);
+    if (there.ok) return there;
+
+    const detail = here.reason || there.reason || '';
+    if (/unreachable|no helper/.test(viaHelper.reason || '')) {
+      return {
+        ok: false,
+        reason: 'YouTube blocked the caption request. Start the local helper: ' +
+          'python3 transcript-helper.py'
+      };
+    }
+    return { ok: false, reason: (viaHelper.reason || '') + '; ' + detail };
+  }
+
+  /* Copy, and nothing else: no panel, no scrolling, no expanded description. If YouTube's
+     own transcript panel already happens to be open we read that, otherwise the captions
+     are fetched quietly in the background. */
+  async function grabTranscript(card, btn) {
+    const video = readCard(card) || {};
+    let segments = transcriptSegments();
+
+    if (!segments.length) {
+      btn.classList.add('ytc-busy');
+      const res = await askTranscript(video.id);
+      btn.classList.remove('ytc-busy');
+      if (!res.ok) { toast(res.reason || 'No transcript available', true); return; }
+      segments = res.segments || [];
+    }
+    if (!segments.length) { toast('No transcript available for this video', true); return; }
+
+    const out = F.formatTranscript(segments, {
+      timestamps: settings.transcriptTimestamps,
+      title: video.title,
+      url: video.url
+    });
+
+    if (settings.transcriptSave) {
+      chrome.runtime.sendMessage({
+        type: 'ytc-save-text',
+        text: out,
+        filename: F.safeFilename(video.title, video.id || 'transcript', 'txt')
+      }, (res) => {
+        if (res && res.ok) toast('Saved transcript (' + segments.length + ' lines)');
+        else copyText(out).then((ok) => toast(ok ? 'Copied transcript instead' : 'Transcript failed', !ok));
+      });
+      return;
+    }
+
+    const ok = await copyText(out);
+    toast(ok ? 'Copied transcript (' + segments.length + ' lines)' : 'Copy failed', !ok);
+  }
+
+  function makeTranscriptButton(card) {
+    const btn = document.createElement('button');
+    btn.className = 'ytc-transcript';
+    btn.type = 'button';
+    btn.title = 'Copy this video\'s transcript';
+    btn.innerHTML =
+      '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">' +
+      '<path fill="currentColor" d="M3 5h18v2H3V5zm0 4h12v2H3V9zm0 4h18v2H3v-2zm0 4h12v2H3v-2z"/>' +
+      '</svg><span class="ytc-btn__label">Transcript</span>';
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      btn.blur();          // a focused button in a scrolled-away panel drags the view to it
+      grabTranscript(card, btn);
+    });
+    return btn;
+  }
+
   function makeCheckbox(card) {
     const label = document.createElement('label');
     label.className = 'ytc-check';
@@ -285,7 +497,7 @@
 
     // Re-add each control independently: a hover preview makes YouTube re-render the card,
     // which can take them with it, and checking only for one leaves the other missing.
-    if (!tools.querySelector('.ytc-check')) {
+    if (!isWatchCard(card) && !tools.querySelector('.ytc-check')) {
       const box = makeCheckbox(card);
       tools.insertBefore(box, tools.firstChild);
       // Restore the tick if this card was selected before the re-render.
@@ -298,6 +510,17 @@
       const btn = makeButton(card);
       const box = tools.querySelector('.ytc-check');
       tools.insertBefore(btn, box ? box.nextSibling : tools.firstChild);
+    }
+    if (!tools.querySelector('.ytc-thumb')) {
+      const thumb = makeThumbButton(card);
+      const btn = tools.querySelector('.ytc-btn');
+      tools.insertBefore(thumb, btn ? btn.nextSibling : null);
+    }
+    // Only on the watch page: a transcript needs the video open to read it.
+    if (isWatchCard(card) && !tools.querySelector('.ytc-transcript')) {
+      const tr = makeTranscriptButton(card);
+      const thumb = tools.querySelector('.ytc-thumb');
+      tools.insertBefore(tr, thumb ? thumb.nextSibling : null);
     }
 
     if (fresh) watchForSubs(card);
@@ -313,6 +536,13 @@
       resyncCard(card);
       n++;
     }
+    const watch = watchCard();
+    if (watch) {
+      decorate(watch);
+      resyncCard(watch);
+      n++;
+    }
+
     if (n !== lastCount) {
       lastCount = n;
       console.debug('[YT Copy] %d video card(s) ready', n);
@@ -348,9 +578,16 @@
       tools = document.createElement('div');
       tools.className = 'ytc-tools';
     }
-    const rows = card.querySelectorAll('#metadata-line, [class*="metadata-row"]');
-    const anchor = rows.length ? rows[rows.length - 1]
-      : card.querySelector('#video-title, h3');
+    let anchor;
+    if (isWatchCard(card)) {
+      // Above the description, just under the channel/actions row.
+      anchor = card.querySelector('#top-row') || card.querySelector('#title') ||
+        card.querySelector('h1');
+    } else {
+      const rows = card.querySelectorAll('#metadata-line, [class*="metadata-row"]');
+      anchor = rows.length ? rows[rows.length - 1]
+        : card.querySelector('#video-title, h3, #title, h1');
+    }
     if (anchor && anchor.parentElement) {
       if (tools.previousElementSibling !== anchor || tools.parentElement !== anchor.parentElement) {
         anchor.parentElement.insertBefore(tools, anchor.nextSibling);
@@ -555,6 +792,15 @@
     // Playables, playlists and shelf tiles aren't videos and have no channel to look up.
     if (!findUrl(card).id) return;
 
+    // The watch page prints the count next to the channel name — read it instead of
+    // fetching, which is both faster and immune to picking the wrong channel's number.
+    const shown = card.querySelector('#owner-sub-count');
+    const shownText = shown && shown.textContent.trim();
+    if (shownText && /subscriber/i.test(shownText)) {
+      renderBadge(card, { text: shownText, reason: '', t: Date.now() });
+      return;
+    }
+
     const key = findChannelKey(card);
     if (!key) {
       // YouTube fills in card metadata after the card enters the viewport, so a missing
@@ -666,6 +912,7 @@
       '<span class="ytc-bar__count">0 selected</span>' +
       '<button type="button" class="ytc-bar__btn" data-act="all">Select all on page</button>' +
       '<button type="button" class="ytc-bar__btn" data-act="clear">Clear</button>' +
+      '<button type="button" class="ytc-bar__btn" data-act="thumbs">Download thumbs</button>' +
       '<button type="button" class="ytc-bar__btn ytc-bar__btn--primary" data-act="copy">Copy selected</button>' +
       '<button type="button" class="ytc-bar__btn ytc-bar__close" data-act="exit" title="Exit select mode">✕</button>';
     bar.addEventListener('click', async (e) => {
@@ -682,6 +929,12 @@
         });
       } else if (which === 'clear') {
         clearSelection();
+      } else if (which === 'thumbs') {
+        const videos = Array.from(selected.values())
+          .filter((v) => v.id)
+          .map((v) => ({ id: v.id, title: v.title }));
+        if (!videos.length) { toast('Select some videos first', true); return; }
+        saveThumbs(videos);
       } else if (which === 'copy') {
         const videos = Array.from(selected.values());
         if (!videos.length) { toast('Select some videos first', true); return; }
@@ -710,6 +963,7 @@
     bar.querySelector('.ytc-bar__count').textContent =
       n + ' selected';
     bar.querySelector('[data-act="copy"]').disabled = n === 0;
+    bar.querySelector('[data-act="thumbs"]').disabled = n === 0;
   }
 
   function setSelectMode(on) {
@@ -726,6 +980,8 @@
 
   function applySettings() {
     document.documentElement.classList.toggle('ytc-hide-buttons', !settings.showButtons);
+    document.documentElement.classList.toggle('ytc-hide-thumbs', !settings.showThumb);
+    document.documentElement.classList.toggle('ytc-hide-transcript', !settings.showTranscript);
     refreshBadges();
   }
 

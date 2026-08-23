@@ -5,10 +5,14 @@
   "description": "Copy YouTube video titles with view counts and/or upload time as clean, formatted text.",
   "permissions": [
     "storage",
-    "clipboardWrite"
+    "clipboardWrite",
+    "downloads"
   ],
   "host_permissions": [
-    "https://*.youtube.com/*"
+    "https://*.youtube.com/*",
+    "https://i.ytimg.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -43,6 +47,17 @@
         "content.css"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*"
+      ],
+      "js": [
+        "page.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
     }
   ],
   "commands": {
