@@ -1,42 +1,39 @@
-/* YT Copy — injected UI */
+/* YT Copy — injected UI
 
-/* The card is the positioning context; the button/checkbox sit above the whole
-   thumbnail subtree (including YouTube's hover-preview player). */
-.ytc-host { position: relative; }
+   Everything we inject lives in one row inside the card's text block. Nothing overlaps the
+   thumbnail: YouTube's hover-preview player renders in a stacking context we can't outrank
+   on search results, so overlaid controls vanish the moment a preview starts. */
+
+.ytc-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px;
+  font: 500 11px/1 Roboto, "Segoe UI", system-ui, sans-serif;
+}
+
+/* beside the views/date text rather than under it (search results) */
+.ytc-tools--inline {
+  margin: 0 0 0 10px;
+  align-self: center;
+}
 
 .ytc-btn {
-  position: absolute;
-  left: 8px;
-  top: 8px;
-  z-index: 9500;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 8px;
-  border: 0;
-  border-radius: 6px;
-  font: 500 11px/1 Roboto, "Segoe UI", system-ui, sans-serif;
-  color: #fff;
-  background: rgba(0, 0, 0, .85);
-  box-shadow: 0 1px 6px rgba(0, 0, 0, .45);
-  backdrop-filter: blur(2px);
+  gap: 4px;
+  padding: 3px 7px;
+  border: 1px solid #d0d0d0;
+  border-radius: 5px;
+  font: inherit;
+  color: #606060;
+  background: transparent;
   cursor: pointer;
-  opacity: 0;
-  transform: translateY(3px);
-  transition: opacity .12s ease, transform .12s ease, background .12s ease;
-  pointer-events: none;
+  transition: color .12s ease, background .12s ease, border-color .12s ease;
 }
-
-.ytc-card:hover > .ytc-btn,
-.ytc-card:focus-within > .ytc-btn,
-.ytc-btn:focus-visible {
-  opacity: 1;
-  transform: none;
-  pointer-events: auto;
-}
-
-.ytc-btn:hover { background: #cc0000; }
-.ytc-btn--done { background: #1e9e4a !important; }
+.ytc-btn:hover { background: #cc0000; border-color: #cc0000; color: #fff; }
+.ytc-btn--done { background: #1e9e4a; border-color: #1e9e4a; color: #fff; }
 .ytc-btn--done .ytc-btn__label::after { content: "!"; }
 .ytc-btn__label { white-space: nowrap; }
 
@@ -44,31 +41,26 @@ html.ytc-hide-buttons .ytc-btn { display: none; }
 
 /* selection checkbox */
 .ytc-check {
-  position: absolute;
-  left: 8px;
-  top: 8px;
-  z-index: 9600;
   display: none;
-  padding: 3px;
-  border-radius: 5px;
-  background: rgba(0, 0, 0, .7);
+  align-items: center;
   cursor: pointer;
 }
 .ytc-check input {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   margin: 0;
   accent-color: #cc0000;
   cursor: pointer;
 }
-html.ytc-selectmode .ytc-check { display: block; }
-/* Step the copy button aside so it never sits under the checkbox. */
-html.ytc-selectmode .ytc-btn { left: 38px; }
+html.ytc-selectmode .ytc-check { display: inline-flex; }
 html.ytc-selectmode .ytc-card--selected {
   outline: 2px solid #cc0000;
   outline-offset: -2px;
   border-radius: 8px;
 }
+
+html[dark] .ytc-btn { border-color: #4a4a4a; color: #aaa; }
+html[dark] .ytc-btn:hover { color: #fff; }
 
 /* bulk action bar */
 .ytc-bar {
@@ -128,19 +120,11 @@ html.ytc-selectmode .ytc-card--selected {
 /* subscriber badge + views-to-subs ratio — sits in the card's text block, under the
    views/date line, rather than floating over the thumbnail */
 .ytc-subs {
-  display: flex;
-  flex-wrap: wrap;
+  display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin: 6px 0 2px;
-  font: 500 11px/1 Roboto, "Segoe UI", system-ui, sans-serif;
+  margin: 0;
   line-height: 1;
-}
-
-/* sitting beside the views/date text rather than under it */
-.ytc-subs--inline {
-  margin: 0 0 0 10px;
-  align-self: center;
 }
 
 .ytc-subs__n {

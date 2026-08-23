@@ -13,10 +13,10 @@ clipboard output is laid out.
 
 ## Using it
 
-**One video** — hover a video, click the **Copy** button that appears in its top-left corner.
+**One video** — click the **Copy** button in the card's text block, beside the subscriber badge.
 
 **Many videos** — open the extension popup and click **Select videos…** (or press
-`Alt+Shift+S`). Checkboxes appear on every thumbnail; tick the ones you want, then
+`Alt+Shift+S`). A checkbox appears in every card's control row; tick the ones you want, then
 **Copy selected** (or `Alt+Shift+C`). `Esc` leaves select mode.
 
 **Everything on screen** — popup → **Copy all on page**. Only currently-rendered videos are
@@ -123,7 +123,7 @@ A lookup that fails is cached as a failure for 6 hours; *Clear cache* in the pop
 | Plain numbers for views | `271K views` → `271,000` (spreadsheet-friendly) |
 | Absolute date | `23 hours ago` → `2026-08-22` |
 | Wrap title in quotes | Useful when pasting into CSV-ish tools |
-| Show Copy button | Hide the hover button and work only through select mode |
+| Show Copy button | Hide the Copy button and work only through select mode |
 | Confirmation toast | The little "Copied" pill at the bottom of the page |
 
 Settings save instantly, sync across your Chrome profile, and the popup shows a live preview.
@@ -170,9 +170,14 @@ Markdown with URLs:
 
 ## Notes
 
-- The Copy button is attached to the video card itself, not to `ytd-thumbnail` — YouTube's
-  hover-preview player paints above everything inside the thumbnail, so a button nested there
-  is invisible exactly when you hover to use it.
+- Nothing is drawn over the thumbnail. The Copy button, checkbox and badges share one row
+  (`.ytc-tools`) inside the card's text block. Overlaying the thumbnail cannot be made to
+  work: YouTube's hover-preview player renders in a stacking context that a raised `z-index`
+  reaches on the home grid but not on search results, so overlaid controls vanish exactly
+  when you hover to use them.
+- The whole row is rebuilt on every scan if it goes missing — a hover preview makes YouTube
+  re-render a card's contents and take our elements with it. A ticked card keeps its tick,
+  and the badge is restored from what we already know rather than re-fetching the channel.
 - Titles are taken from the element's `title` attribute when YouTube truncates the visible
   text, so you get the full title rather than `TokTok Users Just Got PAYB…`.
 - Card detection covers search results, home/subscription grids, channel Videos tabs,

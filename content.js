@@ -184,12 +184,6 @@
     return { title, views, date, channel: findChannel(card), url, id };
   }
 
-  /* The button must be a SIBLING of the thumbnail, not a child of it: YouTube's
-     hover-preview player paints above anything inside ytd-thumbnail. */
-  function findAnchorHost(card) {
-    return card;
-  }
-
   /* ------------------------------------------------------------- clipboard */
 
   async function copyText(str) {
@@ -279,15 +273,34 @@
     return label;
   }
 
+  /* Re-add each control independently. YouTube re-renders a card's contents when its hover
+     preview starts, which can take our controls with it — and checking only for the button
+     meant a wiped checkbox never came back. */
   function decorate(card) {
-    if (card.dataset.ytcReady === '1' && card.querySelector(':scope > .ytc-btn')) return;
-    const host = findAnchorHost(card);
-    if (!host) return;
+    const fresh = card.dataset.ytcReady !== '1';
     card.dataset.ytcReady = '1';
-    card.classList.add('ytc-card', 'ytc-host');
-    host.appendChild(makeButton(card));
-    host.appendChild(makeCheckbox(card));
-    watchForSubs(card);
+    card.classList.add('ytc-card');
+
+    const tools = ensureTools(card);
+
+    // Re-add each control independently: a hover preview makes YouTube re-render the card,
+    // which can take them with it, and checking only for one leaves the other missing.
+    if (!tools.querySelector('.ytc-check')) {
+      const box = makeCheckbox(card);
+      tools.insertBefore(box, tools.firstChild);
+      // Restore the tick if this card was selected before the re-render.
+      if (selected.has(card)) {
+        box.querySelector('input').checked = true;
+        card.classList.add('ytc-card--selected');
+      }
+    }
+    if (!tools.querySelector('.ytc-btn')) {
+      const btn = makeButton(card);
+      const box = tools.querySelector('.ytc-check');
+      tools.insertBefore(btn, box ? box.nextSibling : tools.firstChild);
+    }
+
+    if (fresh) watchForSubs(card);
   }
 
   let lastCount = -1;
@@ -302,7 +315,7 @@
     }
     if (n !== lastCount) {
       lastCount = n;
-      console.debug('[YT Copy] %d video card(s) ready — hover a thumbnail for the Copy button', n);
+      console.debug('[YT Copy] %d video card(s) ready', n);
     }
     // Drop selections whose cards were recycled out of the DOM.
     for (const card of Array.from(selected.keys())) {
@@ -325,33 +338,45 @@
     return card.querySelector('.ytc-subs');
   }
 
-  /* Badges live with the text, under the views/date line — no measuring, no overlap with
-     YouTube's own thumbnail overlays, and readable on every layout. */
-  function attachBadge(card, badge) {
+  /* Everything we add lives in one row with the card's text, under the views/date line.
+     Nothing sits over the thumbnail: YouTube's hover-preview player renders in a stacking
+     context we can't outrank on search results, so anything overlapping the thumbnail
+     disappears the moment the preview starts. */
+  function ensureTools(card) {
+    let tools = card.querySelector('.ytc-tools');
+    if (!tools) {
+      tools = document.createElement('div');
+      tools.className = 'ytc-tools';
+    }
     const rows = card.querySelectorAll('#metadata-line, [class*="metadata-row"]');
     const anchor = rows.length ? rows[rows.length - 1]
       : card.querySelector('#video-title, h3');
     if (anchor && anchor.parentElement) {
-      if (badge.previousElementSibling !== anchor || badge.parentElement !== anchor.parentElement) {
-        anchor.parentElement.insertBefore(badge, anchor.nextSibling);
+      if (tools.previousElementSibling !== anchor || tools.parentElement !== anchor.parentElement) {
+        anchor.parentElement.insertBefore(tools, anchor.nextSibling);
       }
-      markFlow(badge);
-      return;
+    } else if (tools.parentElement !== card) {
+      card.appendChild(tools);
     }
-    if (badge.parentElement !== card) card.appendChild(badge);
-    markFlow(badge);
+    markFlow(tools);
+    return tools;
+  }
+
+  function attachBadge(card, badge) {
+    const tools = ensureTools(card);
+    if (badge.parentElement !== tools) tools.appendChild(badge);
   }
 
   /* Search results lay their metadata out as a row flex, so the badge lands beside the
      views/date text and needs a left gap and vertical centring. Grid cards stack in a
      column, where the badge gets its own line and neither applies. */
-  function markFlow(badge) {
-    const parent = badge.parentElement;
+  function markFlow(el) {
+    const parent = el.parentElement;
     if (!parent || typeof getComputedStyle !== 'function') return;
     const style = getComputedStyle(parent);
     const inRow = /flex|box/.test(style.display || '') &&
       !/column/.test(style.flexDirection || '');
-    badge.classList.toggle('ytc-subs--inline', inRow);
+    el.classList.toggle('ytc-tools--inline', inRow);
   }
 
   function makeBadge(card) {
@@ -616,6 +641,17 @@
       empty.remove();
       delete card.dataset.ytcDetect;
       watchForSubs(card);
+      return;
+    }
+
+    // A card re-render takes the whole tools row with it, badge included. Put it back from
+    // what we already know rather than making the channel round-trip again.
+    if (!badgeOf(card)) {
+      const key = findChannelKey(card);
+      if (!key) return;
+      const known = subsByKey.get(key);
+      if (known) renderBadge(card, known);
+      else if (requested.has(key)) renderLoading(card, false);
     }
   }
 
