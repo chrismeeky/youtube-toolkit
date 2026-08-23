@@ -1,0 +1,104 @@
+:root {
+  --bg: #ffffff;
+  --fg: #0f0f0f;
+  --muted: #606060;
+  --line: #e5e5e5;
+  --card: #f7f7f7;
+  --accent: #cc0000;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #181818;
+    --fg: #f1f1f1;
+    --muted: #aaaaaa;
+    --line: #303030;
+    --card: #222222;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  width: 340px;
+  margin: 0;
+  padding: 14px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.45 Roboto, "Segoe UI", system-ui, sans-serif;
+}
+h1 { margin: 0; font-size: 15px; }
+h2 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.sub { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+.head { margin-bottom: 14px; }
+
+.group {
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+
+.check, .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; cursor: pointer; }
+.check input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+.row > span { flex: 0 0 78px; color: var(--muted); }
+.row select, .row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+.hint { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+.keys { text-align: center; margin-top: 10px; }
+.hidden { display: none !important; }
+
+.preview {
+  margin: 0;
+  padding: 10px;
+  max-height: 130px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  font: 11px/1.5 "SF Mono", Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.actions { display: flex; gap: 8px; }
+.btn {
+  flex: 1;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--fg);
+  font: 500 13px/1 inherit;
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--muted); }
+.btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn--primary:hover { background: #e10000; }
+.status { min-height: 16px; margin: 8px 0 0; text-align: center; color: var(--muted); font-size: 12px; }
+
+.linkbtn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}

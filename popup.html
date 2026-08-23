@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="popup.css" />
+  <title>YT Copy</title>
+</head>
+<body>
+  <header class="head">
+    <h1>YT Copy</h1>
+    <p class="sub">Choose what gets copied and how it's laid out.</p>
+  </header>
+
+  <section class="group">
+    <h2>Include</h2>
+    <div class="fields" id="fields"></div>
+  </section>
+
+  <section class="group">
+    <h2>Layout</h2>
+    <label class="row">
+      <span>Format</span>
+      <select id="layout"></select>
+    </label>
+    <label class="row" id="sep-row">
+      <span>Separator</span>
+      <select id="separator"></select>
+    </label>
+    <label class="row hidden" id="tpl-row">
+      <span>Template</span>
+      <input type="text" id="customTemplate" spellcheck="false" />
+    </label>
+    <p class="hint hidden" id="tpl-hint">
+      Tokens: {title} {views} {viewsNum} {date} {dateISO} {channel} {url} {index}
+    </p>
+    <label class="check hidden" id="csv-row">
+      <input type="checkbox" id="csvHeader" /> <span>Include CSV header row</span>
+    </label>
+  </section>
+
+  <section class="group">
+    <h2>Tweaks</h2>
+    <label class="check"><input type="checkbox" id="numericViews" /> <span>Plain numbers for views (271K → 271,000)</span></label>
+    <label class="check"><input type="checkbox" id="absoluteDate" /> <span>Absolute date (23 hours ago → 2026-08-22)</span></label>
+    <label class="check"><input type="checkbox" id="quoteTitle" /> <span>Wrap title in quotes</span></label>
+    <label class="check"><input type="checkbox" id="showButtons" /> <span>Show Copy button on video thumbnails</span></label>
+    <label class="check"><input type="checkbox" id="toast" /> <span>Show confirmation toast</span></label>
+  </section>
+
+  <section class="group">
+    <h2>Channel stats</h2>
+    <label class="check"><input type="checkbox" id="showSubs" /> <span>Subscriber badge on thumbnails</span></label>
+    <label class="check"><input type="checkbox" id="showRatio" /> <span>Views-to-subs ratio (outlier signal)</span></label>
+    <p class="hint">
+      Read from each channel's page and cached for a week — the first video from a new
+      channel takes a moment, everything after is instant.
+      <button type="button" id="clearSubs" class="linkbtn">Clear cache</button>
+    </p>
+  </section>
+
+  <section class="group">
+    <h2>Preview</h2>
+    <pre class="preview" id="preview"></pre>
+  </section>
+
+  <footer class="actions">
+    <button type="button" id="selectMode" class="btn">Select videos…</button>
+    <button type="button" id="copyPage" class="btn btn--primary">Copy all on page</button>
+  </footer>
+  <p class="status" id="status"></p>
+  <p class="hint keys">Alt+Shift+S select mode · Alt+Shift+C copy selection</p>
+
+  <script src="format.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

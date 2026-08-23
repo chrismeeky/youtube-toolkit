@@ -1,0 +1,222 @@
+/* YT Copy — injected UI */
+
+/* The card is the positioning context; the button/checkbox sit above the whole
+   thumbnail subtree (including YouTube's hover-preview player). */
+.ytc-host { position: relative; }
+
+.ytc-btn {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  z-index: 9500;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  font: 500 11px/1 Roboto, "Segoe UI", system-ui, sans-serif;
+  color: #fff;
+  background: rgba(0, 0, 0, .85);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, .45);
+  backdrop-filter: blur(2px);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity .12s ease, transform .12s ease, background .12s ease;
+  pointer-events: none;
+}
+
+.ytc-card:hover > .ytc-btn,
+.ytc-card:focus-within > .ytc-btn,
+.ytc-btn:focus-visible {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.ytc-btn:hover { background: #cc0000; }
+.ytc-btn--done { background: #1e9e4a !important; }
+.ytc-btn--done .ytc-btn__label::after { content: "!"; }
+.ytc-btn__label { white-space: nowrap; }
+
+html.ytc-hide-buttons .ytc-btn { display: none; }
+
+/* selection checkbox */
+.ytc-check {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  z-index: 9600;
+  display: none;
+  padding: 3px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, .7);
+  cursor: pointer;
+}
+.ytc-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #cc0000;
+  cursor: pointer;
+}
+html.ytc-selectmode .ytc-check { display: block; }
+/* Step the copy button aside so it never sits under the checkbox. */
+html.ytc-selectmode .ytc-btn { left: 38px; }
+html.ytc-selectmode .ytc-card--selected {
+  outline: 2px solid #cc0000;
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+
+/* bulk action bar */
+.ytc-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #212121;
+  color: #fff;
+  font: 400 13px/1 Roboto, "Segoe UI", system-ui, sans-serif;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .4);
+  transform: translate(-50%, 130%);
+  transition: transform .18s ease;
+}
+.ytc-bar--show { transform: translate(-50%, 0); }
+.ytc-bar__count { padding: 0 6px; opacity: .85; font-variant-numeric: tabular-nums; }
+.ytc-bar__btn {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: #3a3a3a;
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+.ytc-bar__btn:hover { background: #4a4a4a; }
+.ytc-bar__btn--primary { background: #cc0000; }
+.ytc-bar__btn--primary:hover { background: #e10000; }
+.ytc-bar__btn:disabled { opacity: .45; cursor: default; }
+.ytc-bar__close { background: transparent; padding: 7px 9px; }
+
+/* toast */
+.ytc-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 88px;
+  z-index: 9100;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: #1e9e4a;
+  color: #fff;
+  font: 500 13px/1 Roboto, "Segoe UI", system-ui, sans-serif;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, .35);
+  opacity: 0;
+  transform: translate(-50%, 10px);
+  transition: opacity .16s ease, transform .16s ease;
+  pointer-events: none;
+}
+.ytc-toast--show { opacity: 1; transform: translate(-50%, 0); }
+.ytc-toast--error { background: #cc0000; }
+
+/* subscriber badge + views-to-subs ratio — sits in the card's text block, under the
+   views/date line, rather than floating over the thumbnail */
+.ytc-subs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin: 6px 0 2px;
+  font: 500 11px/1 Roboto, "Segoe UI", system-ui, sans-serif;
+  line-height: 1;
+}
+
+/* sitting beside the views/date text rather than under it */
+.ytc-subs--inline {
+  margin: 0 0 0 10px;
+  align-self: center;
+}
+
+.ytc-subs__n {
+  padding: 3px 6px;
+  border-radius: 5px;
+  color: #fff;
+  background: rgba(0, 0, 0, .78);
+  white-space: nowrap;
+}
+
+.ytc-ratio {
+  padding: 3px 6px;
+  border-radius: 5px;
+  color: #fff;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ytc-ratio--great { background: #0f9d58; }   /* >= 10x  breakout */
+.ytc-ratio--good  { background: #5c9e14; }   /* >= 3x   strong */
+.ytc-ratio--ok    { background: #d9822b; }   /* >= 1x   beat the sub count */
+.ytc-ratio--low   { background: #e2551f; }   /* >= 0.5x soft */
+.ytc-ratio--poor  { background: #c62828; }   /* < 0.5x  flopped */
+
+/* retry / empty affordances */
+.ytc-subs--failed { cursor: pointer; }
+.ytc-subs--failed .ytc-subs__n {
+  background: transparent;
+  color: #909090;
+  border: 1px dashed #a0a0a0;
+  padding: 2px 5px;
+}
+.ytc-subs--failed:hover .ytc-subs__n { color: #0f0f0f; border-color: #0f0f0f; }
+
+.ytc-subs--none { cursor: pointer; }
+.ytc-subs--none .ytc-subs__n {
+  background: transparent;
+  color: #909090;
+  border: 1px solid #d0d0d0;
+  padding: 2px 5px;
+}
+
+/* pending / retrying */
+.ytc-subs--loading .ytc-subs__n {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  color: #909090;
+  border: 1px solid #d0d0d0;
+  padding: 2px 5px;
+}
+.ytc-spin {
+  width: 9px;
+  height: 9px;
+  border: 2px solid rgba(128, 128, 128, .35);
+  border-top-color: #909090;
+  border-radius: 50%;
+  animation: ytc-spin .7s linear infinite;
+}
+@keyframes ytc-spin { to { transform: rotate(360deg); } }
+@keyframes ytc-pulse { 50% { opacity: .25; } }
+/* A spinner is decoration; honour a reduced-motion preference with a soft pulse instead. */
+@media (prefers-reduced-motion: reduce) {
+  .ytc-spin {
+    animation: ytc-pulse 1.4s ease-in-out infinite;
+    border-top-color: rgba(128, 128, 128, .35);
+  }
+}
+
+/* dark theme: YouTube sets this on <html> */
+html[dark] .ytc-subs--failed .ytc-subs__n,
+html[dark] .ytc-subs--none .ytc-subs__n,
+html[dark] .ytc-subs--loading .ytc-subs__n {
+  color: #aaa;
+  border-color: #4a4a4a;
+}
+html[dark] .ytc-subs--failed:hover .ytc-subs__n { color: #fff; border-color: #fff; }
+html[dark] .ytc-subs__n { background: rgba(255, 255, 255, .12); }
+html[dark] .ytc-spin { border-color: rgba(255, 255, 255, .25); border-top-color: #aaa; }
