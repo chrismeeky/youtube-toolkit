@@ -14,7 +14,8 @@
     quoteTitle: false,
     toast: true,
     showSubs: true,               // subscriber badge on each card
-    showRatio: true,              // views ÷ subscribers pill
+    showRatio: true,              // views ÷ channel average pill
+    showMoney: true,              // monetization badge (inferred from ad placements)
     showThumb: true,              // thumbnail download button
     showTranscript: true,         // transcript button on watch pages
     transcriptTimestamps: false,  // prefix each line with its timestamp
@@ -512,6 +513,43 @@
     return unverified || firstMatch(html, SUB_PATTERNS) || firstMatch(html, [LOOSE_PATTERN]);
   }
 
+  /* Ad placements read out of a watch page's HTML, for the channel-page sampler which has
+     no live player to ask. Mirrors page.js adSignal() so both paths agree. */
+  function adSignalFromHtml(html) {
+    if (!html) return null;
+    if (html.indexOf('"adPlacements"') < 0) {
+      return { placements: 0, forecasting: 0, instream: 0 };
+    }
+    const count = (re) => (html.match(re) || []).length;
+    return {
+      placements: count(/adPlacementRenderer/g),
+      forecasting: count(/clientForecastingAdRenderer/g),
+      instream: count(/instreamVideoAdRenderer/g)
+    };
+  }
+
+  /* What the ad signal can and cannot tell you.
+
+     The original rule here was "any video with ad placements proves the channel is in the
+     Partner Program". That is wrong, and testing against a demonetized channel showed why:
+     its videos carry exactly the same payload as carwow's and MrBeast's — one placement,
+     AD_PLACEMENT_KIND_START, clientForecastingAdRenderer, no instream renderer. A
+     forecasting renderer is inventory measurement, not a served ad, and YouTube emits it for
+     demonetized channels too. Ten other candidate fields were identical across both groups.
+
+     The only thing that differed was the PROPORTION of recent videos carrying a placement:
+     3/3 and 3/3 for the monetized channels against 1/3 for the demonetized one. So a
+     majority is the most this data supports, and even that is an estimate calibrated on a
+     small sample — hence "likely" in the labels rather than a verdict. One sample is never
+     enough, because a lone forecasting slot is exactly the false positive being avoided. */
+  function monetizationVerdict(samples) {
+    const seen = (samples || []).filter(Boolean);
+    const withAds = seen.filter((s) => s.placements > 0).length;
+    if (seen.length < 2) return { state: 'unknown', checked: seen.length, withAds };
+    const state = withAds * 2 > seen.length ? 'likely-monetized' : 'likely-not';
+    return { state, checked: seen.length, withAds };
+  }
+
   /* The channel /about page carries lifetime totals that no other tab does:
 
        "subscriberCountText":"11.1M subscribers","viewCountText":"5,562,325,195 views"
@@ -697,7 +735,7 @@
     DEFAULTS, SEPARATORS, LAYOUTS, FIELD_ORDER, FIELD_LABELS, SAMPLE,
     merge, formatOne, formatList, viewsToNumber, relativeToISO, compact, parseSubscribers,
     isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken,
-    parseChannelStats,
+    parseChannelStats, adSignalFromHtml, monetizationVerdict,
     safeFilename, formatTranscript, stampMs, decodeEntities, parseJson3, parseTimedTextXml,
     innertubeConfig, captionTracksFrom, pickCaptionTrack, transcriptSegmentsFrom, loadTranscript,
     playerResponseFrom

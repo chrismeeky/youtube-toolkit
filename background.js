@@ -51,7 +51,7 @@ const MAX_ACTIVE = 2;                      // be gentle: channel pages are ~1MB 
 const GAP_MS = 150;
 /* Bumped whenever a parsing bug could have written wrong values: entries from older
    versions are ignored, so a bad count can't outlive the fix that corrects it. */
-const CACHE_VERSION = 5;  // entries now carry lifetime totals as well as the count
+const CACHE_VERSION = 7;  // monetization now gated on the YPP subscriber threshold
 
 const MAX_BYTES = 3000000;      // some channel pages bury the count deep in ytInitialData
 /* The /about cap is its own number because the lifetime totals sit at the very END of the
@@ -236,6 +236,131 @@ async function getSubscribers(key, force) {
   return job;
 }
 
+/* ---------------------------------------------------------------- monetization */
+
+/* Inferred, not published. See F.monetizationVerdict for why one positive settles it and
+   negatives never do.
+
+   Cost control matters here because this is the only feature that fetches watch pages:
+     - Stop at the first video with ad placements, so a monetized channel usually costs one.
+     - Abort each probe once ytInitialPlayerResponse is complete. adPlacements lives inside
+       it (~750KB in), and ytInitialData always follows it (~800KB), so seeing ytInitialData
+       means the answer is settled either way — no reason to read the remaining ~500KB.
+     - Cache per channel, since a channel's Partner Program status barely changes. */
+/* Ad revenue through the Partner Program requires 1,000 subscribers (plus watch hours we
+   cannot see). Below that a channel cannot be running ads for its own benefit no matter what
+   the player says — YouTube may still serve ads against its videos and keep the revenue,
+   which is exactly the false positive the ad signal alone walks into. So the count is checked
+   first, and a channel under the bar is answered without fetching a single watch page.
+   (A 500-subscriber tier exists for memberships and Super Thanks, but not for ads.) */
+const YPP_MIN_SUBS = 1000;
+const MON_SAMPLE = 3;              // videos to try before concluding "no ads found"
+const MON_BYTES = 1400000;         // ceiling per probe; the stop marker normally hits first
+const TTL_MON = 7 * 24 * 60 * 60 * 1000;
+const TTL_MON_UNKNOWN = 6 * 60 * 60 * 1000;   // a failed sample is worth retrying sooner
+
+async function recentVideoIds(key, limit) {
+  const url = 'https://www.youtube.com/' + channelPath(key) + '/videos?hl=en';
+  let res;
+  try {
+    res = await fetch(url, { credentials: 'include', headers: { 'Accept-Language': 'en' } });
+  } catch (e) {
+    return [];
+  }
+  if (!res.ok) return [];
+  const html = await res.text();
+  const ids = [];
+  const seen = new Set();
+  // The grid moved to lockupViewModel, whose contentId is the video id.
+  const re = /"contentId":"([\w-]{11})"/g;
+  let m;
+  while ((m = re.exec(html)) && ids.length < limit) {
+    if (seen.has(m[1])) continue;
+    seen.add(m[1]);
+    ids.push(m[1]);
+  }
+  return ids;
+}
+
+async function adSignalFor(videoId) {
+  let res;
+  try {
+    res = await fetch('https://www.youtube.com/watch?v=' + videoId + '&hl=en',
+      { credentials: 'include', headers: { 'Accept-Language': 'en' } });
+  } catch (e) {
+    return null;
+  }
+  if (!res.ok || !res.body) return null;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let read = 0;
+  try {
+    while (read < MON_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      read += value.length;
+      buf += decoder.decode(value, { stream: true });
+      if (buf.indexOf('"adPlacements"') >= 0) break;        // settled: monetized
+      if (buf.indexOf('ytInitialData') >= 0) break;         // player response closed: settled
+    }
+  } catch (e) {
+    return null;
+  } finally {
+    try { await reader.cancel(); } catch (e) { /* already closed */ }
+  }
+  return F.adSignalFromHtml(buf);
+}
+
+async function getMonetization(key, force) {
+  const id = 'mon:' + key;
+  if (!force) {
+    const store = await chrome.storage.local.get(id);
+    const hit = store[id];
+    if (hit && hit.v === CACHE_VERSION) {
+      const ttl = hit.state === 'unknown' ? TTL_MON_UNKNOWN : TTL_MON;
+      if (Date.now() - hit.t <= ttl) return hit;
+    }
+  }
+
+  /* Eligibility gate. getSubscribers is cached, so this is usually free, and when it rules
+     the channel out it saves three watch-page fetches as well as giving a definite answer
+     instead of an estimate. */
+  const subsEntry = await getSubscribers(key);
+  const subs = subsEntry && subsEntry.text ? F.viewsToNumber(subsEntry.text) : null;
+  if (subs !== null && subs < YPP_MIN_SUBS) {
+    const entry = { state: 'not-eligible', checked: 0, withAds: 0, subs, t: Date.now(), v: CACHE_VERSION };
+    await chrome.storage.local.set({ [id]: entry });
+    console.log('[YT Copy] monetization %s -> not eligible (%d subs)', key, subs);
+    return entry;
+  }
+
+  const ids = await recentVideoIds(key, MON_SAMPLE);
+  const samples = [];
+  for (const vid of ids) {
+    // Every sample is needed now. The old loop stopped at the first video carrying a
+    // placement, which is exactly what let a demonetized channel read as monetized off a
+    // single forecasting slot — a ratio cannot be computed from a partial sample.
+    const signal = await schedule(() => adSignalFor(vid));
+    if (signal) samples.push(signal);
+  }
+
+  const verdict = F.monetizationVerdict(samples);
+  const entry = {
+    state: verdict.state,
+    checked: verdict.checked,
+    withAds: verdict.withAds,
+    subs,
+    t: Date.now(),
+    v: CACHE_VERSION
+  };
+  await chrome.storage.local.set({ [id]: entry });
+  console.log('[YT Copy] monetization %s -> %s (%d/%d carried ad slots)',
+    key, entry.state, entry.withAds, entry.checked);
+  return entry;
+}
+
 /* ---------------------------------------------------------------- thumbnails */
 
 /* maxres only exists for videos uploaded with a big enough thumbnail, and YouTube 404s
@@ -312,6 +437,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         key: msg.key, text: entry.text, reason: entry.reason, stats: entry.stats || null
       }))
       .catch((e) => sendResponse({ key: msg.key, text: null, reason: String(e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-monetization' && msg.key) {
+    getMonetization(msg.key, msg.force)
+      .then((entry) => sendResponse(entry))
+      .catch((e) => sendResponse({ state: 'unknown', checked: 0, reason: String(e) }));
     return true;
   }
   if (msg.type === 'ytc-thumbs') {

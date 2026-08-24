@@ -7,7 +7,7 @@
   let settings = F.merge(null);
 
   const TOGGLES = ['csvHeader', 'numericViews', 'absoluteDate', 'quoteTitle', 'showButtons',
-    'toast', 'showSubs', 'showRatio', 'showThumb', 'showTranscript',
+    'toast', 'showSubs', 'showRatio', 'showMoney', 'showThumb', 'showTranscript',
     'transcriptTimestamps', 'transcriptSave'];
 
   function buildFieldChecks() {

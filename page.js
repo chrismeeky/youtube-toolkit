@@ -17,11 +17,35 @@
     return '';
   }
 
+  /* Ad slots the player was handed for this video. Their presence means YouTube served ad
+     placements here, which only happens for a channel in the Partner Program — so it is
+     evidence of monetization. The reverse does not hold: a monetized channel's individual
+     video can be demonetized by a copyright claim or an advertiser-unfriendly flag, and
+     live/ended streams behave differently again. Report the raw counts and let the caller
+     decide; this is an inference, not a status YouTube publishes. */
+  function adSignal(player) {
+    const placements = Array.isArray(player.adPlacements) ? player.adPlacements : [];
+    let forecasting = 0;
+    let instream = 0;
+    for (const p of placements) {
+      const renderer = (p && p.adPlacementRenderer && p.adPlacementRenderer.renderer) || {};
+      if (renderer.clientForecastingAdRenderer) forecasting++;
+      if (renderer.instreamVideoAdRenderer) instream++;
+    }
+    return {
+      placements: placements.length,
+      forecasting,
+      instream,
+      isLive: !!(player.videoDetails && player.videoDetails.isLiveContent)
+    };
+  }
+
   function collect() {
     const cfg = window.ytcfg && typeof window.ytcfg.get === 'function' ? window.ytcfg : null;
     const player = window.ytInitialPlayerResponse || {};
     const tracklist = (player.captions || {}).playerCaptionsTracklistRenderer || {};
     return {
+      ads: adSignal(player),
       apiKey: cfg ? cfg.get('INNERTUBE_API_KEY') || '' : '',
       clientVersion: cfg ? cfg.get('INNERTUBE_CLIENT_VERSION') || '' : '',
       visitorData: cfg ? cfg.get('VISITOR_DATA') || '' : '',

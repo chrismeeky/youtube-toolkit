@@ -524,6 +524,7 @@
     }
 
     if (fresh) watchForSubs(card);
+    if (isWatchCard(card)) syncWatchMoney(card);
   }
 
   let lastCount = -1;
@@ -536,6 +537,7 @@
       resyncCard(card);
       n++;
     }
+    decorateChannelHeader();
     const watch = watchCard();
     if (watch) {
       decorate(watch);
@@ -661,6 +663,264 @@
     const label = r >= 10 ? 'breakout' : r >= 3 ? 'strong' : r >= 1 ? 'above subscriber count'
       : r >= 0.5 ? 'below subscriber count' : 'well below subscriber count';
     return 'views ÷ subscribers (channel average unavailable) — ' + label;
+  }
+
+  /* ------------------------------------------------------------- monetization */
+
+  /* "Likely", not a verdict. Ad placements do not prove Partner Program membership — a
+     demonetized channel emits the same forecasting slots as a monetized one — so this reads
+     the proportion of recent videos carrying slots and says how it got there. The tooltip
+     carries the count so the estimate can be judged rather than taken on faith. */
+  const MONEY_LABEL = {
+    'not-eligible': { text: '$', big: 'Not eligible', cls: 'ytc-money--no',
+      lead: 'Not eligible for ad monetization' },
+    'likely-monetized': { text: '$', big: 'Likely monetized', cls: 'ytc-money--yes',
+      lead: 'Likely monetized' },
+    'likely-not': { text: '$', big: 'Likely not monetized', cls: 'ytc-money--no',
+      lead: 'Likely not monetized' },
+    unknown: { text: '$', big: 'Unknown', cls: 'ytc-money--unknown',
+      lead: 'Not enough samples to judge' }
+  };
+
+  function moneyTitle(res, videoNote) {
+    const label = MONEY_LABEL[res.state] || MONEY_LABEL.unknown;
+    const parts = [label.lead];
+
+    /* Below the threshold this is a fact, not an estimate, so it gets none of the hedging
+       the sampled states carry. */
+    if (res.state === 'not-eligible') {
+      parts.push('Under ' + (res.subs != null ? F.compact(res.subs) + ' subscribers, below' : 'below') +
+        ' the 1,000 the Partner Program requires for ads, so it cannot run its own ads');
+      return parts.join('. ');
+    }
+
+    if (res.checked) {
+      parts.push(res.withAds + ' of ' + res.checked + ' recent videos carried ad slots');
+    }
+    if (videoNote) parts.push(videoNote);
+    parts.push('Estimated from ad placements. YouTube also runs ads on channels that are not ' +
+      'monetized and keeps that revenue, so treat this as a signal, not a status');
+    return parts.join('. ');
+  }
+
+  /* The channel sample fetches several watch pages, so this can sit pending for a few
+     seconds — long enough that a static dim badge reads as a broken one. Reuse the spinner
+     the subscriber badge already uses, which carries its own reduced-motion fallback. */
+  function ensureMoneyBadge(host, big) {
+    let el = host.querySelector(':scope > .ytc-money');
+    if (!el) {
+      el = document.createElement('span');
+      host.appendChild(el);
+    }
+    el.className = 'ytc-money ytc-money--loading' + (big ? ' ytc-money--lg' : '');
+    el.title = 'Checking monetization…';
+    el.textContent = '';
+    const spin = document.createElement('span');
+    spin.className = 'ytc-spin';
+    el.appendChild(spin);
+    if (big) {
+      const word = document.createElement('span');
+      word.textContent = 'Checking…';
+      el.appendChild(word);
+    }
+    return el;
+  }
+
+  function paintMoney(el, res, big, videoNote) {
+    const safe = res && res.state ? res : { state: 'unknown', checked: 0, withAds: 0 };
+    const label = MONEY_LABEL[safe.state] || MONEY_LABEL.unknown;
+    const retryable = safe.state === 'unknown';   // 'not-eligible' is settled, never retried
+    el.className = 'ytc-money ' + label.cls + (big ? ' ytc-money--lg' : '') +
+      (retryable ? ' ytc-money--retry' : '');
+    el.textContent = big ? label.big : label.text;   // also clears the spinner
+    el.title = moneyTitle(safe, videoNote) + (retryable ? '. Click to try again' : '');
+  }
+
+  /* An "unknown" badge should never be a dead end that only a page reload clears. */
+  document.addEventListener('click', (e) => {
+    const el = e.target && e.target.closest && e.target.closest('.ytc-money--retry');
+    if (!el || !el.dataset.key) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const key = el.dataset.key;
+    const big = el.classList.contains('ytc-money--lg');
+    const host = el.parentElement;
+    if (!host) return;
+    const fresh = ensureMoneyBadge(host, big);
+    fresh.dataset.key = key;
+    chrome.runtime.sendMessage({ type: 'ytc-monetization', key, force: true }, (res) => {
+      if (!fresh.isConnected) return;
+      paintMoney(fresh, chrome.runtime.lastError ? null : res, big);
+    });
+  }, true);
+
+  /* YouTube navigates between videos without reloading, and page.js reads a global that the
+     new page has not necessarily rewritten yet. Asking for the ad slots too early returns the
+     PREVIOUS video's answer, which is worse than no answer, so wait until the payload names
+     the video actually in the address bar. */
+  async function freshPageAds(videoId, tries) {
+    for (let i = 0; i < (tries || 6); i++) {
+      const page = await pageData();
+      if (page && page.videoId === videoId) return page.ads || null;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return null;
+  }
+
+  /* The watch page can answer this for free: page.js reads the ad slots the live player was
+     handed, no network at all. Only when that comes back empty is it worth paying for the
+     channel sample, because an empty result on one video says little on its own. */
+  async function checkWatchMoney(card, videoId) {
+    if (!settings.showMoney) return;
+    const tools = ensureTools(card);
+    const el = ensureMoneyBadge(tools, false);
+
+    /* This video's own slots come free from the live player, but one video cannot settle a
+       channel-level question — a single forecasting slot is precisely the false positive
+       being avoided. So the verdict always comes from the channel sample, and the free
+       signal only enriches the tooltip with what this particular video shows. */
+    const ads = await freshPageAds(videoId);
+    if (card.dataset.ytcMoneyVid !== videoId) return;   // navigated away while waiting
+    const note = ads
+      ? (ads.placements > 0 ? 'This video carries ad slots' : 'This video carries none')
+      : '';
+
+    const key = findChannelKey(card);
+    if (!key) { paintMoney(el, null, false, note); return; }
+    el.dataset.key = key;
+    requestMonetization(key, (res) => {
+      if (card.dataset.ytcMoneyVid !== videoId) return;
+      paintMoney(el, res, false, note);
+    });
+  }
+
+  /* Runs on every scan rather than only on a fresh card: YouTube reuses the same
+     ytd-watch-metadata element across navigations, so "fresh" is false on the second video
+     and the badge would keep showing the first one's verdict. */
+  function syncWatchMoney(card) {
+    if (!settings.showMoney) return;
+    const id = findUrl(card).id;
+    if (!id || card.dataset.ytcMoneyVid === id) return;
+    card.dataset.ytcMoneyVid = id;
+    checkWatchMoney(card, id);
+  }
+
+  /* Channel pages have no player to read, so the only route is sampling recent uploads in
+     the background. */
+  function channelKeyFromLocation() {
+    const m = location.pathname.match(/^\/(@[^/]+|channel\/[^/]+|c\/[^/]+|user\/[^/]+)/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  /* Anchor on the Subscribe button rather than a header container. Container ids and
+     view-model tag names get renamed as YouTube re-skins the channel page, but a Subscribe
+     button has to stay findable, and its action row is exactly where this badge belongs. */
+  const SUBSCRIBE_SELECTOR = [
+    'ytd-subscribe-button-renderer',
+    'yt-subscribe-button-view-model',
+    'button[aria-label^="Subscribe"]',
+    'button-view-model button[aria-label*="Subscribe"]'
+  ].join(', ');
+
+  const ACTION_ROW = 'yt-flexible-actions-view-model, .yt-flexible-actions-view-model-wiz, ' +
+    '#inner-header-container, #meta, #channel-header-container';
+
+  function channelHeaderHost() {
+    const sub = document.querySelector(SUBSCRIBE_SELECTOR);
+    if (sub) {
+      // Sit beside Subscribe, not inside its own wrapper, so YouTube's own re-renders of
+      // that button do not take the badge with them.
+      const row = sub.closest(ACTION_ROW);
+      if (row) return row;
+      if (sub.parentElement) return sub.parentElement;
+    }
+    return document.querySelector('yt-page-header-view-model') ||
+           document.querySelector('#channel-header') || null;
+  }
+
+  /* Re-evaluated on every scan rather than latched once, for the same reason the watch-page
+     badge is: YouTube rebuilds the channel header during a soft navigation. A latch that only
+     remembered "already handled this channel" kept skipping after the rebuild had thrown the
+     badge away, so the status appeared only after a hard reload. Verify the badge is still
+     attached to the host we would choose now, and re-attach it when it is not. */
+  /* The channel header can hydrate long after scan() last ran. Relying on the MutationObserver
+     to come back was the bug: once the page settles there are no more mutations, so a scan
+     that arrived too early was simply the last one, and the badge never appeared until a
+     manual reload. Retry on our own timer, the way card detection already does. */
+  const channelDetect = { key: '', tries: 0, timer: null };
+  const CHANNEL_DETECT_MAX = 8;
+
+  function scheduleChannelRetry(key) {
+    if (channelDetect.key !== key) {
+      if (channelDetect.timer) clearTimeout(channelDetect.timer);
+      channelDetect.key = key;
+      channelDetect.tries = 0;
+      channelDetect.timer = null;
+    }
+    if (channelDetect.timer || channelDetect.tries >= CHANNEL_DETECT_MAX) return;
+    const delay = DETECT_DELAYS[Math.min(channelDetect.tries, DETECT_DELAYS.length - 1)];
+    channelDetect.tries++;
+    channelDetect.timer = setTimeout(() => {
+      channelDetect.timer = null;
+      if (channelKeyFromLocation() === key) decorateChannelHeader();
+    }, delay);
+  }
+
+  /* The sample runs three sequential page fetches in the service worker, which MV3 may evict
+     mid-flight — in which case the callback never fires and the badge spins forever, which
+     looks exactly like "no status" from the outside. Bound the wait so it always resolves to
+     something clickable. */
+  const MONEY_TIMEOUT = 60000;
+
+  function requestMonetization(key, done) {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      done(null);
+    }, MONEY_TIMEOUT);
+    try {
+      chrome.runtime.sendMessage({ type: 'ytc-monetization', key }, (res) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        done(chrome.runtime.lastError ? null : res);
+      });
+    } catch (e) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      done(null);
+    }
+  }
+
+  function decorateChannelHeader() {
+    const key = channelKeyFromLocation();
+    const stray = document.querySelector('.ytc-money--lg');
+
+    // Left a channel page (or the badge was switched off): clean up after ourselves.
+    if (!key || !settings.showMoney) {
+      if (stray) stray.remove();
+      return;
+    }
+
+    const host = channelHeaderHost();
+    if (!host) { scheduleChannelRetry(key); return; }
+
+    const attached = stray && stray.parentElement === host;
+    if (attached && host.dataset.ytcMoney === key) return;   // present and current
+
+    // A badge that survived on a stale element would otherwise be duplicated.
+    if (stray && !attached) stray.remove();
+    host.dataset.ytcMoney = key;
+
+    const el = ensureMoneyBadge(host, true);
+    el.dataset.key = key;
+    requestMonetization(key, (res) => {
+      // The user may have navigated away, or the header rebuilt, while the sample ran.
+      if (!el.isConnected || host.dataset.ytcMoney !== key) return;
+      paintMoney(el, res, true);
+    });
   }
 
   /* No channel to look up: still show something, so a blank corner never looks like a bug. */

@@ -244,3 +244,75 @@ html[dark] .ytc-subs--loading .ytc-subs__n {
 html[dark] .ytc-subs--failed:hover .ytc-subs__n { color: #fff; border-color: #fff; }
 html[dark] .ytc-subs__n { background: rgba(255, 255, 255, .12); }
 html[dark] .ytc-spin { border-color: rgba(255, 255, 255, .25); border-top-color: #aaa; }
+
+/* Monetization badge. Inferred from ad placements, so the palette is deliberately calmer
+   than the ratio pill's — green/grey rather than the ratio scale, because "no ads found"
+   is genuinely uncertain and should not read as a red verdict. */
+.ytc-money {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 4px;
+  border-radius: 9px;
+  font: 600 11px/1 Roboto, Arial, sans-serif;
+  color: #fff;
+  cursor: default;
+  vertical-align: middle;
+}
+.ytc-money--yes     { background: #0f9d58; }                    /* ad placements present */
+.ytc-money--no      { background: #5f6368; opacity: .75;
+                      text-decoration: line-through; }          /* none found — not proof */
+.ytc-money--unknown { background: #5f6368; opacity: .45; }
+.ytc-money--loading { background: #5f6368; opacity: .35; }
+
+/* Channel-page variant: a pill sitting in the header action row beside Subscribe, sized to
+   match YouTube's own buttons there rather than the compact card badge. */
+.ytc-money--lg {
+  min-width: 0;
+  height: 36px;
+  padding: 0 16px;
+  margin-left: 8px;
+  border-radius: 18px;
+  font: 500 14px/1 Roboto, Arial, sans-serif;
+  letter-spacing: .1px;
+  background: transparent;
+  border: 1px solid currentColor;
+  text-decoration: none;
+  opacity: 1;
+}
+.ytc-money--lg.ytc-money--yes     { color: #0f9d58; border-color: #0f9d58; }
+.ytc-money--lg.ytc-money--no      { color: #909090; border-color: #606060; text-decoration: none; }
+.ytc-money--lg.ytc-money--unknown { color: #909090; border-color: #606060; opacity: .8; }
+.ytc-money--lg.ytc-money--loading { color: #909090; border-color: #444; opacity: .6; }
+
+/* Loading state. The spinner element is .ytc-spin, shared with the subscriber badge, so it
+   inherits that rule's reduced-motion fallback (a soft pulse instead of rotation). */
+/* The base loading rule dims the whole pill to .35, which would drag the spinner down with
+   it. Carry the muting in the background colour instead so the spinner stays legible. */
+.ytc-money--loading {
+  gap: 6px;
+  opacity: 1;
+  background: rgba(95, 99, 104, .3);
+}
+.ytc-money--loading .ytc-spin { width: 8px; height: 8px; border-width: 2px; }
+.ytc-money--lg.ytc-money--loading {
+  gap: 8px;
+  opacity: 1;
+  background: transparent;
+  color: #909090;
+  border-color: #4a4a4a;
+}
+.ytc-money--lg.ytc-money--loading .ytc-spin {
+  width: 12px;
+  height: 12px;
+  border-color: rgba(144, 144, 144, .3);
+  border-top-color: #909090;
+}
+
+/* A badge that resolved to "unknown" is clickable to re-run the check, so a transient
+   failure never needs a page reload to clear. */
+.ytc-money--retry { cursor: pointer; }
+.ytc-money--retry:hover { filter: brightness(1.25); }
