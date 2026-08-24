@@ -307,15 +307,89 @@
 
   /* ------------------------------------------------------------- transcript */
 
-  function transcriptSegments() {
-    const nodes = document.querySelectorAll('ytd-transcript-segment-renderer');
+  function transcriptPanel() {
+    return document.querySelector(
+      'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"], ' +
+      'ytd-engagement-panel-section-list-renderer[visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"], ' +
+      '[target-id*="transcript"]');
+  }
+
+  /* YouTube is migrating its renderers to view-models — the channel grid went from
+     gridVideoRenderer to lockupViewModel — so a single hardcoded tag name is a liability.
+     Try the known shapes in turn and report which one matched. */
+  const SEGMENT_SELECTORS = [
+    'ytd-transcript-segment-renderer',
+    'yt-transcript-segment-renderer',
+    'ytd-transcript-body-renderer [role="button"]',
+    '[class*="transcript-segment"]',
+    'ytd-transcript-segment-list-renderer > div',
+    'transcript-segment-view-model',
+    'yt-transcript-segment-view-model'
+  ];
+
+  function segmentsFrom(nodes) {
     return Array.from(nodes)
-      .map((n) => ({
-        time: text(n.querySelector('.segment-timestamp')),
-        text: text(n.querySelector('.segment-text')) ||
-          text(n.querySelector('yt-formatted-string:not(.segment-timestamp)'))
-      }))
-      .filter((seg) => seg.text);
+      .map((n) => {
+        const stamp = n.querySelector(
+          '.segment-timestamp, [class*="timestamp"], .ytTranscriptSegmentTimestamp');
+        let body = n.querySelector(
+          '.segment-text, [class*="segment-text"], .ytTranscriptSegmentText');
+        if (!body) {
+          body = Array.from(n.querySelectorAll('yt-formatted-string, span, div'))
+            .find((el) => el !== stamp && !el.contains(stamp) && text(el));
+        }
+        return { time: text(stamp), text: text(body) };
+      })
+      .filter((seg) => seg.text && seg.text !== seg.time);
+  }
+
+  function matchedSelector() {
+    for (const sel of SEGMENT_SELECTORS) {
+      if (segmentsFrom(document.querySelectorAll(sel)).length) return sel;
+    }
+    return null;
+  }
+
+  function transcriptSegments() {
+    for (const sel of SEGMENT_SELECTORS) {
+      const found = segmentsFrom(document.querySelectorAll(sel));
+      if (found.length) return found;
+    }
+    return [];
+  }
+
+  /* When nothing matches, describe what IS there. Guessing at renamed elements without
+     looking is how the last three DOM bugs happened. */
+  function probeTranscriptPanel() {
+    const panel = transcriptPanel();
+    if (!panel) return { panelFound: false };
+    const tags = {};
+    panel.querySelectorAll('*').forEach((el) => {
+      const t = el.tagName.toLowerCase();
+      if (t.includes('transcript') || t.includes('segment')) tags[t] = (tags[t] || 0) + 1;
+    });
+    const classes = {};
+    panel.querySelectorAll('[class]').forEach((el) => {
+      String(el.className || '').split(/\s+/).forEach((c) => {
+        if (/transcript|segment|timestamp/i.test(c)) classes[c] = (classes[c] || 0) + 1;
+      });
+    });
+    const leaves = Array.from(panel.querySelectorAll('*'))
+      .filter((el) => !el.children.length && text(el))
+      .slice(0, 8)
+      .map((el) => ({
+        tag: el.tagName.toLowerCase(),
+        cls: (String(el.className || '').slice(0, 40)) || null,
+        text: text(el).slice(0, 45)
+      }));
+    return {
+      panelFound: true,
+      visible: panel.offsetParent !== null,
+      innerChars: (panel.textContent || '').trim().length,
+      transcriptishTags: tags,
+      transcriptishClasses: classes,
+      sampleLeaves: leaves
+    };
   }
 
   /* ---------------------------------------------------- transcript diagnostic */
@@ -354,11 +428,6 @@
     return byText || null;
   }
 
-  function transcriptPanel() {
-    return document.querySelector(
-      'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]');
-  }
-
   function closeTranscriptPanel() {
     const panel = transcriptPanel();
     const close = panel && panel.querySelector(
@@ -372,6 +441,7 @@
     const already = transcriptSegments().length > 0;
     const panelWasOpen = already;
     let styled = null;
+    let clickedInfo = null;
 
     if (!already) {
       const btn = findShowTranscriptButton();
@@ -379,6 +449,11 @@
         return { name: hidden ? 'panel (hidden)' : 'panel', ok: false, ms: Date.now() - started,
                  reason: 'no "Show transcript" control found — video may have no captions' };
       }
+      clickedInfo = {
+        tag: btn.tagName.toLowerCase(),
+        label: btn.getAttribute('aria-label') || null,
+        text: (btn.textContent || '').trim().slice(0, 40)
+      };
       btn.click();
     }
 
@@ -407,8 +482,14 @@
 
     const ms = Date.now() - started;
     if (!segs.length) {
-      return { name: hidden ? 'panel (hidden)' : 'panel', ok: false, ms,
-               reason: 'panel opened but rendered no segments' };
+      return {
+        name: hidden ? 'panel (hidden)' : 'panel',
+        ok: false,
+        ms,
+        reason: 'panel opened but no selector matched any segments',
+        clicked: clickedInfo,
+        probe: probeTranscriptPanel()
+      };
     }
 
     const duration = videoDurationSeconds();
@@ -425,6 +506,7 @@
       ok: true,
       ms,
       segments: segs.length,
+      selector: matchedSelector(),
       firstTime: segs[0].time,
       lastTime: segs[segs.length - 1].time,
       durationSec: duration ? Math.round(duration) : null,
