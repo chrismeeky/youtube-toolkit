@@ -1,4 +1,4 @@
-/* YT Copy — injects per-video copy buttons and a multi-select bar into YouTube. */
+/* YouTube Toolkit — injects per-video copy buttons and a multi-select bar into YouTube. */
 (function () {
   'use strict';
 
@@ -256,7 +256,7 @@
     const btn = document.createElement('button');
     btn.className = 'ytc-btn';
     btn.type = 'button';
-    btn.title = 'Copy this video (YT Copy)';
+    btn.title = 'Copy this video (YouTube Toolkit)';
     btn.setAttribute('aria-label', 'Copy video details');
     btn.innerHTML =
       '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">' +
@@ -651,10 +651,6 @@
       n++;
     }
 
-    if (n !== lastCount) {
-      lastCount = n;
-      console.debug('[YT Copy] %d video card(s) ready', n);
-    }
     // Drop selections whose cards were recycled out of the DOM.
     for (const card of Array.from(selected.keys())) {
       if (!card.isConnected) selected.delete(card);
@@ -1063,10 +1059,6 @@
        forever with no retry. Treat a missing stats block as a failed read. */
     let stats = page && page.stats;
     if (!stats) stats = domStats(card);      // rendered page as a fallback source
-    if (page && !page.stats) {
-      console.warn('[YT Copy] page script is out of date (payload v%s). Reload this tab — an ' +
-        'extension reload does not replace the injected page script in open tabs.', page.v || 1);
-    }
     if (wantStats) renderMetrics(card, stats, videoId);
 
     /* The monetization lookup needs only the channel key, which comes from the DOM — so a
@@ -1314,7 +1306,6 @@
         t: Date.now(),
         tries: tries || 0
       };
-      console.debug('[YT Copy] subs %s -> %s', key, entry.text || 'not found (' + entry.reason + ')');
       subsByKey.set(key, entry);
       for (const c of cardsByKey.get(key) || []) {
         if (c.isConnected) renderBadge(c, entry);

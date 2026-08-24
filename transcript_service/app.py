@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transcript service for the YT Copy extension — runs locally or hosted.
+"""Transcript service for the YouTube Toolkit extension — runs locally or hosted.
 
 Same job as before: hand yt-dlp a video id, get back timestamped segments. What changed is
 that it can now run on a public host, which brings three problems the localhost-only version
@@ -376,7 +376,7 @@ def main():
     if not YTDLP:
         print("yt-dlp not found on PATH. Install it with:  pip install yt-dlp", file=sys.stderr)
     shown = "/k/<token>" if ACCESS_TOKEN else ""
-    print(f"YT Copy transcript service on http://{HOST}:{PORT}{shown}"
+    print(f"YouTube Toolkit transcript service on http://{HOST}:{PORT}{shown}"
           f"  (cookies={'yes' if COOKIE_FILE else 'no'}, proxy={'yes' if PROXY else 'no'})")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
 

@@ -228,7 +228,6 @@ async function getSubscribers(key, force) {
       };
       await chrome.storage.local.set({ ['subs:' + key]: entry });
       inflight.delete(key);
-      console.log('[YT Copy] %s -> %s', key, entry.text || 'NOT FOUND — ' + entry.reason);
       return entry;
     });
 
@@ -332,7 +331,6 @@ async function getMonetization(key, force) {
   if (subs !== null && subs < YPP_MIN_SUBS) {
     const entry = { state: 'not-eligible', checked: 0, withAds: 0, subs, t: Date.now(), v: CACHE_VERSION };
     await chrome.storage.local.set({ [id]: entry });
-    console.log('[YT Copy] monetization %s -> not eligible (%d subs)', key, subs);
     return entry;
   }
 
@@ -356,8 +354,6 @@ async function getMonetization(key, force) {
     v: CACHE_VERSION
   };
   await chrome.storage.local.set({ [id]: entry });
-  console.log('[YT Copy] monetization %s -> %s (%d/%d carried ad slots)',
-    key, entry.state, entry.withAds, entry.checked);
   return entry;
 }
 
@@ -425,7 +421,6 @@ async function transcriptFromHelper(id, helperUrl) {
    accepts. This path exists for when that isn't possible. */
 async function transcriptFor(id) {
   const out = await F.loadTranscript(id, fetch);
-  if (!out.ok) console.log('[YT Copy] transcript %s failed — %s', id, out.reason);
   return out;
 }
 

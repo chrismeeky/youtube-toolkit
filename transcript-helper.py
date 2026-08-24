@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local transcript helper for the YT Copy extension.
+"""Local transcript helper for the YouTube Toolkit extension.
 
 In-browser transcript extraction stopped being reliable: YouTube gates the caption URLs
 behind proof-of-origin tokens (they return HTTP 200 with an empty body) and rejects

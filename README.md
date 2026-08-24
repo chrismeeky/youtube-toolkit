@@ -1,4 +1,4 @@
-# YT Copy — Titles, Views & Dates
+# YouTube Toolkit — Titles, Views & Dates
 
 > **Transcripts read YouTube's own panel.** No helper, no server, nothing to install. The
 > button opens YouTube's transcript panel off-screen, reads the segments out of the page and
@@ -126,12 +126,12 @@ temporary state, not a verdict about the channel.
 
 ### If badges don't appear
 
-Two consoles tell you where it broke:
+The badge itself carries the reason — hover it. A dim badge reading `— subs` is a failed
+lookup and its tooltip says why (`HTTP 429`, `not in page`, a redirect); clicking it retries
+immediately. A spinner means the lookup is still running.
 
-- **Page console** (DevTools on YouTube) — `[YT Copy] subs @handle -> 183K subscribers`, or
-  `-> not found` with a reason. No line at all means no channel link was found on the card.
-- **Service worker console** (`chrome://extensions` → *service worker* under this extension) —
-  logs every lookup and why it failed: `HTTP 429`, `not in first 60KB`, `redirected to …`.
+The extension logs nothing to the console: a released build should be quiet in a page it does
+not own. If you need tracing while developing, add it locally rather than shipping it.
 
 A lookup that fails is cached as a failure for 6 hours; *Clear cache* in the popup resets it.
 

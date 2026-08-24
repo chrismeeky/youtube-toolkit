@@ -1,4 +1,4 @@
-/* YT Copy — injected UI
+/* YouTube Toolkit — injected UI
 
    Everything we inject lives in one row inside the card's text block. Nothing overlaps the
    thumbnail: YouTube's hover-preview player renders in a stacking context we can't outrank
