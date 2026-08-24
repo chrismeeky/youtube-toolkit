@@ -121,6 +121,30 @@
   });
 
 
+  $('diagTranscript').addEventListener('click', async () => {
+    status('Running… this opens and closes the transcript panel');
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !/youtube\.com\/watch/.test(tab.url || '')) {
+      status('Open a YouTube watch page first');
+      return;
+    }
+    chrome.tabs.sendMessage(tab.id, { type: 'ytc-diagnose-transcript' }, async (report) => {
+      if (chrome.runtime.lastError || !report) {
+        status('No response — reload the YouTube tab and retry');
+        return;
+      }
+      if (report.error) { status(report.error); return; }
+      const text = JSON.stringify(report, null, 2);
+      try {
+        await navigator.clipboard.writeText(text);
+        const winners = (report.results || []).filter((r) => r.ok).map((r) => r.name);
+        status(winners.length ? 'Copied. Worked: ' + winners.join(', ') : 'Copied. Nothing worked');
+      } catch (e) {
+        status('Ran — see the YouTube tab console');
+      }
+    });
+  });
+
   $('clearSubs').addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'ytc-clear-subs' }, (res) => {
       status(res ? `Cleared ${res.cleared} cached channel${res.cleared === 1 ? '' : 's'}` : 'Cache cleared');

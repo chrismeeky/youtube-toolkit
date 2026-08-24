@@ -318,6 +318,168 @@
       .filter((seg) => seg.text);
   }
 
+  /* ---------------------------------------------------- transcript diagnostic */
+
+  /* Temporary. The transcript feature is deprecated because every route we had either needed
+     a helper running locally or got blocked by IP. This measures which routes actually work
+     right now, on this machine, so the decision to rebuild (and which way) rests on evidence
+     rather than on the assumptions in the old code comments.
+
+     The panel route is the interesting one: YouTube renders the transcript in the page, on
+     the user's own session, so nothing can block it. Its risk is truncation — if the list is
+     virtualised, only the visible segments exist in the DOM and a partial transcript would
+     look complete. Hence the coverage check against the player's duration. */
+
+  function timeToSeconds(stamp) {
+    const raw = String(stamp || '').trim();
+    if (!raw) return null;                 // Number('') is 0, which would read as 0:00
+    const parts = raw.split(':').map(Number);
+    if (!parts.length || parts.some(isNaN)) return null;
+    return parts.reduce((acc, n) => acc * 60 + n, 0);
+  }
+
+  function videoDurationSeconds() {
+    const el = document.querySelector('video');
+    return el && isFinite(el.duration) && el.duration > 0 ? el.duration : null;
+  }
+
+  function findShowTranscriptButton() {
+    const direct = document.querySelector(
+      'ytd-video-description-transcript-section-renderer button, ' +
+      'button[aria-label*="transcript" i]');
+    if (direct) return direct;
+    // Older builds put it behind the "..." menu; match on the visible label instead.
+    const byText = Array.from(document.querySelectorAll('button, tp-yt-paper-item, yt-formatted-string'))
+      .find((el) => /show transcript/i.test((el.textContent || '').trim()));
+    return byText || null;
+  }
+
+  function transcriptPanel() {
+    return document.querySelector(
+      'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]');
+  }
+
+  function closeTranscriptPanel() {
+    const panel = transcriptPanel();
+    const close = panel && panel.querySelector(
+      'ytd-engagement-panel-title-header-renderer button[aria-label*="Close" i], ' +
+      'ytd-engagement-panel-title-header-renderer #visibility-button button');
+    if (close) close.click();
+  }
+
+  async function tryPanelRoute(hidden) {
+    const started = Date.now();
+    const already = transcriptSegments().length > 0;
+    const panelWasOpen = already;
+    let styled = null;
+
+    if (!already) {
+      const btn = findShowTranscriptButton();
+      if (!btn) {
+        return { name: hidden ? 'panel (hidden)' : 'panel', ok: false, ms: Date.now() - started,
+                 reason: 'no "Show transcript" control found — video may have no captions' };
+      }
+      btn.click();
+    }
+
+    // Suppress the panel visually without display:none, which can stop it rendering at all.
+    if (hidden) {
+      const panel = transcriptPanel();
+      if (panel) {
+        styled = panel.getAttribute('style') || '';
+        panel.setAttribute('style', styled + ';visibility:hidden;position:absolute;left:-9999px;');
+      }
+    }
+
+    let segs = [];
+    for (let i = 0; i < 40; i++) {          // up to 10s for the list to populate
+      segs = transcriptSegments();
+      if (segs.length) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    // Let a virtualised list settle before counting.
+    await new Promise((r) => setTimeout(r, 600));
+    segs = transcriptSegments();
+
+    const panel = transcriptPanel();
+    if (styled !== null && panel) panel.setAttribute('style', styled);
+    if (!panelWasOpen) closeTranscriptPanel();
+
+    const ms = Date.now() - started;
+    if (!segs.length) {
+      return { name: hidden ? 'panel (hidden)' : 'panel', ok: false, ms,
+               reason: 'panel opened but rendered no segments' };
+    }
+
+    const duration = videoDurationSeconds();
+    const lastSec = timeToSeconds(segs[segs.length - 1].time);
+    const coverage = duration && lastSec != null ? lastSec / duration : null;
+    const gap = duration && lastSec != null ? duration - lastSec : null;
+    /* Coverage alone is a bad test. Captions legitimately stop before the video ends —
+       trailing music, an outro card — so a 45s clip whose last cue is at 0:40 is complete at
+       89%. Virtualisation looks nothing like that: it leaves minutes or hours unaccounted
+       for. Require both a large proportional shortfall and a large absolute one. */
+    const truncated = coverage != null && gap != null && coverage < 0.75 && gap > 120;
+    return {
+      name: hidden ? 'panel (hidden)' : 'panel',
+      ok: true,
+      ms,
+      segments: segs.length,
+      firstTime: segs[0].time,
+      lastTime: segs[segs.length - 1].time,
+      durationSec: duration ? Math.round(duration) : null,
+      coverage: coverage == null ? null : Math.round(coverage * 100) + '%',
+      unaccountedSec: gap == null ? null : Math.round(gap),
+      truncated,
+      chars: segs.reduce((n, s2) => n + s2.text.length, 0)
+    };
+  }
+
+  async function timed(name, fn) {
+    const started = Date.now();
+    try {
+      const out = await fn();
+      const ms = Date.now() - started;
+      if (out && out.ok && (out.segments || []).length) {
+        const segs = out.segments;
+        return { name, ok: true, ms, segments: segs.length,
+                 firstTime: segs[0].time, lastTime: segs[segs.length - 1].time,
+                 chars: segs.reduce((n, s2) => n + (s2.text || '').length, 0) };
+      }
+      return { name, ok: false, ms, reason: (out && out.reason) || 'no segments' };
+    } catch (e) {
+      return { name, ok: false, ms: Date.now() - started, reason: 'threw: ' + (e && e.message) };
+    }
+  }
+
+  async function runTranscriptDiagnostic() {
+    const id = (new URL(location.href)).searchParams.get('v');
+    if (!id) return { error: 'not on a watch page' };
+
+    const results = [];
+    results.push(await tryPanelRoute(false));
+    results.push(await tryPanelRoute(true));
+
+    const [auth, page] = await Promise.all([sapisidHash(), pageData()]);
+    results.push(await timed('innertube (in page)',
+      () => F.loadTranscript(id, (url, init) => fetch(url, init), { auth, page })));
+    results.push(await timed('background fetch', () => askBackgroundTranscript(id)));
+    results.push(await timed('local helper', () => askBackground('ytc-transcript-helper', id)));
+
+    const report = {
+      video: id,
+      title: (document.querySelector('h1 yt-formatted-string, h1') || {}).textContent || '',
+      durationSec: videoDurationSeconds() ? Math.round(videoDurationSeconds()) : null,
+      hasAuth: !!auth,
+      pagePayloadV: page && page.v,
+      results
+    };
+    console.log('%c[YT Copy] transcript diagnostic', 'font-weight:bold');
+    console.table(results);
+    console.log(report);
+    return report;
+  }
+
   function askBackgroundTranscript(id) {
     return askBackground('ytc-transcript', id);
   }
@@ -1558,6 +1720,9 @@
       case 'ytc-copy-selection':
         respondWith(Array.from(selected.values()), msg, sendResponse);
         break;
+      case 'ytc-diagnose-transcript':
+        runTranscriptDiagnostic().then(sendResponse);
+        return true;
       case 'ytc-copy-page':
         respondWith(pageVideos(), msg, sendResponse);
         break;
