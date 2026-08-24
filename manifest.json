@@ -10,9 +10,7 @@
   ],
   "host_permissions": [
     "https://*.youtube.com/*",
-    "https://i.ytimg.com/*",
-    "http://127.0.0.1/*",
-    "http://localhost/*"
+    "https://i.ytimg.com/*"
   ],
   "action": {
     "default_popup": "popup.html",

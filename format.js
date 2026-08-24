@@ -22,8 +22,7 @@
        block. The InnerTube and yt-dlp routes it replaced are dead; see transcriptViaPanel. */
     showTranscript: true,         // transcript button on watch pages
     transcriptTimestamps: false,  // prefix each line with its timestamp
-    transcriptSave: false,        // save as .txt instead of copying
-    helperUrl: 'http://127.0.0.1:8731'   // local yt-dlp transcript helper
+    transcriptSave: false         // save as .txt instead of copying
   };
 
   const SEPARATORS = [

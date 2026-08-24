@@ -392,31 +392,6 @@ async function downloadThumbnail(video) {
 
 /* ---------------------------------------------------------------- transcript */
 
-/* The local yt-dlp helper (transcript-helper.py). YouTube gates its caption endpoints
-   behind proof-of-origin tokens no extension can mint, so this is the only path that works
-   consistently. If the helper isn't running the connection is refused immediately, costing
-   nothing before the in-browser attempts. */
-async function transcriptFromHelper(id, helperUrl) {
-  const base = (helperUrl || '').trim().replace(/\/$/, '');
-  if (!base) return { ok: false, reason: 'no helper configured' };
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 120000);
-  try {
-    const res = await fetch(base + '/transcript?v=' + encodeURIComponent(id), {
-      signal: controller.signal
-    });
-    if (!res.ok) return { ok: false, reason: 'helper ' + res.status };
-    const data = await res.json();
-    if (data.ok && (data.segments || []).length) return { ok: true, segments: data.segments };
-    return { ok: false, reason: 'helper: ' + (data.reason || 'no segments') };
-  } catch (e) {
-    return { ok: false, reason: 'helper unreachable' };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /* Fallback only: the content script tries first from the page's own origin, which InnerTube
    accepts. This path exists for when that isn't possible. */
 async function transcriptFor(id) {
@@ -445,13 +420,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     Promise.all(videos.map(downloadThumbnail)).then((results) => {
       const saved = results.filter((r) => r.ok).length;
       sendResponse({ saved, failed: results.length - saved });
-    });
-    return true;
-  }
-  if (msg.type === 'ytc-transcript-helper') {
-    chrome.storage.sync.get('helperUrl').then((store) => {
-      const url = store.helperUrl || 'http://127.0.0.1:8731';
-      transcriptFromHelper(msg.id, url).then(sendResponse);
     });
     return true;
   }
