@@ -6,9 +6,11 @@
   const $ = (id) => document.getElementById(id);
   let settings = F.merge(null);
 
+  /* The transcript toggles and the helper URL are gone from popup.html — the feature is
+     deprecated. Their stored values are left untouched so nothing is lost if it comes back;
+     they simply have no control here any more. */
   const TOGGLES = ['csvHeader', 'numericViews', 'absoluteDate', 'quoteTitle', 'showButtons',
-    'toast', 'showSubs', 'showRatio', 'showMoney', 'showStats', 'showThumb', 'showTranscript',
-    'transcriptTimestamps', 'transcriptSave'];
+    'toast', 'showSubs', 'showRatio', 'showMoney', 'showStats', 'showThumb'];
 
   function buildFieldChecks() {
     $('fields').innerHTML = F.FIELD_ORDER.map(
@@ -35,8 +37,7 @@
     $('layout').value = settings.layout;
     $('separator').value = encodeURIComponent(settings.separator);
     $('customTemplate').value = settings.customTemplate;
-    $('helperUrl').value = settings.helperUrl;
-    for (const id of TOGGLES) $(id).checked = !!settings[id];
+    for (const id of TOGGLES) { const el = $(id); if (el) el.checked = !!settings[id]; }
 
     const isCustom = settings.layout === 'custom';
     const isCsv = settings.layout === 'csv';
@@ -62,8 +63,7 @@
     settings.layout = $('layout').value;
     settings.separator = decodeURIComponent($('separator').value);
     settings.customTemplate = $('customTemplate').value;
-    settings.helperUrl = $('helperUrl').value.trim();
-    for (const id of TOGGLES) settings[id] = $(id).checked;
+    for (const id of TOGGLES) { const el = $(id); if (el) settings[id] = el.checked; }
   }
 
   document.addEventListener('input', (e) => {
@@ -120,18 +120,6 @@
     }
   });
 
-  $('testHelper').addEventListener('click', async () => {
-    const base = ($('helperUrl').value || '').trim().replace(/\/$/, '');
-    if (!base) { status('Set a helper URL first'); return; }
-    status('Checking…');
-    try {
-      const res = await fetch(base + '/health');
-      const data = await res.json();
-      status(data.ok ? `Helper running (yt-dlp ${data.ytdlp || '?'})` : 'Helper up, yt-dlp missing');
-    } catch (e) {
-      status('Helper not running');
-    }
-  });
 
   $('clearSubs').addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: 'ytc-clear-subs' }, (res) => {

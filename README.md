@@ -1,5 +1,14 @@
 # YT Copy — Titles, Views & Dates
 
+> **Transcripts are deprecated (August 2026).** The button and its settings have been removed
+> from the extension UI. YouTube gates caption URLs behind proof-of-origin tokens an extension
+> cannot mint, so the feature depended on a local yt-dlp helper being run by hand — and hosting
+> that helper does not solve it either: YouTube blocks datacenter IPs, measured at 1 of 4 videos
+> succeeding from Render. Nothing was deleted. `transcript-helper.py`, `transcript_service/`
+> and `F.loadTranscript` all still work; set `TRANSCRIPT_UI = true` in `content.js` to restore
+> the button. Reading YouTube's own rendered transcript panel, which needs no server at all, is
+> the route worth trying if it comes back.
+
 Chrome extension (Manifest V3) that copies YouTube video details as clean, formatted text.
 Pick which parts you want — title, view count, time posted, channel, URL — and how the
 clipboard output is laid out.

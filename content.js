@@ -4,6 +4,7 @@
 
   const F = window.YTCopyFormat;
   let settings = F.merge(null);
+  const TRANSCRIPT_UI = false;   // deprecated — see DEFAULTS.showTranscript in format.js
   let selectMode = false;
   const selected = new Map(); // card element -> video object
 
@@ -517,7 +518,8 @@
       tools.insertBefore(thumb, btn ? btn.nextSibling : null);
     }
     // Only on the watch page: a transcript needs the video open to read it.
-    if (isWatchCard(card) && !tools.querySelector('.ytc-transcript')) {
+    // Deprecated, so the button is not built at all rather than being built and hidden.
+    if (TRANSCRIPT_UI && isWatchCard(card) && !tools.querySelector('.ytc-transcript')) {
       const tr = makeTranscriptButton(card);
       const thumb = tools.querySelector('.ytc-thumb');
       tools.insertBefore(tr, thumb ? thumb.nextSibling : null);
@@ -1500,7 +1502,10 @@
   function applySettings() {
     document.documentElement.classList.toggle('ytc-hide-buttons', !settings.showButtons);
     document.documentElement.classList.toggle('ytc-hide-thumbs', !settings.showThumb);
-    document.documentElement.classList.toggle('ytc-hide-transcript', !settings.showTranscript);
+    // Deprecated feature: the stored preference is ignored so returning users who had it
+    // enabled are not left with a button that mostly fails. Flip TRANSCRIPT_UI to restore.
+    document.documentElement.classList.toggle('ytc-hide-transcript',
+      !(TRANSCRIPT_UI && settings.showTranscript));
     refreshBadges();
   }
 
