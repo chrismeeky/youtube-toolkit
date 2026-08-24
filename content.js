@@ -358,6 +358,28 @@
     return [];
   }
 
+  /* Extraction is a separate problem from finding the nodes. 181 segments totalling 832
+     characters means the timestamps are being read as the text, so dump one node's real
+     structure rather than guessing at another pair of class names. */
+  function describeSegmentNode() {
+    const sel = matchedSelector();
+    if (!sel) return null;
+    const node = document.querySelector(sel);
+    if (!node) return null;
+    const children = Array.from(node.querySelectorAll('*')).slice(0, 12).map((el) => ({
+      tag: el.tagName.toLowerCase(),
+      cls: String(el.className || '').slice(0, 60) || null,
+      leaf: !el.children.length,
+      text: text(el).slice(0, 50)
+    }));
+    return {
+      selector: sel,
+      outerHTML: (node.outerHTML || '').slice(0, 600),
+      wholeText: text(node).slice(0, 80),
+      children
+    };
+  }
+
   /* When nothing matches, describe what IS there. Guessing at renamed elements without
      looking is how the last three DOM bugs happened. */
   function probeTranscriptPanel() {
@@ -507,6 +529,8 @@
       ms,
       segments: segs.length,
       selector: matchedSelector(),
+      sampleSegments: segs.slice(0, 3),
+      segmentShape: describeSegmentNode(),
       firstTime: segs[0].time,
       lastTime: segs[segs.length - 1].time,
       durationSec: duration ? Math.round(duration) : null,
