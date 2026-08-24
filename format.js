@@ -16,6 +16,7 @@
     showSubs: true,               // subscriber badge on each card
     showRatio: true,              // views ÷ channel average pill
     showMoney: true,              // monetization badge (inferred from ad placements)
+    showStats: true,              // views/hour, engagement and an earnings estimate
     showThumb: true,              // thumbnail download button
     showTranscript: true,         // transcript button on watch pages
     transcriptTimestamps: false,  // prefix each line with its timestamp
@@ -513,6 +514,81 @@
     return unverified || firstMatch(html, SUB_PATTERNS) || firstMatch(html, [LOOSE_PATTERN]);
   }
 
+  /* Views per hour, engagement and an earnings estimate.
+
+     VPH and engagement are exact: both reproduce NextLev's panel to the displayed digit
+     (10,626,093 views over 13,296 hours = 799/hr against their 799; 193,289 likes over
+     those views = 1.82% against their 1.8%). VPH is a LIFETIME rate, not current velocity —
+     a video averaging 799/hr across eighteen months is almost certainly not doing that now —
+     so the label says per hour and the tooltip says since publishing.
+
+     Earnings are not exact and cannot be. RPM is private to a channel's own YouTube Studio
+     and appears in no public page, so the figure here is views x an assumed rate. The rates
+     are the ones this project's research app already uses ($2/$5/$12 per 1,000), reused so
+     the two products agree rather than inventing a second set. */
+  const RPM_LOW = 2, RPM_MID = 5, RPM_HIGH = 12;
+
+  /* Length is the largest single lever on ad revenue, so a flat rate is wrong in both
+     directions — it overstates a three-minute upload and understates a long one.
+
+       8 minutes  mid-roll ads unlock. This is the step change; below it a video carries a
+                  pre-roll only, so the same views earn markedly less.
+       Shorts     a separate revenue pool entirely, paid per-view from an ad-share fund at
+                  roughly cents per 1,000 rather than dollars. Applying a long-form RPM to
+                  Shorts views is not an approximation, it is the wrong unit — so no figure
+                  is offered rather than a misleading one.
+
+     The 0.55 factor below is a judgement, not a measurement, in the same spirit as the
+     underlying $2/$5/$12 band. */
+  const MIDROLL_SECONDS = 480;         // 8 minutes
+  const SHORTS_MAX_SECONDS = 180;      // Shorts run up to 3 minutes
+  const NO_MIDROLL_FACTOR = 0.55;
+
+  function lengthBand(stats) {
+    const len = stats.lengthSeconds;
+    const isShort = stats.shortsPath === true ||
+      (stats.shortsEligible === true && len != null && len <= SHORTS_MAX_SECONDS);
+    if (isShort) return { band: 'shorts', factor: 0, label: 'Short' };
+    if (len == null) return { band: 'unknown', factor: 1, label: 'length unknown' };
+    if (len < MIDROLL_SECONDS) return { band: 'no-midroll', factor: NO_MIDROLL_FACTOR, label: 'under 8 min, no mid-rolls' };
+    return { band: 'midroll', factor: 1, label: '8 min or longer, mid-rolls' };
+  }
+
+  function videoMetrics(stats, now) {
+    if (!stats || !stats.views) return null;
+    const views = stats.views;
+    const at = stats.publishDate ? new Date(stats.publishDate).getTime() : NaN;
+    const hours = isNaN(at) ? null : Math.max(1, ((now || Date.now()) - at) / 3600000);
+    const len = lengthBand(stats);
+    const per = (rpm) => (views / 1000) * rpm * len.factor;
+    return {
+      views,
+      approx: stats.approx === true,
+      likes: stats.likes,
+      category: stats.category || '',
+      lengthSeconds: stats.lengthSeconds != null ? stats.lengthSeconds : null,
+      length: len,
+      // Below 1/hr the number is noise, and NextLev blanks it too.
+      vph: hours ? views / hours : null,
+      engagement: stats.likes != null && views > 0 ? (stats.likes / views) * 100 : null,
+      rpm: len.factor === 0 ? null : RPM_MID * len.factor,
+      earnings: len.factor === 0 ? null : { low: per(RPM_LOW), mid: per(RPM_MID), high: per(RPM_HIGH) }
+    };
+  }
+
+  function formatVph(vph) {
+    if (vph == null || vph < 1) return '-';
+    if (vph >= 1000) return compact(Math.round(vph));
+    return String(Math.round(vph));
+  }
+
+  function formatMoney(n) {
+    if (n == null) return '-';
+    if (n >= 1000) return '$' + compact(Math.round(n));
+    if (n >= 10) return '$' + Math.round(n);
+    return '$' + n.toFixed(n < 1 ? 2 : 1);
+  }
+
   /* Ad placements read out of a watch page's HTML, for the channel-page sampler which has
      no live player to ask. Mirrors page.js adSignal() so both paths agree. */
   function adSignalFromHtml(html) {
@@ -736,6 +812,7 @@
     merge, formatOne, formatList, viewsToNumber, relativeToISO, compact, parseSubscribers,
     isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken,
     parseChannelStats, adSignalFromHtml, monetizationVerdict,
+    videoMetrics, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH,
     safeFilename, formatTranscript, stampMs, decodeEntities, parseJson3, parseTimedTextXml,
     innertubeConfig, captionTracksFrom, pickCaptionTrack, transcriptSegmentsFrom, loadTranscript,
     playerResponseFrom

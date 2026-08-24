@@ -40,12 +40,59 @@
     };
   }
 
+  /* playerMicroformatRenderer carries views, likes, publish time and category together, and
+     it is already in the page — so views/hour and engagement cost nothing to compute. The
+     like count is the one that matters here: it is not in videoDetails, and reading it from
+     the DOM would mean parsing a localised, abbreviated button label. */
+  function videoStats(player) {
+    const mf = (player.microformat || {}).playerMicroformatRenderer || {};
+    const n = (v) => {
+      const parsed = parseInt(String(v == null ? '' : v).replace(/[^\d]/g, ''), 10);
+      return isNaN(parsed) ? null : parsed;
+    };
+    const vd = player.videoDetails || {};
+    return {
+      views: n(mf.viewCount != null ? mf.viewCount : vd.viewCount),
+      likes: n(mf.likeCount),
+      publishDate: mf.publishDate || mf.uploadDate || '',
+      category: mf.category || '',
+      lengthSeconds: n(mf.lengthSeconds != null ? mf.lengthSeconds : vd.lengthSeconds),
+      // Real Shorts report isShortsEligible true (checked against 36s and 74s Shorts, and
+      // against long videos which report false). The URL is definitive when it is present.
+      shortsEligible: mf.isShortsEligible === true,
+      shortsPath: /^\/shorts\//.test(location.pathname)
+    };
+  }
+
+  /* ytInitialPlayerResponse is assigned when the document loads and is NOT reliably rewritten
+     when YouTube navigates between videos without a reload — so on a soft navigation it can
+     still describe the previous video, or a video the caller is no longer looking at. The
+     player element answers for whatever is actually loaded right now, so ask it first and
+     keep the global only as a fallback for the moments before the player exists. */
+  function currentPlayerResponse() {
+    const el = document.getElementById('movie_player');
+    if (el && typeof el.getPlayerResponse === 'function') {
+      try {
+        const live = el.getPlayerResponse();
+        if (live && live.videoDetails && live.videoDetails.videoId) return live;
+      } catch (e) {
+        /* player not ready yet — fall through to the global */
+      }
+    }
+    return window.ytInitialPlayerResponse || {};
+  }
+
   function collect() {
     const cfg = window.ytcfg && typeof window.ytcfg.get === 'function' ? window.ytcfg : null;
-    const player = window.ytInitialPlayerResponse || {};
+    const player = currentPlayerResponse();
     const tracklist = (player.captions || {}).playerCaptionsTracklistRenderer || {};
     return {
       ads: adSignal(player),
+      stats: videoStats(player),
+      // Bumped when the payload shape changes, so the content script can tell a stale
+      // MAIN-world injection (which survives an extension reload in an open tab) from a
+      // genuine read failure.
+      v: 2,
       apiKey: cfg ? cfg.get('INNERTUBE_API_KEY') || '' : '',
       clientVersion: cfg ? cfg.get('INNERTUBE_CLIENT_VERSION') || '' : '',
       visitorData: cfg ? cfg.get('VISITOR_DATA') || '' : '',

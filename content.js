@@ -538,6 +538,7 @@
       n++;
     }
     decorateChannelHeader();
+    renderStatsCard();
     const watch = watchCard();
     if (watch) {
       decorate(watch);
@@ -665,6 +666,171 @@
     return 'views ÷ subscribers (channel average unavailable) — ' + label;
   }
 
+  /* ------------------------------------------------------------- video metrics */
+
+  /* A card in the watch sidebar rather than pills in the button row: these are five numbers
+     that want labels, and the row has no space for labelled values.
+
+     The sidebar is built by the SPA after navigation, so the mount point is resolved from a
+     fallback chain and re-checked on every scan — the same lesson as the channel header,
+     which stopped appearing because it latched onto a "handled" flag instead of verifying
+     the element was still there. */
+  const SIDEBAR_HOSTS = ['#secondary-inner', '#secondary', 'ytd-watch-flexy #secondary'];
+
+  const cardState = { videoId: '', metrics: null, outlier: null };
+
+  function sidebarHost() {
+    if (!/^\/watch/.test(location.pathname)) return null;
+    for (const sel of SIDEBAR_HOSTS) {
+      const el = document.querySelector(sel);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function cell(label, value, title, cls) {
+    return '<div class="ytc-cs__cell' + (cls ? ' ' + cls : '') + '"' +
+      (title ? ' title="' + String(title).replace(/"/g, '&quot;') + '"' : '') + '>' +
+      '<div class="ytc-cs__label">' + label + '</div>' +
+      '<div class="ytc-cs__value">' + value + '</div></div>';
+  }
+
+  function renderStatsCard() {
+    const onWatch = /^\/watch/.test(location.pathname);
+    const existing = document.querySelector('.ytc-cs');
+
+    /* Removal is reserved for actually leaving — anything else caused the flicker. scan()
+       runs on every DOM mutation, and the card used to be torn down whenever the sidebar was
+       mid-rebuild or the metrics had not landed yet, then rebuilt a moment later. So it now
+       persists while the page does, showing placeholders instead of vanishing. */
+    if (!onWatch || !settings.showStats) {
+      if (existing) existing.remove();
+      return;
+    }
+
+    const host = sidebarHost();
+    // Sidebar mid-rebuild: leave whatever is on screen and try again next scan.
+    if (!host && !existing) return;
+
+    let card = existing;
+    if (!card) {
+      card = document.createElement('div');
+      card.className = 'ytc-cs';
+    }
+    // Reattach the SAME element rather than replacing it, so a re-render moves the card
+    // instead of flashing a new one into place.
+    if (host && card.parentElement !== host) host.insertBefore(card, host.firstChild);
+
+    const m = cardState.metrics;
+    const ol = cardState.outlier;
+    const dash = '—';
+
+    const rows =
+      '<div class="ytc-cs__row">' +
+        cell('Outlier', ol == null ? dash : (ol >= 10 ? Math.round(ol) : Number(ol.toFixed(1))) + '×',
+          ol == null ? 'Waiting for the channel average'
+            : 'Views against this channel\'s lifetime average views per video') +
+        cell('VPH', m ? F.formatVph(m.vph) : dash,
+          !m ? 'Reading video data' : m.vph == null ? 'Publish date unavailable'
+            : Math.round(m.vph).toLocaleString() + ' views/hour averaged since publishing — a lifetime rate, not current velocity') +
+        cell('Engagement', m && m.engagement != null ? m.engagement.toFixed(1) + '%' : dash,
+          !m ? 'Reading video data' : m.engagement == null ? 'Likes hidden on this video'
+            : (m.likes || 0).toLocaleString() + ' likes on ' + m.views.toLocaleString() + ' views. Comments are not counted') +
+      '</div>' +
+      '<div class="ytc-cs__row">' +
+        cell('RPM (assumed)', !m ? dash : m.rpm == null ? 'n/a' : '$' + (Math.round(m.rpm * 100) / 100),
+          !m ? 'Reading video data'
+            : m.rpm == null
+              ? 'Shorts are paid from a separate ad-share pool, not a long-form RPM'
+              : 'Assumed rate for a video ' + m.length.label + '. Base band $' + F.RPM_LOW +
+                '-$' + F.RPM_HIGH + ', scaled for length. Real RPM is private to the channel' +
+                (m.category ? '. Category: ' + m.category : '')) +
+        cell('Est. earnings',
+          !m ? dash : m.earnings == null ? dash : F.formatMoney(m.earnings.mid),
+          !m ? 'Reading video data'
+            : m.earnings == null
+              ? 'Not estimated for Shorts. They earn from a revenue-share pool at roughly ' +
+                'cents per 1,000 views, so a long-form RPM would be the wrong unit entirely'
+              : F.formatMoney(m.earnings.low) + ' to ' + F.formatMoney(m.earnings.high) +
+                ' (' + m.length.label + '). Not real revenue') +
+      '</div>' +
+      '<div class="ytc-cs__note">' +
+        (m && m.earnings == null
+          ? 'Shorts earn from a separate pool — no long-form estimate applies.'
+          : 'Earnings are views x an assumed RPM, adjusted for length. Not actual revenue.') +
+        (m && m.approx ? ' Figures read from the page, so rounded.' : '') +
+      '</div>';
+
+    if (card.dataset.sig !== rows) {   // avoid rewriting the DOM on every scan
+      card.dataset.sig = rows;
+      card.innerHTML = rows;
+    }
+  }
+
+  /* Which video the card describes is decided by the address bar, not by whichever feature
+     happens to report first. Tying it to the metrics read meant a failed player read also
+     suppressed the outlier — which needs no player data at all, only the view count from the
+     DOM and the channel average from the background. */
+  function trackCardVideo(videoId) {
+    if (!videoId || cardState.videoId === videoId) return;
+    cardState.videoId = videoId;
+    cardState.outlier = null;          // both belong to the previous video
+    cardState.metrics = null;
+  }
+
+  function renderMetrics(card, stats, videoId) {
+    trackCardVideo(videoId);
+    const m = F.videoMetrics(stats, Date.now());
+    // Only overwrite on success: a read that came back empty should leave a card that is
+    // already showing this video's numbers alone rather than removing it.
+    if (m) cardState.metrics = m;
+    renderStatsCard();
+  }
+
+  /* Likes as rendered on the page. Abbreviated ("32K") and localised, so this is a fallback
+     for when the player response is unavailable, never the preferred source. */
+  function domLikes() {
+    const el = document.querySelector(
+      'like-button-view-model button[aria-label], #segmented-like-button button[aria-label], ' +
+      'ytd-toggle-button-renderer button[aria-label*="like" i]');
+    const label = el && el.getAttribute('aria-label');
+    const exact = label && label.match(/([\d][\d,.]{2,})/);
+    if (exact) {
+      const n = F.viewsToNumber(exact[1]);
+      if (n != null) return n;
+    }
+    const shown = el && text(el);
+    return shown ? F.viewsToNumber(shown) : null;
+  }
+
+  /* Everything the card needs can be read off the rendered page too. It is coarser — view
+     counts and timestamps are abbreviated there — but an approximate card beats five dashes
+     when the player response cannot be reached. */
+  function domStats(card) {
+    const meta = findMeta(card);
+    const views = F.viewsToNumber(meta.views);
+    if (!views) return null;
+    const iso = meta.date ? F.relativeToISO(meta.date, new Date()) : '';   // wants a Date, not a timestamp
+    return {
+      approx: true,
+      views,
+      likes: domLikes(),
+      publishDate: /^\d{4}-\d{2}-\d{2}/.test(iso) ? iso : '',
+      category: '',
+      lengthSeconds: null,
+      shortsEligible: false,
+      shortsPath: /^\/shorts\//.test(location.pathname)
+    };
+  }
+
+  /* The outlier needs the channel's lifetime average, which arrives from the background
+     lookup rather than the page, so it lands separately and updates the card in place. */
+  function setCardOutlier(videoId, value) {
+    if (cardState.videoId !== videoId) return;
+    cardState.outlier = value;
+    renderStatsCard();
+  }
+
   /* ------------------------------------------------------------- monetization */
 
   /* "Likely", not a verdict. Ad placements do not prove Partner Program membership — a
@@ -758,10 +924,12 @@
      new page has not necessarily rewritten yet. Asking for the ad slots too early returns the
      PREVIOUS video's answer, which is worse than no answer, so wait until the payload names
      the video actually in the address bar. */
-  async function freshPageAds(videoId, tries) {
-    for (let i = 0; i < (tries || 6); i++) {
+  async function freshPage(videoId, tries) {
+    // 5s, not 1.5s. A heavier watch page can take several seconds to rewrite the player
+    // global, and giving up early was leaving the metrics card off those videos entirely.
+    for (let i = 0; i < (tries || 20); i++) {
       const page = await pageData();
-      if (page && page.videoId === videoId) return page.ads || null;
+      if (page && page.videoId === videoId) return page;
       await new Promise((r) => setTimeout(r, 250));
     }
     return null;
@@ -770,39 +938,82 @@
   /* The watch page can answer this for free: page.js reads the ad slots the live player was
      handed, no network at all. Only when that comes back empty is it worth paying for the
      channel sample, because an empty result on one video says little on its own. */
+  /* One read of the live player serves both features, so they share a call rather than
+     asking page.js twice. Either can be switched off without disabling the other. */
   async function checkWatchMoney(card, videoId) {
-    if (!settings.showMoney) return;
+    const wantMoney = settings.showMoney;
+    const wantStats = settings.showStats;
+    if (!wantMoney && !wantStats) return;
+
+    trackCardVideo(videoId);
     const tools = ensureTools(card);
-    const el = ensureMoneyBadge(tools, false);
+    const el = wantMoney ? ensureMoneyBadge(tools, false) : null;
 
-    /* This video's own slots come free from the live player, but one video cannot settle a
-       channel-level question — a single forecasting slot is precisely the false positive
-       being avoided. So the verdict always comes from the channel sample, and the free
-       signal only enriches the tooltip with what this particular video shows. */
-    const ads = await freshPageAds(videoId);
-    if (card.dataset.ytcMoneyVid !== videoId) return;   // navigated away while waiting
-    const note = ads
-      ? (ads.placements > 0 ? 'This video carries ad slots' : 'This video carries none')
-      : '';
+    const page = await freshPage(videoId);
+    if (card.dataset.ytcMoneyVid !== videoId) return true;   // navigated away while waiting
 
-    const key = findChannelKey(card);
-    if (!key) { paintMoney(el, null, false, note); return; }
-    el.dataset.key = key;
-    requestMonetization(key, (res) => {
-      if (card.dataset.ytcMoneyVid !== videoId) return;
-      paintMoney(el, res, false, note);
-    });
+    /* A reply is not the same as a usable reply. An extension reload leaves the previous
+       page.js running in tabs that were already open, and that older build answers without a
+       stats block — which used to be counted as success, so the card sat on placeholders
+       forever with no retry. Treat a missing stats block as a failed read. */
+    let stats = page && page.stats;
+    if (!stats) stats = domStats(card);      // rendered page as a fallback source
+    if (page && !page.stats) {
+      console.warn('[YT Copy] page script is out of date (payload v%s). Reload this tab — an ' +
+        'extension reload does not replace the injected page script in open tabs.', page.v || 1);
+    }
+    if (wantStats) renderMetrics(card, stats, videoId);
+
+    /* The monetization lookup needs only the channel key, which comes from the DOM — so a
+       failed page read must not block it. Letting it do so is what left the badge spinning
+       forever on a video whose player data never arrived. */
+    if (el) {
+      /* This video's own slots come free from the live player, but one video cannot settle a
+         channel-level question — a single forecasting slot is precisely the false positive
+         being avoided. So the verdict always comes from the channel sample, and the free
+         signal only enriches the tooltip with what this particular video shows. */
+      const ads = page && page.ads;
+      const note = ads
+        ? (ads.placements > 0 ? 'This video carries ad slots' : 'This video carries none')
+        : '';
+      const key = findChannelKey(card);
+      if (!key) {
+        paintMoney(el, null, false, note);
+      } else {
+        el.dataset.key = key;
+        requestMonetization(key, (res) => {
+          if (card.dataset.ytcMoneyVid !== videoId) return;
+          paintMoney(el, res, false, note);
+        });
+      }
+    }
+
+    // Only the metrics half depends on the page read, so only it asks for a retry.
+    return !!stats;
   }
 
   /* Runs on every scan rather than only on a fresh card: YouTube reuses the same
      ytd-watch-metadata element across navigations, so "fresh" is false on the second video
      and the badge would keep showing the first one's verdict. */
+  const WATCH_MAX_TRIES = 5;
+
   function syncWatchMoney(card) {
-    if (!settings.showMoney) return;
+    if (!settings.showMoney && !settings.showStats) return;
     const id = findUrl(card).id;
     if (!id || card.dataset.ytcMoneyVid === id) return;
     card.dataset.ytcMoneyVid = id;
-    checkWatchMoney(card, id);
+    if (card.dataset.ytcMoneyFor !== id) {
+      card.dataset.ytcMoneyFor = id;
+      card.dataset.ytcMoneyTries = '0';
+    }
+    checkWatchMoney(card, id).then((ok) => {
+      if (ok || card.dataset.ytcMoneyVid !== id) return;
+      const tries = Number(card.dataset.ytcMoneyTries || 0) + 1;
+      card.dataset.ytcMoneyTries = String(tries);
+      // Release the marker so the next scan has another go, bounded so a page that never
+      // yields player data does not retry forever.
+      if (tries < WATCH_MAX_TRIES) delete card.dataset.ytcMoneyVid;
+    });
   }
 
   /* Channel pages have no player to read, so the only route is sampling recent uploads in
@@ -977,6 +1188,11 @@
         const shown = ratioLabel(viewsN / denom);
         parts.push('<span class="ytc-ratio ' + ratioClass(shown.value) + '" title="' +
           ratioTitle(shown.value, avgViews) + '">' + shown.text + '</span>');
+      }
+      // Only the channel average is a real outlier; the subscriber fallback is a different
+      // measure and would be mislabelled in a cell headed "Outlier".
+      if (isWatchCard(card) && avgViews > 0 && viewsN != null) {
+        setCardOutlier(findUrl(card).id, viewsN / avgViews);
       }
       badge.innerHTML = parts.join('');
     }
