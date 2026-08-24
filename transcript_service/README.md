@@ -67,57 +67,59 @@ Genuinely free, no credit card, and no spin-down-after-15-minutes penalty.
    yt-dlp endpoint is a free downloader for whoever finds it.
 4. Your base URL is `https://<you>-<space>.hf.space/k/<ACCESS_TOKEN>`.
 
-## Deploy: Render (no Docker)
+## Deploy: Render (native Python, no Docker)
 
-Render's native Python runtime is enough — the Dockerfile is only there for hosts that need
-one. Two settings are not defaults and will otherwise fail the build.
+No separate repository is needed. Render's **Root Directory** setting points at a subfolder,
+so this folder deploys on its own and the extension code beside it is ignored.
 
-1. **New → Web Service**, connect the repo.
-2. **Root Directory: `transcript_service`** — everything below is relative to this folder.
-   Skip it and Render looks for `requirements.txt` at the repo root and finds nothing.
+1. **New → Web Service**, connect this GitHub repo.
+2. **Root Directory: `transcript_service`** — without this, Render looks at the repo root and
+   finds no Python project.
 3. **Language: Python 3.**
 4. **Build Command:** `pip install -r requirements.txt`
 5. **Start Command:** `python app.py`
 6. **Instance type: Free.**
-7. **Health Check Path: `/healthz`** — that route sits outside the token check. Every other
-   path answers 404 without the token, which Render reads as a failed deploy.
+7. **Health Check Path: `/healthz`.** That route sits outside the token check on purpose.
+   With `ACCESS_TOKEN` set every other path answers 404, which Render reads as a failed
+   deploy and restarts in a loop.
 8. **Environment variables:**
 
    | key | value |
    | --- | --- |
-   | `ACCESS_TOKEN` | `openssl rand -hex 24` |
-   | `MAX_CONCURRENCY` | `1` — the free instance has 512 MB, and two yt-dlp runs can exhaust it |
-   | `PYTHON_VERSION` | `3.12` (optional; pins the runtime) |
+   | `ACCESS_TOKEN` | output of `openssl rand -hex 24` |
+   | `MAX_CONCURRENCY` | `1` — the free instance has 512 MB and two yt-dlp runs can exhaust it |
+   | `PYTHON_VERSION` | `3.12.6` (optional; pins the interpreter) |
 
-   `PORT` is injected by Render and already honoured — do not set it.
-9. Deploy. Your helper URL is `https://<service>.onrender.com/k/<ACCESS_TOKEN>`; paste it,
-   token included, into the extension popup's **Helper** field.
+   Do **not** set `PORT` — Render injects it and `app.py` already honours it.
+9. Deploy, then check it before touching the extension:
 
-yt-dlp installs from `requirements.txt` as a normal package. `app.py` invokes it by console
-script when that is on PATH and falls back to `python -m yt_dlp` when it is not, so the
-native runtime works without any PATH fiddling.
+   ```bash
+   curl https://<service>.onrender.com/healthz              # {"ok": true}
+   curl https://<service>.onrender.com/k/<token>/health     # {"ok": true, "ytdlp": "..."}
+   ```
 
-Verify without the extension:
+10. Put `https://<service>.onrender.com/k/<ACCESS_TOKEN>` — the whole string, token included —
+    into the extension popup's **Helper** field.
 
-```bash
-curl https://<service>.onrender.com/healthz              # {"ok": true}
-curl https://<service>.onrender.com/k/<token>/health     # yt-dlp version
-```
+`yt-dlp` is installed from `requirements.txt` as a normal dependency. The console script is
+not always on PATH under this runtime, so `app.py` falls back to `python -m yt_dlp`; the
+`/health` response reports the version it resolved either way.
 
 ### What the free tier costs you
 
-Free instances **sleep after ~15 minutes idle**, and waking one takes the better part of a
-minute. That lands on top of the yt-dlp fetch, and the extension gives up at 120 s, so the
-first transcript after an idle period can time out where a second attempt succeeds.
+Free instances **sleep after ~15 minutes idle** and take the better part of a minute to wake.
+That lands on top of the yt-dlp fetch, and the extension gives up at 120 s, so the first
+transcript after an idle period can time out where a retry succeeds.
 
-Expect YouTube to challenge the requests as well: Render egress is datacenter IP space, which
-is exactly what the bot checks target. `YTDLP_COOKIES_B64` and `YTDLP_PROXY` are the levers,
-and neither is guaranteed — see the warning at the top of this file.
+Expect YouTube to challenge the requests too: Render egress is datacenter IP space, exactly
+what the bot checks target. `YTDLP_COOKIES_B64` and `YTDLP_PROXY` are the levers, and neither
+is guaranteed — see the warning at the top of this file.
 
-## Deploy: Koyeb
+## Deploy: Docker (Render, Koyeb, Spaces)
 
-Same image. New Service → **Dockerfile**, set the work directory to `transcript_service`, add
-`ACCESS_TOKEN` as a secret. `$PORT` is injected and already honoured.
+The Dockerfile is still here if you prefer it. On Render choose the **Docker** runtime with
+the same Root Directory; on Koyeb, New Service → **Dockerfile** with the work directory set to
+`transcript_service`. Both inject `$PORT`, which `app.py` honours.
 
 ## Configuration
 
