@@ -328,29 +328,44 @@
   ];
 
   const STAMP_RE = /^\d{1,2}:\d{2}(?::\d{2})?$/;
+  /* The screen-reader duration label that sits beside the timestamp: "9 seconds",
+     "1 minute, 30 seconds", "1 hour, 2 minutes". Visually hidden, but textContent picks it
+     up, which is how "9 secondsWelcome back to..." reached the caption text. */
+  const A11Y_DURATION_RE =
+    /^\s*\d+\s+(?:hour|minute|second)s?(?:\s*(?:,|and)\s*\d+\s+(?:hour|minute|second)s?)*\s*/i;
 
-  /* Identify the parts by shape, not by class name.
+  /* Identify the parts by shape and role, not by class name.
 
      YouTube renamed these elements out from under us once already — the panel moved to
-     transcript-segment-view-model — and the previous extraction, which keyed on
-     .segment-timestamp and .segment-text, silently degraded rather than failing: it returned
-     181 segments of about 4.6 characters each, which was the timestamps being read as the
-     caption text.
+     transcript-segment-view-model — and the previous extraction, keyed on .segment-timestamp
+     and .segment-text, degraded silently rather than failing: 181 segments of about 4.6
+     characters each, which was the timestamps being read as the captions.
 
-     A timestamp is recognisable on sight: a leaf node reading m:ss or h:mm:ss. Whatever
-     remains of the segment's text once that is removed is the caption. No class name is
-     involved, so the next rename cannot quietly hollow this out. */
+     The real markup is three leaves: an aria-hidden timestamp, a screen-reader duration
+     label, and the caption in a span carrying role="text". role is the most stable handle
+     of the three — it describes what the element IS, where class names describe how it is
+     currently built — so prefer it, and fall back to subtracting the recognisable parts
+     from the segment's whole text when it is absent. */
   function segmentsFrom(nodes) {
     return Array.from(nodes)
       .map((n) => {
         const whole = text(n);
         if (!whole) return null;
-        const stampEl = Array.from(n.querySelectorAll('*'))
-          .find((el) => !el.children.length && STAMP_RE.test(text(el)));
+
+        const leaves = Array.from(n.querySelectorAll('*')).filter((el) => !el.children.length);
+        const stampEl = leaves.find((el) => STAMP_RE.test(text(el)));
         const time = stampEl ? text(stampEl) : '';
-        let body = whole;
-        if (time) {
-          body = whole.startsWith(time) ? whole.slice(time.length) : whole.replace(time, '');
+
+        const spoken = n.querySelector('[role="text"]');
+        let body;
+        if (spoken && text(spoken)) {
+          body = text(spoken);
+        } else {
+          body = whole;
+          if (time) {
+            body = body.startsWith(time) ? body.slice(time.length) : body.replace(time, '');
+          }
+          body = body.replace(A11Y_DURATION_RE, '');
         }
         body = body.trim();
         return { time, text: body };
