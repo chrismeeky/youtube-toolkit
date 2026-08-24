@@ -1233,6 +1233,7 @@
 
   /* No channel to look up: still show something, so a blank corner never looks like a bug. */
   function renderEmpty(card, why) {
+    if (subsCountRedundant(card)) return;
     const badge = makeBadge(card);
     badge.dataset.key = '';
     badge.classList.remove('ytc-subs--loading', 'ytc-subs--failed');
@@ -1242,6 +1243,7 @@
   }
 
   function renderLoading(card, retrying) {
+    if (subsCountRedundant(card) && !settings.showRatio) return;
     const badge = makeBadge(card);
     badge.dataset.key = findChannelKey(card);
     badge.classList.remove('ytc-subs--failed');
@@ -1255,6 +1257,15 @@
   /* entry is undefined while a lookup is still in flight, {text} once it lands, and
      {text: null, reason} when it failed — a failure gets a dim badge rather than nothing,
      so "unavailable" never looks like "still loading". */
+  /* YouTube prints the subscriber count itself on a watch page, and on a channel page every
+     card belongs to the same channel, so the number is either duplicated or repeated down the
+     grid. Suppress it in both places — but only the number. The lookup still runs, because
+     the outlier ratio is computed from the channel's lifetime average views, which comes back
+     with it. */
+  function subsCountRedundant(card) {
+    return isWatchCard(card) || !!channelKeyFromLocation();
+  }
+
   function renderBadge(card, entry) {
     if (!entry) return;
     const badge = makeBadge(card);
@@ -1262,6 +1273,7 @@
     badge.classList.remove('ytc-subs--loading');
 
     if (!entry.text) {
+      if (subsCountRedundant(card)) { badge.remove(); return; }
       badge.classList.add('ytc-subs--failed');
       const more = (entry.tries || 0) < RETRY_DELAYS.length &&
         F.isRetryableFailure(entry.reason);
@@ -1273,7 +1285,10 @@
       badge.classList.remove('ytc-subs--failed');
       badge.title = entry.text;
       const subsN = F.viewsToNumber(entry.text);
-      const parts = ['<span class="ytc-subs__n">' + (F.compact(subsN) || '—') + ' subs</span>'];
+      const hideCount = subsCountRedundant(card);
+      const parts = hideCount
+        ? []
+        : ['<span class="ytc-subs__n">' + (F.compact(subsN) || '—') + ' subs</span>'];
       const viewsN = F.viewsToNumber(findMeta(card).views);
       /* Prefer views ÷ the channel's lifetime average, which is what "outlier" means in
          every other tool (a 1.4M-view video on a channel averaging 1.56M is 0.9x, not the
@@ -1291,6 +1306,8 @@
       if (isWatchCard(card) && avgViews > 0 && viewsN != null) {
         setCardOutlier(findUrl(card).id, viewsN / avgViews);
       }
+      // With the count hidden and no ratio to show there is nothing left to render.
+      if (!parts.length) { badge.remove(); return; }
       badge.innerHTML = parts.join('');
     }
 
