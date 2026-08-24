@@ -1,0 +1,3 @@
+# Unpinned on purpose: YouTube changes its player constantly and yt-dlp ships fixes within
+# days. A rebuild should pick them up — pinning here means pinning to a broken extractor.
+yt-dlp>=2025.1.1
