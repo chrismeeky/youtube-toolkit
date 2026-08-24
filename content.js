@@ -563,6 +563,7 @@
   const subsByKey = new Map();      // channel key -> { text, reason, t, tries }
   const cardsByKey = new Map();     // channel key -> Set of cards awaiting a badge
   const requested = new Set();
+  const statsRequested = new Set(); // watch-page channels whose lifetime totals are in flight
 
   function badgeOf(card) {
     return card.querySelector('.ytc-subs');
@@ -644,15 +645,22 @@
   function ratioClass(r) {
     if (r >= 10) return 'ytc-ratio--great';   // breakout
     if (r >= 3) return 'ytc-ratio--good';     // strong
-    if (r >= 1) return 'ytc-ratio--ok';       // beat the sub count
+    if (r >= 1) return 'ytc-ratio--ok';       // beat the channel's normal
     if (r >= 0.5) return 'ytc-ratio--low';    // soft
     return 'ytc-ratio--poor';                 // flopped
   }
 
-  function ratioTitle(r) {
+  /* Two different denominators can end up here, and they do not mean the same thing, so the
+     tooltip always says which one produced the number. */
+  function ratioTitle(r, avgViews) {
+    if (avgViews) {
+      const label = r >= 10 ? 'breakout' : r >= 3 ? 'strong' : r >= 1 ? 'above channel average'
+        : r >= 0.5 ? 'below channel average' : 'well below channel average';
+      return 'views ÷ channel average (' + (F.compact(avgViews) || avgViews) + ') — ' + label;
+    }
     const label = r >= 10 ? 'breakout' : r >= 3 ? 'strong' : r >= 1 ? 'above subscriber count'
       : r >= 0.5 ? 'below subscriber count' : 'well below subscriber count';
-    return 'views ÷ subscribers — ' + label;
+    return 'views ÷ subscribers (channel average unavailable) — ' + label;
   }
 
   /* No channel to look up: still show something, so a blank corner never looks like a bug. */
@@ -699,10 +707,16 @@
       const subsN = F.viewsToNumber(entry.text);
       const parts = ['<span class="ytc-subs__n">' + (F.compact(subsN) || '—') + ' subs</span>'];
       const viewsN = F.viewsToNumber(findMeta(card).views);
-      if (settings.showRatio && subsN > 0 && viewsN != null) {
-        const shown = ratioLabel(viewsN / subsN);
+      /* Prefer views ÷ the channel's lifetime average, which is what "outlier" means in
+         every other tool (a 1.4M-view video on a channel averaging 1.56M is 0.9x, not the
+         0.1x that dividing by 11.1M subscribers would suggest). The subscriber ratio stays
+         as the fallback for channels whose /about page did not yield totals. */
+      const avgViews = entry.stats && entry.stats.avgViews > 0 ? entry.stats.avgViews : 0;
+      const denom = avgViews || subsN;
+      if (settings.showRatio && denom > 0 && viewsN != null) {
+        const shown = ratioLabel(viewsN / denom);
         parts.push('<span class="ytc-ratio ' + ratioClass(shown.value) + '" title="' +
-          ratioTitle(shown.value) + '">' + shown.text + '</span>');
+          ratioTitle(shown.value, avgViews) + '">' + shown.text + '</span>');
       }
       badge.innerHTML = parts.join('');
     }
@@ -715,6 +729,7 @@
       const entry = {
         text: (res && res.text) || null,
         reason: (res && res.reason) || '',
+        stats: (res && res.stats) || null,   // lifetime totals, for the outlier denominator
         t: Date.now(),
         tries: tries || 0
       };
@@ -797,7 +812,35 @@
     const shown = card.querySelector('#owner-sub-count');
     const shownText = shown && shown.textContent.trim();
     if (shownText && /subscriber/i.test(shownText)) {
-      renderBadge(card, { text: shownText, reason: '', t: Date.now() });
+      /* The page gives us the count but never the lifetime totals, and the outlier ratio
+         needs those. Paint immediately with what the DOM has, then ask the background for
+         the totals and repaint once they land — otherwise this card silently falls back to
+         views ÷ subscribers while every other card on the site shows a true outlier. */
+      const watchKey = findChannelKey(card);
+      const cached = watchKey ? subsByKey.get(watchKey) : null;
+      renderBadge(card, {
+        text: shownText, reason: '', stats: (cached && cached.stats) || null, t: Date.now()
+      });
+      if (watchKey && !(cached && cached.stats) && !statsRequested.has(watchKey)) {
+        statsRequested.add(watchKey);
+        chrome.runtime.sendMessage({ type: 'ytc-subs', key: watchKey }, (res) => {
+          statsRequested.delete(watchKey);
+          if (chrome.runtime.lastError) return;
+          const stats = (res && res.stats) || null;
+          // Keep the DOM's count — it is the one we trust for this channel — and take only
+          // the totals from the lookup.
+          subsByKey.set(watchKey, {
+            text: (res && res.text) || shownText,
+            reason: (res && res.reason) || '',
+            stats,
+            t: Date.now(),
+            tries: 0
+          });
+          if (stats && card.isConnected) {
+            renderBadge(card, { text: shownText, reason: '', stats, t: Date.now() });
+          }
+        });
+      }
       return;
     }
 

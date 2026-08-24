@@ -512,6 +512,29 @@
     return unverified || firstMatch(html, SUB_PATTERNS) || firstMatch(html, [LOOSE_PATTERN]);
   }
 
+  /* The channel /about page carries lifetime totals that no other tab does:
+
+       "subscriberCountText":"11.1M subscribers","viewCountText":"5,562,325,195 views"
+       ... "videoCountText":"3,562 videos"
+
+     Those two totals give the average views per video, which is the denominator every other
+     tool means by "outlier" (a video's views against its channel's normal). The three keys
+     sit in one metadata block describing the requested channel, so unlike the subscriber
+     scrape there is no sibling-channel ambiguity to defend against here. */
+  function parseChannelStats(html) {
+    if (!html) return null;
+    const grab = (key) => {
+      // Tolerate the escaped forms YouTube emits inside nested JSON payloads.
+      const re = new RegExp('\\\\?"' + key + '\\\\?"\\s*:\\s*\\\\?"([^"\\\\]+)', 'i');
+      const m = re.exec(html);
+      return m ? m[1] : null;
+    };
+    const views = viewsToNumber(grab('viewCountText'));
+    const videos = viewsToNumber(grab('videoCountText'));
+    if (!views || !videos) return null;
+    return { totalViews: views, videoCount: videos, avgViews: Math.round(views / videos) };
+  }
+
   /* An anchored match with no header block around it: good enough to fall back on if the
      page never yields a header we recognise, but never preferred over one that does. */
   function parseAnchored(html) {
@@ -674,6 +697,7 @@
     DEFAULTS, SEPARATORS, LAYOUTS, FIELD_ORDER, FIELD_LABELS, SAMPLE,
     merge, formatOne, formatList, viewsToNumber, relativeToISO, compact, parseSubscribers,
     isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken,
+    parseChannelStats,
     safeFilename, formatTranscript, stampMs, decodeEntities, parseJson3, parseTimedTextXml,
     innertubeConfig, captionTracksFrom, pickCaptionTrack, transcriptSegmentsFrom, loadTranscript,
     playerResponseFrom

@@ -51,9 +51,14 @@ const MAX_ACTIVE = 2;                      // be gentle: channel pages are ~1MB 
 const GAP_MS = 150;
 /* Bumped whenever a parsing bug could have written wrong values: entries from older
    versions are ignored, so a bad count can't outlive the fix that corrects it. */
-const CACHE_VERSION = 4;
+const CACHE_VERSION = 5;  // entries now carry lifetime totals as well as the count
 
 const MAX_BYTES = 3000000;      // some channel pages bury the count deep in ytInitialData
+/* The /about cap is its own number because the lifetime totals sit at the very END of the
+   page — measured at 98-99% through, on every channel checked. A cap that truncates even
+   slightly loses them, which showed up as "channel average unavailable" on any channel
+   whose about page ran past the old 2MB limit (6 of 8 sampled, up to 2.8MB). */
+const ABOUT_BYTES = 5000000;
 const OVERLAP = 8000;
 
 let active = 0;
@@ -85,7 +90,7 @@ function channelPath(key) {
 
 /* Read only as far as the subscriber count, then abort — the rest of the page is
    megabytes of data we have no use for. */
-async function fetchOnce(key, url, credentials, cap) {
+async function fetchOnce(key, url, credentials, cap, wantStats) {
   let res;
   try {
     res = await fetch(url, { credentials, headers: { 'Accept-Language': 'en' } });
@@ -99,7 +104,7 @@ async function fetchOnce(key, url, credentials, cap) {
   if (!res.body) {
     const html = await res.text();
     const hit = F.parseSubscribers(html, true, key) || F.parseSubscribers(html, false, key);
-    return { text: hit, reason: hit ? '' : 'not in page' + landed };
+    return { text: hit, reason: hit ? '' : 'not in page' + landed, stats: F.parseChannelStats(html) };
   }
 
   const reader = res.body.getReader();
@@ -107,6 +112,7 @@ async function fetchOnce(key, url, credentials, cap) {
   let buf = '';
   let read = 0;
   let candidate = null;   // anchored match seen before any header block
+  let pendingSubs = null; // count found, still reading for the lifetime totals
   try {
     while (read < cap) {
       const { done, value } = await reader.read();
@@ -114,8 +120,16 @@ async function fetchOnce(key, url, credentials, cap) {
       read += value.length;
       buf += decoder.decode(value, { stream: true });
       // Header-anchored only while streaming: any other match could be another channel's.
-      const hit = F.parseSubscribers(buf, true, key);
-      if (hit) return { text: hit, reason: '' };
+      if (!pendingSubs) pendingSubs = F.parseSubscribers(buf, true, key);
+      if (pendingSubs) {
+        /* Only /about carries the lifetime totals, so only there is it worth reading past
+           the subscriber count to collect them — they sit in the same metadata block, so
+           that costs a little more of one page. On every other tab the totals will never
+           arrive, and waiting for them would mean streaming the whole document instead of
+           aborting the moment the count is in hand. */
+        const stats = wantStats ? F.parseChannelStats(buf) : null;
+        if (stats || !wantStats) return { text: pendingSubs, reason: '', stats };
+      }
       // Hold anything anchored as a fallback in case no header block ever shows up, since
       // the trim below will eventually carry it out of the buffer.
       if (!candidate) candidate = F.parseAnchored(buf);
@@ -133,8 +147,12 @@ async function fetchOnce(key, url, credentials, cap) {
   // channel we asked for — otherwise we'd reintroduce exactly the cross-channel mixups.
   const token = F.identityToken(key);
   const sawIdentity = token && buf.toLowerCase().includes(token);
-  const hit = F.parseSubscribers(buf, false, key) || (sawIdentity ? null : candidate);
-  return { text: hit, reason: hit ? '' : 'no count in ' + Math.round(read / 1024) + 'KB' + landed };
+  const hit = F.parseSubscribers(buf, false, key) || pendingSubs || (sawIdentity ? null : candidate);
+  return {
+    text: hit,
+    reason: hit ? '' : 'no count in ' + Math.round(read / 1024) + 'KB' + landed,
+    stats: F.parseChannelStats(buf)
+  };
 }
 
 /* Three shots at a channel, cheapest first. Cookieless keeps the request clean; cookies get
@@ -142,21 +160,27 @@ async function fetchOnce(key, url, credentials, cap) {
 function attempts(key) {
   const base = 'https://www.youtube.com/' + channelPath(key);
   return [
+    // /about leads because it is the only tab carrying viewCountText/videoCountText, the
+    // lifetime totals the outlier ratio needs — and it is the smallest of the three pages.
+    { url: base + '/about?hl=en', credentials: 'include', cap: ABOUT_BYTES, wantStats: true },
     { url: base + '?hl=en', credentials: 'omit', cap: MAX_BYTES },
-    { url: base + '?hl=en', credentials: 'include', cap: MAX_BYTES },
-    { url: base + '/about?hl=en', credentials: 'include', cap: 2000000 }
+    { url: base + '?hl=en', credentials: 'include', cap: MAX_BYTES }
   ];
 }
 
 async function fetchSubscribers(key) {
   const notes = [];
+  let stats = null;
   for (const a of attempts(key)) {
-    const out = await fetchOnce(key, a.url, a.credentials, a.cap);
-    if (out.text) return out;
+    const out = await fetchOnce(key, a.url, a.credentials, a.cap, a.wantStats);
+    // Only /about carries the totals, so a later attempt that finds the count must not
+    // discard what the first attempt already learned.
+    if (out.stats && !stats) stats = out.stats;
+    if (out.text) return { ...out, stats: out.stats || stats };
     notes.push((a.credentials === 'omit' ? 'plain' : a.url.includes('/about') ? 'about' : 'cookies') +
       ': ' + out.reason);
   }
-  return { text: null, reason: notes.join(' | ') };
+  return { text: null, reason: notes.join(' | '), stats };
 }
 
 async function readCache(key) {
@@ -164,7 +188,7 @@ async function readCache(key) {
   const store = await chrome.storage.local.get(id);
   const hit = store[id];
   if (!hit || hit.v !== CACHE_VERSION) return null;
-  const ttl = hit.text ? TTL_OK : failTtl(hit.reason);
+  const ttl = hit.text ? (hit.stats ? TTL_OK : TTL_HIDDEN) : failTtl(hit.reason);
   return Date.now() - hit.t > ttl ? null : hit;
 }
 
@@ -195,7 +219,13 @@ async function getSubscribers(key, force) {
   const job = lookupWithRetry(key)
     .catch((e) => ({ text: null, reason: 'failed: ' + e.message }))
     .then(async (out) => {
-      const entry = { text: out.text || null, reason: out.reason || '', t: Date.now(), v: CACHE_VERSION };
+      const entry = {
+        text: out.text || null,
+        reason: out.reason || '',
+        stats: out.stats || null,
+        t: Date.now(),
+        v: CACHE_VERSION
+      };
       await chrome.storage.local.set({ ['subs:' + key]: entry });
       inflight.delete(key);
       console.log('[YT Copy] %s -> %s', key, entry.text || 'NOT FOUND — ' + entry.reason);
@@ -278,7 +308,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg) return;
   if (msg.type === 'ytc-subs' && msg.key) {
     getSubscribers(msg.key, msg.force)
-      .then((entry) => sendResponse({ key: msg.key, text: entry.text, reason: entry.reason }))
+      .then((entry) => sendResponse({
+        key: msg.key, text: entry.text, reason: entry.reason, stats: entry.stats || null
+      }))
       .catch((e) => sendResponse({ key: msg.key, text: null, reason: String(e) }));
     return true;
   }
