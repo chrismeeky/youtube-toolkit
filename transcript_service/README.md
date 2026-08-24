@@ -67,35 +67,41 @@ Genuinely free, no credit card, and no spin-down-after-15-minutes penalty.
    yt-dlp endpoint is a free downloader for whoever finds it.
 4. Your base URL is `https://<you>-<space>.hf.space/k/<ACCESS_TOKEN>`.
 
-## Deploy: Render
+## Deploy: Render (no Docker)
 
-The repo already contains everything Render needs. Two settings matter and neither is the
-default, so they are worth getting right the first time.
+Render's native Python runtime is enough — the Dockerfile is only there for hosts that need
+one. Two settings are not defaults and will otherwise fail the build.
 
-1. **New → Web Service**, connect this GitHub repo.
-2. **Root Directory: `transcript_service`** — the Dockerfile lives in this folder, not at the
-   repo root. Leave this blank and the build fails with "no Dockerfile found".
-3. **Language / Runtime: Docker.** Render detects the Dockerfile once the root directory is
-   set. Do not pick Python — that path ignores the Dockerfile and looks for a start command.
-4. **Instance type: Free.**
-5. **Health Check Path: `/healthz`.** This route is deliberately outside the token check.
-   Every other path answers 404 without the token, which Render reads as a failed deploy.
-6. **Environment variables:**
+1. **New → Web Service**, connect the repo.
+2. **Root Directory: `transcript_service`** — everything below is relative to this folder.
+   Skip it and Render looks for `requirements.txt` at the repo root and finds nothing.
+3. **Language: Python 3.**
+4. **Build Command:** `pip install -r requirements.txt`
+5. **Start Command:** `python app.py`
+6. **Instance type: Free.**
+7. **Health Check Path: `/healthz`** — that route sits outside the token check. Every other
+   path answers 404 without the token, which Render reads as a failed deploy.
+8. **Environment variables:**
 
    | key | value |
    | --- | --- |
    | `ACCESS_TOKEN` | `openssl rand -hex 24` |
    | `MAX_CONCURRENCY` | `1` — the free instance has 512 MB, and two yt-dlp runs can exhaust it |
+   | `PYTHON_VERSION` | `3.12` (optional; pins the runtime) |
 
-   `PORT` is injected by Render and already honoured; do not set it yourself.
-7. Deploy. The base URL is `https://<service>.onrender.com/k/<ACCESS_TOKEN>` — paste that
-   whole string, token included, into the extension popup's **Helper** field.
+   `PORT` is injected by Render and already honoured — do not set it.
+9. Deploy. Your helper URL is `https://<service>.onrender.com/k/<ACCESS_TOKEN>`; paste it,
+   token included, into the extension popup's **Helper** field.
+
+yt-dlp installs from `requirements.txt` as a normal package. `app.py` invokes it by console
+script when that is on PATH and falls back to `python -m yt_dlp` when it is not, so the
+native runtime works without any PATH fiddling.
 
 Verify without the extension:
 
 ```bash
-curl https://<service>.onrender.com/healthz                 # {"ok": true}
-curl https://<service>.onrender.com/k/<token>/health        # yt-dlp version
+curl https://<service>.onrender.com/healthz              # {"ok": true}
+curl https://<service>.onrender.com/k/<token>/health     # yt-dlp version
 ```
 
 ### What the free tier costs you

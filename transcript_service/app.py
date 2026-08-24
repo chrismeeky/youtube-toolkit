@@ -21,6 +21,7 @@ where <prefix> is "" locally, or "/k/<ACCESS_TOKEN>" when a token is configured.
 """
 
 import base64
+import importlib.util
 import json
 import os
 import re
@@ -61,7 +62,25 @@ RATE_WINDOW = _int("RATE_WINDOW", 3600)      # seconds
 CACHE_SIZE = _int("CACHE_SIZE", 256)
 FETCH_TIMEOUT = _int("FETCH_TIMEOUT", 120)
 
-YTDLP = shutil.which("yt-dlp")
+def _resolve_ytdlp():
+    """How to invoke yt-dlp, as an argv prefix.
+
+    The console script is the obvious answer but not a dependable one off Docker: Render's
+    native Python runtime installs the package into a virtualenv whose bin directory is not
+    always on PATH for the process that ends up running this. Importing the module works
+    wherever pip put it, so fall back to that rather than reporting yt-dlp missing when it is
+    installed and merely unreachable by name.
+    """
+    exe = shutil.which("yt-dlp")
+    if exe:
+        return [exe]
+    if importlib.util.find_spec("yt_dlp") is not None:
+        return [sys.executable, "-m", "yt_dlp"]
+    return None
+
+
+YTDLP_CMD = _resolve_ytdlp()
+YTDLP = YTDLP_CMD is not None          # kept as a boolean for the local entry point's check
 VIDEO_ID = re.compile(r"^[\w-]{5,20}$")
 
 _slots = threading.BoundedSemaphore(max(1, MAX_CONCURRENCY))
@@ -158,9 +177,11 @@ def _redact(text):
 
 
 def _ytdlp_command(template, url):
-    cmd = [YTDLP, "--skip-download", "--write-subs", "--write-auto-subs",
-           "--sub-langs", SUB_LANGS, "--sub-format", "json3/vtt/best",
-           "--no-warnings", "--no-progress", "--output", template]
+    cmd = YTDLP_CMD + [
+        "--skip-download", "--write-subs", "--write-auto-subs",
+        "--sub-langs", SUB_LANGS, "--sub-format", "json3/vtt/best",
+        "--no-warnings", "--no-progress", "--output", template,
+    ]
     if COOKIE_FILE:
         cmd += ["--cookies", COOKIE_FILE]
     if PROXY:
@@ -316,7 +337,7 @@ class Handler(BaseHTTPRequestHandler):
             version = ""
             if YTDLP:
                 try:
-                    version = subprocess.run([YTDLP, "--version"], capture_output=True,
+                    version = subprocess.run(YTDLP_CMD + ["--version"], capture_output=True,
                                              text=True, timeout=30).stdout.strip()
                 except Exception:
                     version = "unknown"
