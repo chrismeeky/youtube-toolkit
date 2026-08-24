@@ -16,6 +16,7 @@ localhost. Same API the extension already speaks:
 ```
 GET <base>/transcript?v=VIDEO_ID   ->  {"ok": true, "segments": [{"time","text"}, ...]}
 GET <base>/health                  ->  {"ok": true, "ytdlp": "...", "cookies": bool}
+GET /healthz                       ->  {"ok": true}          (no token, for platform probes)
 ```
 
 `app.py` is shared with the local entry point (`../transcript-helper.py`), so there is one
@@ -66,14 +67,51 @@ Genuinely free, no credit card, and no spin-down-after-15-minutes penalty.
    yt-dlp endpoint is a free downloader for whoever finds it.
 4. Your base URL is `https://<you>-<space>.hf.space/k/<ACCESS_TOKEN>`.
 
-## Deploy: Render or Koyeb
+## Deploy: Render
 
-The same image works. Both inject `$PORT`, which `app.py` already honours.
+The repo already contains everything Render needs. Two settings matter and neither is the
+default, so they are worth getting right the first time.
 
-- **Render** → New **Web Service** → **Docker** runtime → add `ACCESS_TOKEN` as an
-  environment variable. Free instances sleep after ~15 minutes idle, so the first request
-  after a nap pays a cold start on top of the yt-dlp fetch.
-- **Koyeb** → New Service → **Dockerfile** → add `ACCESS_TOKEN` as a secret.
+1. **New → Web Service**, connect this GitHub repo.
+2. **Root Directory: `transcript_service`** — the Dockerfile lives in this folder, not at the
+   repo root. Leave this blank and the build fails with "no Dockerfile found".
+3. **Language / Runtime: Docker.** Render detects the Dockerfile once the root directory is
+   set. Do not pick Python — that path ignores the Dockerfile and looks for a start command.
+4. **Instance type: Free.**
+5. **Health Check Path: `/healthz`.** This route is deliberately outside the token check.
+   Every other path answers 404 without the token, which Render reads as a failed deploy.
+6. **Environment variables:**
+
+   | key | value |
+   | --- | --- |
+   | `ACCESS_TOKEN` | `openssl rand -hex 24` |
+   | `MAX_CONCURRENCY` | `1` — the free instance has 512 MB, and two yt-dlp runs can exhaust it |
+
+   `PORT` is injected by Render and already honoured; do not set it yourself.
+7. Deploy. The base URL is `https://<service>.onrender.com/k/<ACCESS_TOKEN>` — paste that
+   whole string, token included, into the extension popup's **Helper** field.
+
+Verify without the extension:
+
+```bash
+curl https://<service>.onrender.com/healthz                 # {"ok": true}
+curl https://<service>.onrender.com/k/<token>/health        # yt-dlp version
+```
+
+### What the free tier costs you
+
+Free instances **sleep after ~15 minutes idle**, and waking one takes the better part of a
+minute. That lands on top of the yt-dlp fetch, and the extension gives up at 120 s, so the
+first transcript after an idle period can time out where a second attempt succeeds.
+
+Expect YouTube to challenge the requests as well: Render egress is datacenter IP space, which
+is exactly what the bot checks target. `YTDLP_COOKIES_B64` and `YTDLP_PROXY` are the levers,
+and neither is guaranteed — see the warning at the top of this file.
+
+## Deploy: Koyeb
+
+Same image. New Service → **Dockerfile**, set the work directory to `transcript_service`, add
+`ACCESS_TOKEN` as a secret. `$PORT` is injected and already honoured.
 
 ## Configuration
 

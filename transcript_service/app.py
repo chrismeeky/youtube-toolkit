@@ -299,6 +299,13 @@ class Handler(BaseHTTPRequestHandler):
         route = urlparse(self.path)
         query = parse_qs(route.query)
 
+        # Liveness probe, deliberately outside the token check. A platform health check has
+        # no way to hold the token, and with ACCESS_TOKEN set every other path answers 404 —
+        # which reads as a failed deploy. This reveals nothing beyond "a server is here".
+        if route.path == "/healthz":
+            self._send(200, {"ok": True})
+            return
+
         ok, path = self.authorised(route.path, query)
         if not ok:
             # 404 rather than 401: an unauthenticated scanner learns nothing about what is here.
