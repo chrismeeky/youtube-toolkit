@@ -18,14 +18,9 @@
     showMoney: true,              // monetization badge (inferred from ad placements)
     showStats: true,              // views/hour, engagement and an earnings estimate
     showThumb: true,              // thumbnail download button
-    /* Deprecated. YouTube gates caption URLs behind proof-of-origin tokens an extension
-       cannot mint, so this needed a local yt-dlp helper to be running — and hosting that
-       helper does not work either, because YouTube blocks datacenter IPs (measured: 1 of 4
-       videos succeeded from Render). Rather than leave a button that fails for most people,
-       the UI is withdrawn. Everything behind it still works: transcript-helper.py, the
-       transcript_service deployment, and F.loadTranscript are all untouched, so setting
-       TRANSCRIPT_UI back to true restores the feature as it was. */
-    showTranscript: false,        // deprecated: see TRANSCRIPT_UI
+    /* Reads YouTube's own transcript panel in the page — no helper, no server, nothing to
+       block. The InnerTube and yt-dlp routes it replaced are dead; see transcriptViaPanel. */
+    showTranscript: true,         // transcript button on watch pages
     transcriptTimestamps: false,  // prefix each line with its timestamp
     transcriptSave: false,        // save as .txt instead of copying
     helperUrl: 'http://127.0.0.1:8731'   // local yt-dlp transcript helper

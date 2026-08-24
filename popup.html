@@ -55,10 +55,12 @@
     <label class="check"><input type="checkbox" id="showRatio" /> <span>Outlier score (views vs channel average)</span></label>
     <label class="check"><input type="checkbox" id="showMoney" /> <span>Monetization estimate (from ad slots — a signal, not a status)</span></label>
     <label class="check"><input type="checkbox" id="showStats" /> <span>Views/hour, engagement &amp; earnings estimate</span></label>
+    <label class="check"><input type="checkbox" id="showTranscript" /> <span>Show transcript button (watch pages)</span></label>
+    <label class="check"><input type="checkbox" id="transcriptTimestamps" /> <span>Include timestamps in transcripts</span></label>
+    <label class="check"><input type="checkbox" id="transcriptSave" /> <span>Save transcripts as .txt instead of copying</span></label>
     <p class="hint">
-      <button type="button" id="diagTranscript" class="linkbtn">Run transcript diagnostic</button>
-      — temporary: tests which transcript routes still work on the open video, and copies the
-      report to your clipboard.
+      Transcripts are read from YouTube's own transcript panel, which opens and closes
+      off-screen. Nothing is downloaded and no helper needs to be running.
     </p>
     <p class="hint">
       Read from each channel's page and cached for a week — the first video from a new

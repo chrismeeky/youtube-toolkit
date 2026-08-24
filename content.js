@@ -4,7 +4,7 @@
 
   const F = window.YTCopyFormat;
   let settings = F.merge(null);
-  const TRANSCRIPT_UI = false;   // deprecated — see DEFAULTS.showTranscript in format.js
+  const TRANSCRIPT_UI = true;    // restored: reads YouTube's own panel, no server involved
   let selectMode = false;
   const selected = new Map(); // card element -> video object
 
@@ -373,100 +373,12 @@
       .filter((seg) => seg && seg.text && !STAMP_RE.test(seg.text));
   }
 
-  function matchedSelector() {
-    for (const sel of SEGMENT_SELECTORS) {
-      if (segmentsFrom(document.querySelectorAll(sel)).length) return sel;
-    }
-    return null;
-  }
-
   function transcriptSegments() {
     for (const sel of SEGMENT_SELECTORS) {
       const found = segmentsFrom(document.querySelectorAll(sel));
       if (found.length) return found;
     }
     return [];
-  }
-
-  /* Extraction is a separate problem from finding the nodes. 181 segments totalling 832
-     characters means the timestamps are being read as the text, so dump one node's real
-     structure rather than guessing at another pair of class names. */
-  function describeSegmentNode() {
-    const sel = matchedSelector();
-    if (!sel) return null;
-    const node = document.querySelector(sel);
-    if (!node) return null;
-    const children = Array.from(node.querySelectorAll('*')).slice(0, 12).map((el) => ({
-      tag: el.tagName.toLowerCase(),
-      cls: String(el.className || '').slice(0, 60) || null,
-      leaf: !el.children.length,
-      text: text(el).slice(0, 50)
-    }));
-    return {
-      selector: sel,
-      outerHTML: (node.outerHTML || '').slice(0, 600),
-      wholeText: text(node).slice(0, 80),
-      children
-    };
-  }
-
-  /* When nothing matches, describe what IS there. Guessing at renamed elements without
-     looking is how the last three DOM bugs happened. */
-  function probeTranscriptPanel() {
-    const panel = transcriptPanel();
-    if (!panel) return { panelFound: false };
-    const tags = {};
-    panel.querySelectorAll('*').forEach((el) => {
-      const t = el.tagName.toLowerCase();
-      if (t.includes('transcript') || t.includes('segment')) tags[t] = (tags[t] || 0) + 1;
-    });
-    const classes = {};
-    panel.querySelectorAll('[class]').forEach((el) => {
-      String(el.className || '').split(/\s+/).forEach((c) => {
-        if (/transcript|segment|timestamp/i.test(c)) classes[c] = (classes[c] || 0) + 1;
-      });
-    });
-    const leaves = Array.from(panel.querySelectorAll('*'))
-      .filter((el) => !el.children.length && text(el))
-      .slice(0, 8)
-      .map((el) => ({
-        tag: el.tagName.toLowerCase(),
-        cls: (String(el.className || '').slice(0, 40)) || null,
-        text: text(el).slice(0, 45)
-      }));
-    return {
-      panelFound: true,
-      visible: panel.offsetParent !== null,
-      innerChars: (panel.textContent || '').trim().length,
-      transcriptishTags: tags,
-      transcriptishClasses: classes,
-      sampleLeaves: leaves
-    };
-  }
-
-  /* ---------------------------------------------------- transcript diagnostic */
-
-  /* Temporary. The transcript feature is deprecated because every route we had either needed
-     a helper running locally or got blocked by IP. This measures which routes actually work
-     right now, on this machine, so the decision to rebuild (and which way) rests on evidence
-     rather than on the assumptions in the old code comments.
-
-     The panel route is the interesting one: YouTube renders the transcript in the page, on
-     the user's own session, so nothing can block it. Its risk is truncation — if the list is
-     virtualised, only the visible segments exist in the DOM and a partial transcript would
-     look complete. Hence the coverage check against the player's duration. */
-
-  function timeToSeconds(stamp) {
-    const raw = String(stamp || '').trim();
-    if (!raw) return null;                 // Number('') is 0, which would read as 0:00
-    const parts = raw.split(':').map(Number);
-    if (!parts.length || parts.some(isNaN)) return null;
-    return parts.reduce((acc, n) => acc * 60 + n, 0);
-  }
-
-  function videoDurationSeconds() {
-    const el = document.querySelector('video');
-    return el && isFinite(el.duration) && el.duration > 0 ? el.duration : null;
   }
 
   function findShowTranscriptButton() {
@@ -486,134 +398,6 @@
       'ytd-engagement-panel-title-header-renderer button[aria-label*="Close" i], ' +
       'ytd-engagement-panel-title-header-renderer #visibility-button button');
     if (close) close.click();
-  }
-
-  async function tryPanelRoute(hidden) {
-    const started = Date.now();
-    const already = transcriptSegments().length > 0;
-    const panelWasOpen = already;
-    let styled = null;
-    let clickedInfo = null;
-
-    if (!already) {
-      const btn = findShowTranscriptButton();
-      if (!btn) {
-        return { name: hidden ? 'panel (hidden)' : 'panel', ok: false, ms: Date.now() - started,
-                 reason: 'no "Show transcript" control found — video may have no captions' };
-      }
-      clickedInfo = {
-        tag: btn.tagName.toLowerCase(),
-        label: btn.getAttribute('aria-label') || null,
-        text: (btn.textContent || '').trim().slice(0, 40)
-      };
-      btn.click();
-    }
-
-    // Suppress the panel visually without display:none, which can stop it rendering at all.
-    if (hidden) {
-      const panel = transcriptPanel();
-      if (panel) {
-        styled = panel.getAttribute('style') || '';
-        panel.setAttribute('style', styled + ';visibility:hidden;position:absolute;left:-9999px;');
-      }
-    }
-
-    let segs = [];
-    for (let i = 0; i < 40; i++) {          // up to 10s for the list to populate
-      segs = transcriptSegments();
-      if (segs.length) break;
-      await new Promise((r) => setTimeout(r, 250));
-    }
-    // Let a virtualised list settle before counting.
-    await new Promise((r) => setTimeout(r, 600));
-    segs = transcriptSegments();
-
-    const panel = transcriptPanel();
-    if (styled !== null && panel) panel.setAttribute('style', styled);
-    if (!panelWasOpen) closeTranscriptPanel();
-
-    const ms = Date.now() - started;
-    if (!segs.length) {
-      return {
-        name: hidden ? 'panel (hidden)' : 'panel',
-        ok: false,
-        ms,
-        reason: 'panel opened but no selector matched any segments',
-        clicked: clickedInfo,
-        probe: probeTranscriptPanel()
-      };
-    }
-
-    const duration = videoDurationSeconds();
-    const lastSec = timeToSeconds(segs[segs.length - 1].time);
-    const coverage = duration && lastSec != null ? lastSec / duration : null;
-    const gap = duration && lastSec != null ? duration - lastSec : null;
-    /* Coverage alone is a bad test. Captions legitimately stop before the video ends —
-       trailing music, an outro card — so a 45s clip whose last cue is at 0:40 is complete at
-       89%. Virtualisation looks nothing like that: it leaves minutes or hours unaccounted
-       for. Require both a large proportional shortfall and a large absolute one. */
-    const truncated = coverage != null && gap != null && coverage < 0.75 && gap > 120;
-    return {
-      name: hidden ? 'panel (hidden)' : 'panel',
-      ok: true,
-      ms,
-      segments: segs.length,
-      selector: matchedSelector(),
-      sampleSegments: segs.slice(0, 3),
-      segmentShape: describeSegmentNode(),
-      firstTime: segs[0].time,
-      lastTime: segs[segs.length - 1].time,
-      durationSec: duration ? Math.round(duration) : null,
-      coverage: coverage == null ? null : Math.round(coverage * 100) + '%',
-      unaccountedSec: gap == null ? null : Math.round(gap),
-      truncated,
-      chars: segs.reduce((n, s2) => n + s2.text.length, 0)
-    };
-  }
-
-  async function timed(name, fn) {
-    const started = Date.now();
-    try {
-      const out = await fn();
-      const ms = Date.now() - started;
-      if (out && out.ok && (out.segments || []).length) {
-        const segs = out.segments;
-        return { name, ok: true, ms, segments: segs.length,
-                 firstTime: segs[0].time, lastTime: segs[segs.length - 1].time,
-                 chars: segs.reduce((n, s2) => n + (s2.text || '').length, 0) };
-      }
-      return { name, ok: false, ms, reason: (out && out.reason) || 'no segments' };
-    } catch (e) {
-      return { name, ok: false, ms: Date.now() - started, reason: 'threw: ' + (e && e.message) };
-    }
-  }
-
-  async function runTranscriptDiagnostic() {
-    const id = (new URL(location.href)).searchParams.get('v');
-    if (!id) return { error: 'not on a watch page' };
-
-    const results = [];
-    results.push(await tryPanelRoute(false));
-    results.push(await tryPanelRoute(true));
-
-    const [auth, page] = await Promise.all([sapisidHash(), pageData()]);
-    results.push(await timed('innertube (in page)',
-      () => F.loadTranscript(id, (url, init) => fetch(url, init), { auth, page })));
-    results.push(await timed('background fetch', () => askBackgroundTranscript(id)));
-    results.push(await timed('local helper', () => askBackground('ytc-transcript-helper', id)));
-
-    const report = {
-      video: id,
-      title: (document.querySelector('h1 yt-formatted-string, h1') || {}).textContent || '',
-      durationSec: videoDurationSeconds() ? Math.round(videoDurationSeconds()) : null,
-      hasAuth: !!auth,
-      pagePayloadV: page && page.v,
-      results
-    };
-    console.log('%c[YT Copy] transcript diagnostic', 'font-weight:bold');
-    console.table(results);
-    console.log(report);
-    return report;
   }
 
   function askBackgroundTranscript(id) {
@@ -681,45 +465,66 @@
     });
   }
 
-  async function askTranscript(id) {
-    /* The local helper first. YouTube's caption endpoints are gated behind tokens an
-       extension can't produce, so the in-browser attempts below only work sometimes — but
-       they cost nothing when the helper isn't running (connection refused is immediate). */
-    const viaHelper = await askBackground('ytc-transcript-helper', id);
-    if (viaHelper.ok) return viaHelper;
+  /* Read the transcript out of YouTube's own panel.
 
-    const [auth, page] = await Promise.all([sapisidHash(), pageData()]);
-    const here = await F.loadTranscript(id, (url, init) => fetch(url, init), { auth, page });
-    if (here.ok) return here;
+     This is the only route that survives. The InnerTube endpoint returns 400 in the page and
+     403 from the service worker, and the caption URLs come back empty because they are gated
+     behind proof-of-origin tokens an extension cannot mint. yt-dlp worked but needed a helper
+     process running locally, and hosting that helper failed too: YouTube blocks datacenter
+     IPs, measured at 1 of 4 videos succeeding from Render against 4 of 4 residentially.
 
-    const there = await askBackgroundTranscript(id);
-    if (there.ok) return there;
+     The panel sidesteps all of it by never leaving the page. YouTube renders the transcript
+     itself, on the user's own session, so there is nothing to intercept. Measured on a
+     24-minute video: 181 segments, 23,099 characters, 97% coverage, 0.6 seconds, and no
+     virtualisation — the whole transcript is in the DOM, not just the visible part. */
+  const PANEL_TIMEOUT_MS = 12000;
 
-    const detail = here.reason || there.reason || '';
-    if (/unreachable|no helper/.test(viaHelper.reason || '')) {
-      return {
-        ok: false,
-        reason: 'YouTube blocked the caption request. Start the local helper: ' +
-          'python3 transcript-helper.py'
-      };
+  async function transcriptViaPanel() {
+    const already = transcriptSegments();
+    if (already.length) return { ok: true, segments: already };   // user already opened it
+
+    const btn = findShowTranscriptButton();
+    if (!btn) {
+      return { ok: false, reason: 'No transcript available for this video' };
     }
-    return { ok: false, reason: (viaHelper.reason || '') + '; ' + detail };
-  }
 
-  /* Copy, and nothing else: no panel, no scrolling, no expanded description. If YouTube's
-     own transcript panel already happens to be open we read that, otherwise the captions
-     are fetched quietly in the background. */
-  async function grabTranscript(card, btn) {
-    const video = readCard(card) || {};
-    let segments = transcriptSegments();
+    /* Hide before clicking, not after. The class is on <html> and the rule is in our
+       stylesheet, so the panel is suppressed from the moment it exists — waiting until it
+       appeared to style it would flash it on screen first. visibility plus off-screen
+       positioning rather than display:none, which can stop the content rendering at all. */
+    document.documentElement.classList.add('ytc-grabbing-transcript');
+    let segments = [];
+    try {
+      btn.click();
+      const deadline = Date.now() + PANEL_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        segments = transcriptSegments();
+        if (segments.length) break;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      if (segments.length) {
+        // Let the list finish populating before taking the final count.
+        await new Promise((r) => setTimeout(r, 400));
+        segments = transcriptSegments();
+      }
+      closeTranscriptPanel();
+    } finally {
+      document.documentElement.classList.remove('ytc-grabbing-transcript');
+    }
 
     if (!segments.length) {
-      btn.classList.add('ytc-busy');
-      const res = await askTranscript(video.id);
-      btn.classList.remove('ytc-busy');
-      if (!res.ok) { toast(res.reason || 'No transcript available', true); return; }
-      segments = res.segments || [];
+      return { ok: false, reason: 'Transcript panel did not load — try again' };
     }
+    return { ok: true, segments };
+  }
+
+  async function grabTranscript(card, btn) {
+    const video = readCard(card) || {};
+    btn.classList.add('ytc-busy');
+    const res = await transcriptViaPanel();
+    btn.classList.remove('ytc-busy');
+    if (!res.ok) { toast(res.reason || 'No transcript available', true); return; }
+    const segments = res.segments || [];
     if (!segments.length) { toast('No transcript available for this video', true); return; }
 
     const out = F.formatTranscript(segments, {
@@ -1856,9 +1661,6 @@
       case 'ytc-copy-selection':
         respondWith(Array.from(selected.values()), msg, sendResponse);
         break;
-      case 'ytc-diagnose-transcript':
-        runTranscriptDiagnostic().then(sendResponse);
-        return true;
       case 'ytc-copy-page':
         respondWith(pageVideos(), msg, sendResponse);
         break;

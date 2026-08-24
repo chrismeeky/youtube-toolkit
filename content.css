@@ -368,3 +368,15 @@ html[dark] .ytc-cs { border-color: rgba(255,255,255,.15); background: rgba(255,2
 html[dark] .ytc-cs__cell { background: rgba(255,255,255,.06); }
 html[dark] .ytc-cs__label, html[dark] .ytc-cs__note { color: #aaa; }
 html[dark] .ytc-cs__value { color: #f1f1f1; }
+
+/* Suppress YouTube's transcript panel while we read it. The class goes on <html> before the
+   panel is opened, so it never paints — styling it after it appeared would flash it on
+   screen. visibility plus off-screen rather than display:none, which can stop a framework
+   rendering the content we came for; this combination is the one measured to work. */
+html.ytc-grabbing-transcript ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"],
+html.ytc-grabbing-transcript [target-id*="transcript"] {
+  visibility: hidden !important;
+  position: absolute !important;
+  left: -99999px !important;
+  top: 0 !important;
+}
