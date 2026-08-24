@@ -327,20 +327,35 @@
     'yt-transcript-segment-view-model'
   ];
 
+  const STAMP_RE = /^\d{1,2}:\d{2}(?::\d{2})?$/;
+
+  /* Identify the parts by shape, not by class name.
+
+     YouTube renamed these elements out from under us once already — the panel moved to
+     transcript-segment-view-model — and the previous extraction, which keyed on
+     .segment-timestamp and .segment-text, silently degraded rather than failing: it returned
+     181 segments of about 4.6 characters each, which was the timestamps being read as the
+     caption text.
+
+     A timestamp is recognisable on sight: a leaf node reading m:ss or h:mm:ss. Whatever
+     remains of the segment's text once that is removed is the caption. No class name is
+     involved, so the next rename cannot quietly hollow this out. */
   function segmentsFrom(nodes) {
     return Array.from(nodes)
       .map((n) => {
-        const stamp = n.querySelector(
-          '.segment-timestamp, [class*="timestamp"], .ytTranscriptSegmentTimestamp');
-        let body = n.querySelector(
-          '.segment-text, [class*="segment-text"], .ytTranscriptSegmentText');
-        if (!body) {
-          body = Array.from(n.querySelectorAll('yt-formatted-string, span, div'))
-            .find((el) => el !== stamp && !el.contains(stamp) && text(el));
+        const whole = text(n);
+        if (!whole) return null;
+        const stampEl = Array.from(n.querySelectorAll('*'))
+          .find((el) => !el.children.length && STAMP_RE.test(text(el)));
+        const time = stampEl ? text(stampEl) : '';
+        let body = whole;
+        if (time) {
+          body = whole.startsWith(time) ? whole.slice(time.length) : whole.replace(time, '');
         }
-        return { time: text(stamp), text: text(body) };
+        body = body.trim();
+        return { time, text: body };
       })
-      .filter((seg) => seg.text && seg.text !== seg.time);
+      .filter((seg) => seg && seg.text && !STAMP_RE.test(seg.text));
   }
 
   function matchedSelector() {
