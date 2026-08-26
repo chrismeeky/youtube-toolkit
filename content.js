@@ -1005,8 +1005,24 @@
         .find((n) => !n.children.length && /subscriber/i.test(text(n)));
       if (el) subscribers = F.viewsToNumber(text(el));
     }
-    const m = document.documentElement.innerHTML.match(/"channelId":"(UC[\w-]{20,24})"/);
-    return { channelId: m ? m[1] : null, title: title || '', subscribers: subscribers };
+    /* The canonical link, not the first "channelId" in the document.
+       A channel page contains no "channelId" key of its own — that key belongs to video
+       items, so the old match returned some other channel's id, or a stale one from the
+       previous page. Two different channels were consequently recorded under one id in the
+       sightings queue, each overwriting the other. The canonical link names this channel and
+       nothing else. */
+    let channelId = null;
+    const canon = document.querySelector('link[rel="canonical"]');
+    const href = canon && canon.getAttribute('href');
+    const fromCanon = href && href.match(/\/channel\/(UC[\w-]{20,24})/);
+    if (fromCanon) {
+      channelId = fromCanon[1];
+    } else {
+      // externalId appears once, in the channel's own metadata block.
+      const m = document.documentElement.innerHTML.match(/"externalId":"(UC[\w-]{20,24})"/);
+      if (m) channelId = m[1];
+    }
+    return { channelId: channelId, title: title || '', subscribers: subscribers };
   }
 
   function similarPanel() {
