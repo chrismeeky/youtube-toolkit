@@ -493,6 +493,7 @@ async function similarFromIndex(base, key, titles, about, opts) {
 async function getSimilarChannels(key, titles, about, force, opts) {
   const settings = await chrome.storage.sync.get('apiUrl');
   const base = (settings.apiUrl || '').trim();
+  let indexProblem = '';
 
   /* The index answers differently depending on the filters, so its results are not cached
      here — the server holds the corpus, and a cached list would go stale the moment the
@@ -519,7 +520,11 @@ async function getSimilarChannels(key, titles, about, force, opts) {
         v: CACHE_VERSION
       };
     }
-    // Fall through to search rather than showing nothing when the backend is unavailable.
+    /* Falling back keeps the panel useful, but silently swapping to a weaker source taught
+       the user nothing — a URL missing its /k/<token> prefix answers 404, and the panel just
+       quietly showed search results instead. Carry the reason through so the panel can say
+       what happened. */
+    indexProblem = (out && out.reason) || 'index unavailable';
   }
 
   const id = 'sim:' + key;
@@ -544,7 +549,8 @@ async function getSimilarChannels(key, titles, about, force, opts) {
   noteResult(perQuery.length > 0);
 
   const channels = F.rankSimilar(perQuery, 25);
-  const entry = { channels, queries, source: 'search', reason: '', t: Date.now(), v: CACHE_VERSION };
+  const entry = { channels, queries, source: 'search', reason: '',
+                  indexProblem: indexProblem, t: Date.now(), v: CACHE_VERSION };
   await chrome.storage.local.set({ [id]: entry });
   return entry;
 }

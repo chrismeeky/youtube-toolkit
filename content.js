@@ -1068,12 +1068,24 @@
         '<span class="ytc-sim__meta">' + strength + '</span></a>';
     }).join('');
 
-    const note = fromIndex
-      ? 'Ranked by topic similarity against the channel index' +
-        (res.indexed ? '' : ' — this channel is not indexed yet, so its own page text was used')
-      : 'Channels ranking for this channel\'s own topics: ' +
+    let note;
+    if (fromIndex) {
+      note = 'Ranked by topic similarity against the channel index' +
+        (res.indexed ? '' : ' — this channel is not indexed yet, so its own page text was used');
+    } else {
+      note = 'Channels ranking for this channel\'s own topics: ' +
         (res.queries || []).map((q) => escapeHtml(q)).join('  ·  ') +
         '. Found by searching YouTube, not by a similarity model.';
+      /* Say when the index was configured but did not answer. A 404 here almost always means
+         the URL is missing its /k/<token> prefix, which otherwise looks like the feature
+         quietly deciding to be worse. */
+      if (res.indexProblem) {
+        note = '<b>Index not used: ' + escapeHtml(res.indexProblem) + '.</b> ' +
+          (/40[34]/.test(res.indexProblem)
+            ? 'Check the Index API URL includes its /k/&lt;token&gt; path. '
+            : '') + note;
+      }
+    }
 
     body.innerHTML = rows + '<p class="ytc-sim__note">' + note + '</p>';
 
