@@ -407,6 +407,10 @@ async function getMonetization(key, force) {
 const SIM_QUERIES = 2;
 const SIM_BYTES = 2500000;
 const TTL_SIM = 7 * 24 * 60 * 60 * 1000;
+/* An empty result is usually a transient failure — a rate-limited fetch, a dropped
+   connection — not a fact about the channel. Caching that for a week would show "nothing
+   found" until the entry expired, with no way to ask again. */
+const TTL_SIM_EMPTY = 30 * 60 * 1000;
 
 async function searchPage(query) {
   const url = 'https://www.youtube.com/results?hl=en&search_query=' + encodeURIComponent(query);
@@ -444,7 +448,8 @@ async function getSimilarChannels(key, titles, about, force) {
   if (!force) {
     const store = await chrome.storage.local.get(id);
     const hit = store[id];
-    if (hit && hit.v === CACHE_VERSION && Date.now() - hit.t <= TTL_SIM) return hit;
+    const ttl = hit && hit.channels && hit.channels.length ? TTL_SIM : TTL_SIM_EMPTY;
+    if (hit && hit.v === CACHE_VERSION && Date.now() - hit.t <= ttl) return hit;
   }
   if (breakerOpen()) return { channels: [], queries: [], reason: 'rate limited', t: 0, v: CACHE_VERSION };
 
@@ -555,7 +560,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg.type === 'ytc-clear-subs') {
     chrome.storage.local.get(null).then((all) => {
-      const keys = Object.keys(all).filter((k) => k.startsWith('subs:'));
+      // Every cache the extension owns. This used to clear only subs:, leaving the
+      // monetization and similar-channel entries unreachable from the popup that claims
+      // to clear the cache.
+      const keys = Object.keys(all).filter((k) =>
+        k.startsWith('subs:') || k.startsWith('mon:') || k.startsWith('sim:'));
       chrome.storage.local.remove(keys).then(() => sendResponse({ cleared: keys.length }));
     });
     return true;

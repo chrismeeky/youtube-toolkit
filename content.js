@@ -997,9 +997,14 @@
     el.innerHTML =
       '<div class="ytc-sim__bar">' +
         '<span class="ytc-sim__title">Similar channels</span>' +
-        '<button type="button" class="ytc-sim__x" aria-label="Close">✕</button>' +
+        '<span class="ytc-sim__actions">' +
+          '<button type="button" class="ytc-sim__refresh">Refresh</button>' +
+          '<button type="button" class="ytc-sim__x" aria-label="Close">✕</button>' +
+        '</span>' +
       '</div><div class="ytc-sim__body"></div>';
     el.querySelector('.ytc-sim__x').addEventListener('click', () => el.remove());
+    // Results are cached for a week, so there has to be a way to ask again.
+    el.querySelector('.ytc-sim__refresh').addEventListener('click', () => askSimilar(true));
     document.body.appendChild(el);
     return el;
   }
