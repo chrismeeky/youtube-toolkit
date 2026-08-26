@@ -124,16 +124,24 @@
     'ytd-video-meta-block span'
   ].join(',');
 
+  /* A view count with no word attached. YouTube's newer search and feed layouts render the
+     metadata line as "285K • 1mo ago" rather than "285K views • 1mo ago", so requiring the
+     word "views" silently lost the count — and with it the outlier ratio, which needs a
+     numerator. Durations are excluded by the absence of a colon. */
+  const BARE_COUNT_RE = /^[\d.,]+\s*[kmb]?$/i;
+
   function findMeta(card) {
     let views = '';
     let date = '';
     const seen = new Set();
+    const ordered = [];          // candidate texts, in document order
 
-    function scan(nodes) {
+    function collect(nodes) {
       for (const n of nodes) {
         const t = text(n);
         if (!t || t.length > 60 || seen.has(t)) continue;
         seen.add(t);
+        ordered.push(t);
         if (!views && VIEWS_RE.test(t)) views = t;
         else if (!date && DATE_RE.test(t)) date = t;
         if (views && date) return true;
@@ -141,10 +149,22 @@
       return false;
     }
 
-    if (scan(card.querySelectorAll(KNOWN_META))) return { views, date };
+    const done = collect(card.querySelectorAll(KNOWN_META));
+    if (!done) {
+      // Unknown build: check every leaf element in the card.
+      collect(Array.from(card.querySelectorAll('span, div')).filter((el) => !el.children.length));
+    }
 
-    // Unknown build: check every leaf element in the card.
-    scan(Array.from(card.querySelectorAll('span, div')).filter((el) => !el.children.length));
+    /* Only accept a bare number as the view count when it sits just before the date in the
+       same metadata line. A number anywhere else on the card — a duration, a figure in the
+       title, a channel name — must not be mistaken for a view count. */
+    if (!views && date) {
+      const at = ordered.indexOf(date);
+      for (let i = at - 1; i >= 0 && i >= at - 3; i--) {
+        if (BARE_COUNT_RE.test(ordered[i])) { views = ordered[i]; break; }
+      }
+    }
+
     if (views && date) return { views, date };
 
     // Last resort: the thumbnail link's aria-label, e.g.
