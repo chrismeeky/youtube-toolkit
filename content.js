@@ -662,7 +662,7 @@
 
   const STALE_FAIL_MS = 30000;      // re-ask a failed channel if it scrolls back into view
   const RETRY_DELAYS = [8000, 25000];    // and retry on a timer even if it just sits there
-  const DETECT_DELAYS = [400, 1200, 3000];  // waiting for YouTube to hydrate the card
+  const DETECT_DELAYS = [400, 1200, 3000, 5000];  // waiting for YouTube to hydrate the card
 
   const subsByKey = new Map();      // channel key -> { text, reason, t, tries }
   const cardsByKey = new Map();     // channel key -> Set of cards awaiting a badge
@@ -1078,7 +1078,7 @@
         paintMoney(el, null, false, note);
       } else {
         el.dataset.key = key;
-        requestMonetization(key, (res) => {
+        requestMonetizationOnce(key, (res) => {
           if (card.dataset.ytcMoneyVid !== videoId) return;
           paintMoney(el, res, false, note);
         });
@@ -1092,24 +1092,41 @@
   /* Runs on every scan rather than only on a fresh card: YouTube reuses the same
      ytd-watch-metadata element across navigations, so "fresh" is false on the second video
      and the badge would keep showing the first one's verdict. */
-  const WATCH_MAX_TRIES = 5;
+  const WATCH_MAX_TRIES = 6;
+  const WATCH_RETRY_DELAYS = [600, 1500, 3000, 6000, 10000];
 
   function syncWatchMoney(card) {
     if (!settings.showMoney && !settings.showStats) return;
     const id = findUrl(card).id;
     if (!id || card.dataset.ytcMoneyVid === id) return;
+    /* Once a retry is armed, only its timer may drive the next attempt. Without this the
+       scans that keep arriving during navigation each consume a try of their own, and the
+       whole budget burns within a few seconds — before a slow page has finished hydrating,
+       which is the case the retries exist for. */
+    if (card.dataset.ytcMoneyPending === id) return;
     card.dataset.ytcMoneyVid = id;
     if (card.dataset.ytcMoneyFor !== id) {
       card.dataset.ytcMoneyFor = id;
       card.dataset.ytcMoneyTries = '0';
+      card.removeAttribute('data-ytc-money-pending');   // belongs to the previous video
     }
     checkWatchMoney(card, id).then((ok) => {
       if (ok || card.dataset.ytcMoneyVid !== id) return;
       const tries = Number(card.dataset.ytcMoneyTries || 0) + 1;
       card.dataset.ytcMoneyTries = String(tries);
-      // Release the marker so the next scan has another go, bounded so a page that never
-      // yields player data does not retry forever.
-      if (tries < WATCH_MAX_TRIES) delete card.dataset.ytcMoneyVid;
+      if (tries >= WATCH_MAX_TRIES) { card.removeAttribute('data-ytc-money-pending'); return; }
+      card.removeAttribute('data-ytc-money-vid');
+      card.dataset.ytcMoneyPending = id;
+
+      /* Drive the retry from a timer rather than releasing the marker and waiting for the
+         next scan. Scans come from the MutationObserver, and a watch page that has finished
+         settling produces no more mutations — so an armed retry could sit unfired until the
+         user reloaded the page. That was the refresh people were reaching for. */
+      const wait = WATCH_RETRY_DELAYS[Math.min(tries - 1, WATCH_RETRY_DELAYS.length - 1)];
+      setTimeout(() => {
+        card.removeAttribute('data-ytc-money-pending');
+        if (card.isConnected && findUrl(card).id === id) syncWatchMoney(card);
+      }, wait);
     });
   }
 
@@ -1156,7 +1173,7 @@
      that arrived too early was simply the last one, and the badge never appeared until a
      manual reload. Retry on our own timer, the way card detection already does. */
   const channelDetect = { key: '', tries: 0, timer: null };
-  const CHANNEL_DETECT_MAX = 8;
+  const CHANNEL_DETECT_MAX = 12;   // ~40s of attempts, for slow hydration
 
   function scheduleChannelRetry(key) {
     if (channelDetect.key !== key) {
@@ -1179,6 +1196,23 @@
      looks exactly like "no status" from the outside. Bound the wait so it always resolves to
      something clickable. */
   const MONEY_TIMEOUT = 60000;
+
+  /* An "unknown" result is usually transient — the service worker was evicted mid-sample, or
+     the channel page fetch lost a race. The badge is click-to-retry, but nobody knows that,
+     so retry once automatically before leaving it to the user. Once only: the sample costs
+     several page fetches and a loop would be worse than a stale badge. */
+  const MONEY_AUTO_RETRY_MS = 8000;
+  const autoRetried = new Set();
+
+  function requestMonetizationOnce(key, done) {
+    requestMonetization(key, (res) => {
+      const settledOk = res && res.state && res.state !== 'unknown';
+      if (settledOk || autoRetried.has(key)) { done(res); return; }
+      autoRetried.add(key);
+      done(res);                       // show what we have meanwhile
+      setTimeout(() => requestMonetization(key, done), MONEY_AUTO_RETRY_MS);
+    });
+  }
 
   function requestMonetization(key, done) {
     let settled = false;
@@ -1224,7 +1258,7 @@
 
     const el = ensureMoneyBadge(host, true);
     el.dataset.key = key;
-    requestMonetization(key, (res) => {
+    requestMonetizationOnce(key, (res) => {
       // The user may have navigated away, or the header rebuilt, while the sample ran.
       if (!el.isConnected || host.dataset.ytcMoney !== key) return;
       paintMoney(el, res, true);
@@ -1689,7 +1723,14 @@
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
-  window.addEventListener('yt-navigate-finish', () => setTimeout(scan, 300));
+  /* A single scan 300ms after navigation assumes everything has hydrated by then, which is
+     the assumption that kept failing. Stagger several: they are cheap, they stop early via
+     the per-card markers, and they cover the window where YouTube is still building the
+     watch metadata, the sidebar and the channel header. */
+  const NAV_SCANS = [300, 900, 2000, 4000, 8000];
+  window.addEventListener('yt-navigate-finish', () => {
+    for (const delay of NAV_SCANS) setTimeout(scan, delay);
+  });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && selectMode) setSelectMode(false);
