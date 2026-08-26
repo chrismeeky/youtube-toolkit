@@ -666,8 +666,10 @@
      before "m" so it is not read as minutes, which would date a two-month-old video to today. */
   const SHORT_UNITS = { s: 'second', m: 'minute', h: 'hour', d: 'day', w: 'week', mo: 'month', y: 'year' };
 
-  function relativeToISO(text, now) {
-    if (!text) return '';
+  /* Shared by relativeToISO and by the cards' views-per-hour pill, which needs the elapsed
+     time rather than a date string. Returns null when the text is not a relative time. */
+  function relativeToDate(text, now) {
+    if (!text) return null;
     const src = String(text);
     let n = null;
     let unit = null;
@@ -683,10 +685,28 @@
         unit = SHORT_UNITS[short[2].toLowerCase()];
       }
     }
-    if (n == null || !unit) return text;
+    if (n == null || !unit) return null;
+    return new Date((now ? now.getTime() : Date.now()) - n * RELATIVE_MS[unit]);
+  }
 
-    const d = new Date((now ? now.getTime() : Date.now()) - n * RELATIVE_MS[unit]);
-    return d.toISOString().slice(0, 10);
+  function relativeToISO(text, now) {
+    if (!text) return '';
+    const src = String(text);
+    const d = relativeToDate(src, now);
+    return d ? d.toISOString().slice(0, 10) : text;
+  }
+
+  /* Views per hour from a card's relative timestamp. Coarser than the watch page's, which
+     has an exact publish time — "2mo ago" is only accurate to the month — so it is a
+     comparison aid between cards, not a precise rate. Clamped to an hour so a video posted
+     seconds ago does not report an absurd number. */
+  function vphFromRelative(viewsText, dateText, now) {
+    const views = viewsToNumber(viewsText);
+    if (!views) return null;
+    const at = relativeToDate(dateText, now);
+    if (!at) return null;
+    const hours = Math.max(1, ((now ? now.getTime() : Date.now()) - at.getTime()) / 3600000);
+    return views / hours;
   }
 
   function cleanViews(text, s) {
@@ -832,6 +852,7 @@
     isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken,
     parseChannelStats, adSignalFromHtml, monetizationVerdict,
     videoMetrics, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH,
+    relativeToDate, vphFromRelative,
     safeFilename, formatTranscript, stampMs, decodeEntities, parseJson3, parseTimedTextXml,
     innertubeConfig, captionTracksFrom, pickCaptionTrack, transcriptSegmentsFrom, loadTranscript,
     playerResponseFrom

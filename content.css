@@ -380,3 +380,21 @@ html.ytc-grabbing-transcript [target-id*="transcript"] {
   left: -99999px !important;
   top: 0 !important;
 }
+
+/* Views-per-hour pill on cards. Quieter than the outlier pill beside it: the outlier is a
+   judgement about performance, this is just a rate. */
+.ytc-vph {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 4px;
+  border-radius: 9px;
+  font: 600 11px/1 Roboto, Arial, sans-serif;
+  color: #7cc4ff;
+  background: rgba(128, 128, 128, .22);
+  cursor: default;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+html:not([dark]) .ytc-vph { color: #1668b8; background: rgba(0, 0, 0, .07); }
