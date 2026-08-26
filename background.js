@@ -393,6 +393,79 @@ async function getMonetization(key, force) {
   return entry;
 }
 
+/* ------------------------------------------------------------ similar channels */
+
+/* Search, not recommendations. YouTube's search results answer a query, so they are topical
+   by construction; the watch-page recommendation sidebar is contaminated with generic and
+   personalised picks that no ranking can separate (a car channel's sidebar returned
+   @LiverpoolFC and @redbull in the top five). Measured on the same channels, search returned
+   @TopGear, @DougDeMuro and @ThrottleHouse for cars, and @KingsandGenerals and
+   @FreeDocumentaryHistory for history.
+
+   Two search pages per channel, cached for a week. The titles come from the page the user is
+   already looking at, so nothing is fetched to build the queries. */
+const SIM_QUERIES = 2;
+const SIM_BYTES = 2500000;
+const TTL_SIM = 7 * 24 * 60 * 60 * 1000;
+
+async function searchPage(query) {
+  const url = 'https://www.youtube.com/results?hl=en&search_query=' + encodeURIComponent(query);
+  let res;
+  try {
+    res = await fetch(url, { credentials: 'include', headers: { 'Accept-Language': 'en' } });
+  } catch (e) {
+    return null;
+  }
+  if (!res.ok || !res.body) return null;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let read = 0;
+  try {
+    while (read < SIM_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      read += value.length;
+      buf += decoder.decode(value, { stream: true });
+      // Results live in ytInitialData; everything after it is player and layout config.
+      if (buf.indexOf('var ytInitialData') >= 0 && read > 900000) break;
+    }
+  } catch (e) {
+    return null;
+  } finally {
+    try { await reader.cancel(); } catch (e) { /* already closed */ }
+  }
+  return buf;
+}
+
+async function getSimilarChannels(key, titles, force) {
+  const id = 'sim:' + key;
+  if (!force) {
+    const store = await chrome.storage.local.get(id);
+    const hit = store[id];
+    if (hit && hit.v === CACHE_VERSION && Date.now() - hit.t <= TTL_SIM) return hit;
+  }
+  if (breakerOpen()) return { channels: [], queries: [], reason: 'rate limited', t: 0, v: CACHE_VERSION };
+
+  const queries = F.topicQueries(titles || [], key, SIM_QUERIES);
+  if (!queries.length) {
+    return { channels: [], queries: [], reason: 'not enough video titles to search with', t: 0, v: CACHE_VERSION };
+  }
+
+  const perQuery = [];
+  for (const q of queries) {
+    const html = await schedule(() => searchPage(q));
+    if (html) perQuery.push(F.channelsFromSearch(html, key));
+  }
+  noteResult(perQuery.length > 0);
+
+  const channels = F.rankSimilar(perQuery, 25);
+  const entry = { channels, queries, reason: '', t: Date.now(), v: CACHE_VERSION };
+  await chrome.storage.local.set({ [id]: entry });
+  return entry;
+}
+
 /* ---------------------------------------------------------------- thumbnails */
 
 /* maxres only exists for videos uploaded with a big enough thumbnail, and YouTube 404s
@@ -449,6 +522,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     getMonetization(msg.key, msg.force)
       .then((entry) => sendResponse(entry))
       .catch((e) => sendResponse({ state: 'unknown', checked: 0, reason: String(e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-similar' && msg.key) {
+    getSimilarChannels(msg.key, msg.titles, msg.force)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ channels: [], queries: [], reason: String(e) }));
     return true;
   }
   if (msg.type === 'ytc-thumbs') {

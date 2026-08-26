@@ -956,6 +956,91 @@
     renderStatsCard();
   }
 
+  /* ---------------------------------------------------------- similar channels */
+
+  /* Titles are read from the grid already on screen — the queries are built from what the
+     user is looking at, so discovering the topic costs no request at all. */
+  function channelVideoTitles(limit) {
+    const nodes = document.querySelectorAll(
+      'ytd-rich-item-renderer #video-title, ytd-grid-video-renderer #video-title, ' +
+      'ytd-rich-grid-media #video-title, a#video-title-link, ' +
+      'yt-lockup-view-model a[href*="/watch"] span');
+    const out = [];
+    const seen = new Set();
+    for (const n of nodes) {
+      const t = (n.getAttribute('title') || text(n) || '').trim();
+      if (t.length < 8 || seen.has(t)) continue;
+      seen.add(t);
+      out.push(t);
+      if (out.length >= (limit || 20)) break;
+    }
+    return out;
+  }
+
+  function similarPanel() {
+    let el = document.querySelector('.ytc-sim');
+    if (el) return el;
+    el = document.createElement('div');
+    el.className = 'ytc-sim';
+    el.innerHTML =
+      '<div class="ytc-sim__bar">' +
+        '<span class="ytc-sim__title">Similar channels</span>' +
+        '<button type="button" class="ytc-sim__x" aria-label="Close">✕</button>' +
+      '</div><div class="ytc-sim__body"></div>';
+    el.querySelector('.ytc-sim__x').addEventListener('click', () => el.remove());
+    document.body.appendChild(el);
+    return el;
+  }
+
+  function renderSimilar(res) {
+    const panel = similarPanel();
+    const body = panel.querySelector('.ytc-sim__body');
+    const list = (res && res.channels) || [];
+
+    if (!list.length) {
+      body.innerHTML = '<p class="ytc-sim__note">' +
+        (res && res.reason ? escapeHtml(res.reason) : 'Nothing found for this channel') + '</p>';
+      return;
+    }
+
+    const rows = list.map((c) => {
+      /* "Appeared for both topics" is the whole ranking signal — there is no similarity
+         score here, and showing a percentage would imply a model that does not exist. */
+      const strength = c.queries > 1 ? 'both topics' : 'rank ' + (c.rank + 1);
+      return '<a class="ytc-sim__row" href="https://www.youtube.com/' + encodeURI(c.handle) +
+        '" target="_blank" rel="noopener noreferrer">' +
+        '<span class="ytc-sim__name">' + escapeHtml(c.handle) + '</span>' +
+        '<span class="ytc-sim__meta">' + strength + '</span></a>';
+    }).join('');
+
+    const queries = (res.queries || []).map((q) => escapeHtml(q)).join('  ·  ');
+    body.innerHTML = rows +
+      '<p class="ytc-sim__note">Channels ranking for this channel\'s own topics: ' +
+      queries + '. Found by searching YouTube, not by a similarity model.</p>';
+  }
+
+  function escapeHtml(v) {
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function askSimilar(force) {
+    const key = channelKeyFromLocation();
+    if (!key) return;
+    const panel = similarPanel();
+    panel.querySelector('.ytc-sim__body').innerHTML =
+      '<p class="ytc-sim__note"><span class="ytc-spin"></span> Searching…</p>';
+    const titles = channelVideoTitles(20);
+    chrome.runtime.sendMessage({ type: 'ytc-similar', key, titles, force }, (res) => {
+      if (chrome.runtime.lastError) {
+        renderSimilar({ channels: [], reason: 'Extension reloaded — refresh this tab' });
+        return;
+      }
+      renderSimilar(res);
+    });
+  }
+
   /* ------------------------------------------------------------- monetization */
 
   /* "Likely", not a verdict. Ad placements do not prove Partner Program membership — a
@@ -1290,13 +1375,40 @@
     }
   }
 
+  function ensureSimilarButton(host) {
+    if (!settings.showSimilar) {
+      const gone = host.querySelector(':scope > .ytc-simbtn');
+      if (gone) gone.remove();
+      return;
+    }
+    if (host.querySelector(':scope > .ytc-simbtn')) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ytc-simbtn';
+    btn.textContent = 'Similar channels';
+    btn.title = 'Find channels ranking for this channel\'s topics';
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      askSimilar(false);
+    });
+    host.appendChild(btn);
+  }
+
   function decorateChannelHeader() {
     const key = channelKeyFromLocation();
     const stray = document.querySelector('.ytc-money--lg');
 
     // Left a channel page (or the badge was switched off): clean up after ourselves.
-    if (!key || !settings.showMoney) {
+    if (!key) {
       if (stray) stray.remove();
+      document.querySelectorAll('.ytc-sim, .ytc-simbtn').forEach((n) => n.remove());
+      return;
+    }
+    if (!settings.showMoney) {
+      if (stray) stray.remove();
+      const host0 = channelHeaderHost();
+      if (host0) ensureSimilarButton(host0);
       return;
     }
 
@@ -1310,6 +1422,7 @@
     if (stray && !attached) stray.remove();
     host.dataset.ytcMoney = key;
 
+    ensureSimilarButton(host);
     const el = ensureMoneyBadge(host, true);
     el.dataset.key = key;
     requestMonetizationOnce(key, (res) => {

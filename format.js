@@ -17,6 +17,7 @@
     showRatio: true,              // views ÷ channel average pill
     showMoney: true,              // monetization badge (inferred from ad placements)
     showStats: true,              // views/hour, engagement and an earnings estimate
+    showSimilar: true,            // "Similar channels" button on channel pages
     showThumb: true,              // thumbnail download button
     /* Reads YouTube's own transcript panel in the page — no helper, no server, nothing to
        block. The InnerTube and yt-dlp routes it replaced are dead; see transcriptViaPanel. */
@@ -628,6 +629,150 @@
     return { state, checked: seen.length, withAds };
   }
 
+  /* ---------------------------------------------------------- similar channels */
+
+  /* Queries are drawn from the channel's own video titles, because YouTube's search results
+     are topical by construction — it is answering a query, not guessing what you would enjoy.
+
+     The obvious alternative, the watch page's recommendation sidebar, was measured and
+     rejected: for a car channel it returned @LiverpoolFC, @chelseafc and @redbull among the
+     top five, because every sidebar carries generic and personalised filler that no ranking
+     over it can separate out. The same channel searched by topic returned @DougDeMuro,
+     @ThrottleHouse and @TheStraightPipes — thirteen channels, all of them cars. */
+
+  const STOPWORDS = new Set(('the a an and or but is are was were be been being of to in for ' +
+    'on at by with from as it its this that these those i you he she we they my your our his ' +
+    'her their new best top vs versus how why what when where who which do does did can will ' +
+    'just get got go goes going make makes made see saw look looks now then than so very more ' +
+    'most much many about after before over under out up down off again ever never all any ' +
+    'each every some no not only own same too also here there full official video shorts ' +
+    'episode part trailer').split(' '));
+
+  /* What KIND of video the channel makes. Measured: "toyota corolla" returns dealerships and
+     listings, while "toyota corolla review" returns the people making the same videos. And an
+     unqualified genre word is worse than useless — "drag race" alone returns RuPaul's Drag
+     Race. So a query is a topic phrase AND a genre word, never either alone. */
+  const GENRE_WORDS = ['review', 'reviews', 'tutorial', 'guide', 'explained', 'reaction',
+    'gameplay', 'unboxing', 'vlog', 'podcast', 'documentary', 'breakdown', 'highlights',
+    'analysis', 'comparison', 'tips', 'story', 'interview', 'recap', 'walkthrough',
+    'recipe', 'recipes', 'tour', 'build', 'challenge', 'ranking', 'essay', 'workout'];
+
+  function titleTokens(title) {
+    return String(title || '')
+      .toLowerCase()
+      .replace(/[|•·—–\-_/\\()\[\]{}:;,.!?"'’“”]+/g, ' ')
+      .split(/\s+/)
+      // Two-character tokens matter — "gr", "m2", "f1" are the subject, not noise.
+      .filter((w) => w && w.length > 1 && !STOPWORDS.has(w) && !/^\d+$/.test(w));
+  }
+
+  /* Phrases beat single words: "corolla" alone pulls in dealerships and music, while
+     "gr corolla review" pulls in the people making the same videos. Bigrams are counted
+     across the sampled titles and the most repeated ones win, since a phrase the channel
+     uses repeatedly is what the channel is actually about. */
+  function topicQueries(titles, channelName, limit) {
+    /* The channel name is deliberately NOT excluded from the subject phrase. Names usually
+       describe the niche — "Pasta Kitchen", "History Marche" — so banning their words removed
+       the very topic being searched for: "Pasta Kitchen" lost "pasta recipe" and fell back to
+       "easy" and "beginners". The channel itself is filtered out of the results instead,
+       which is where that belongs. */
+    const list = titles || [];
+
+    // The genre the channel works in, if its titles name one consistently.
+    const genreCount = new Map();
+    for (const t of list) {
+      for (const w of titleTokens(t)) {
+        if (GENRE_WORDS.indexOf(w) >= 0) genreCount.set(w, (genreCount.get(w) || 0) + 1);
+      }
+    }
+    let genre = '';
+    let best = 0;
+    genreCount.forEach((n, w) => { if (n > best) { best = n; genre = w; } });
+
+    // Repeated subject phrases, ignoring the genre words themselves.
+    const counts = new Map();
+    for (const t of list) {
+      const words = titleTokens(t)
+        .filter((w) => GENRE_WORDS.indexOf(w) < 0);
+      for (let i = 0; i < words.length - 1; i++) {
+        const bigram = words[i] + ' ' + words[i + 1];
+        counts.set(bigram, (counts.get(bigram) || 0) + 1);
+      }
+    }
+
+    let ranked = Array.from(counts.entries())
+      .filter(([, n]) => n > 1)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([phrase]) => phrase);
+
+    if (!ranked.length) {
+      const words = new Map();
+      for (const t of list) {
+        for (const w of titleTokens(t)) {
+          if (GENRE_WORDS.indexOf(w) >= 0) continue;
+          words.set(w, (words.get(w) || 0) + 1);
+        }
+      }
+      ranked = Array.from(words.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([w]) => w);
+    }
+
+    const picked = [];
+    for (const phrase of ranked) {
+      const words = new Set(phrase.split(' '));
+      if (picked.some((p) => p.split(' ').some((w) => words.has(w)))) continue;
+      picked.push(phrase);
+      if (picked.length >= (limit || 3)) break;
+    }
+    // Attach the genre so the query finds makers of this kind of video, not sellers or
+    // an unrelated franchise that happens to share the words.
+    return picked.map((p) => (genre ? p + ' ' + genre : p));
+  }
+
+  /* Channel handles from a search results page, in rank order and de-duplicated. */
+  function channelsFromSearch(html, exclude) {
+    if (!html) return [];
+    const skip = String(exclude || '').toLowerCase();
+    const seen = new Set();
+    const out = [];
+    const re = /"canonicalBaseUrl":"\/(@[\w.-]+)"|"\/(@[\w.-]+)"/g;
+    let m;
+    while ((m = re.exec(html))) {
+      const handle = m[1] || m[2];
+      if (!handle) continue;
+      const low = handle.toLowerCase();
+      if (low === skip || seen.has(low)) continue;
+      seen.add(low);
+      out.push(handle);
+    }
+    return out;
+  }
+
+  /* Rank by how many separate queries a channel turned up in: appearing for two different
+     topical phrases is much stronger evidence than ranking once. */
+  function rankSimilar(perQuery, limit) {
+    const hits = new Map();
+    const bestRank = new Map();
+    for (const list of perQuery || []) {
+      list.forEach((handle, i) => {
+        const low = handle.toLowerCase();
+        hits.set(low, (hits.get(low) || 0) + 1);
+        if (!bestRank.has(low) || i < bestRank.get(low)) bestRank.set(low, i);
+        if (!hits.has(handle)) hits.set(handle, hits.get(handle) || 0);
+      });
+    }
+    const names = new Map();
+    for (const list of perQuery || []) for (const h of list) names.set(h.toLowerCase(), h);
+
+    return Array.from(hits.keys())
+      .filter((k) => names.has(k))
+      .map((k) => ({ handle: names.get(k), queries: hits.get(k), rank: bestRank.get(k) }))
+      .sort((a, b) => b.queries - a.queries || a.rank - b.rank)
+      .slice(0, limit || 25);
+  }
+
   /* The channel /about page carries lifetime totals that no other tab does:
 
        "subscriberCountText":"11.1M subscribers","viewCountText":"5,562,325,195 views"
@@ -864,6 +1009,7 @@
     parseChannelStats, adSignalFromHtml, monetizationVerdict,
     videoMetrics, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH,
     relativeToDate, vphFromRelative,
+    topicQueries, channelsFromSearch, rankSimilar,
     safeFilename, formatTranscript, stampMs, decodeEntities, parseJson3, parseTimedTextXml,
     innertubeConfig, captionTracksFrom, pickCaptionTrack, transcriptSegmentsFrom, loadTranscript,
     playerResponseFrom
