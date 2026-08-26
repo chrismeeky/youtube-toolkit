@@ -439,7 +439,7 @@ async function searchPage(query) {
   return buf;
 }
 
-async function getSimilarChannels(key, titles, force) {
+async function getSimilarChannels(key, titles, about, force) {
   const id = 'sim:' + key;
   if (!force) {
     const store = await chrome.storage.local.get(id);
@@ -448,7 +448,7 @@ async function getSimilarChannels(key, titles, force) {
   }
   if (breakerOpen()) return { channels: [], queries: [], reason: 'rate limited', t: 0, v: CACHE_VERSION };
 
-  const queries = F.topicQueries(titles || [], key, SIM_QUERIES);
+  const queries = F.topicQueries(titles || [], key, SIM_QUERIES, about);
   if (!queries.length) {
     return { channels: [], queries: [], reason: 'not enough video titles to search with', t: 0, v: CACHE_VERSION };
   }
@@ -525,7 +525,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'ytc-similar' && msg.key) {
-    getSimilarChannels(msg.key, msg.titles, msg.force)
+    getSimilarChannels(msg.key, msg.titles, msg.about, msg.force)
       .then(sendResponse)
       .catch((e) => sendResponse({ channels: [], queries: [], reason: String(e) }));
     return true;

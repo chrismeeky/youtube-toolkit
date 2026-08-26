@@ -977,6 +977,18 @@
     return out;
   }
 
+  /* The channel's own description of itself. Titles say what the latest videos are about;
+     the description says what the channel is about, and on a news or case-driven channel
+     those are entirely different things. */
+  function channelAboutText() {
+    const el = document.querySelector(
+      'yt-description-preview-view-model, #description-container, ' +
+      'ytd-channel-tagline-renderer, #channel-tagline, ' +
+      'yt-page-header-view-model yt-attributed-string');
+    const t = el ? text(el) : '';
+    return t.length > 12 ? t.slice(0, 600) : '';
+  }
+
   function similarPanel() {
     let el = document.querySelector('.ytc-sim');
     if (el) return el;
@@ -1032,7 +1044,8 @@
     panel.querySelector('.ytc-sim__body').innerHTML =
       '<p class="ytc-sim__note"><span class="ytc-spin"></span> Searching…</p>';
     const titles = channelVideoTitles(20);
-    chrome.runtime.sendMessage({ type: 'ytc-similar', key, titles, force }, (res) => {
+    const about = channelAboutText();
+    chrome.runtime.sendMessage({ type: 'ytc-similar', key, titles, about, force }, (res) => {
       if (chrome.runtime.lastError) {
         renderSimilar({ channels: [], reason: 'Extension reloaded — refresh this tab' });
         return;

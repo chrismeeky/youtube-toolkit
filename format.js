@@ -646,7 +646,8 @@
     'just get got go goes going make makes made see saw look looks now then than so very more ' +
     'most much many about after before over under out up down off again ever never all any ' +
     'each every some no not only own same too also here there full official video shorts ' +
-    'episode part trailer').split(' '));
+    'episode part trailer leading platform network covers welcome subscribe content ' +
+    'channel channels everything weekly daily official home page site com www').split(' '));
 
   /* What KIND of video the channel makes. Measured: "toyota corolla" returns dealerships and
      listings, while "toyota corolla review" returns the people making the same videos. And an
@@ -660,7 +661,9 @@
   function titleTokens(title) {
     return String(title || '')
       .toLowerCase()
-      .replace(/[|•·—–\-_/\\()\[\]{}:;,.!?"'’“”]+/g, ' ')
+      // & and + split too: "Law&Crime" must tokenise as law, crime, or the channel's own
+      // name is not recognised in phrases built from it.
+      .replace(/[|•·—–\-_/\\()\[\]{}:;,.!?"'’“”&+]+/g, ' ')
       .split(/\s+/)
       // Two-character tokens matter — "gr", "m2", "f1" are the subject, not noise.
       .filter((w) => w && w.length > 1 && !STOPWORDS.has(w) && !/^\d+$/.test(w));
@@ -670,7 +673,34 @@
      "gr corolla review" pulls in the people making the same videos. Bigrams are counted
      across the sampled titles and the most repeated ones win, since a phrase the channel
      uses repeatedly is what the channel is actually about. */
-  function topicQueries(titles, channelName, limit) {
+  /* A channel's description states its niche; its titles often do not.
+
+     Measured on Law&Crime: the titles are case names — "Tupac Murder", "Hayden Panettiere" —
+     so title-derived queries searched for those stories and returned every outlet that
+     covered them (@BBCNews, @ABCNews, @WatchMojo, @NDTVProfitIndia). The description says
+     "live court video, high-profile criminal trials, true crime and legal analysis", which
+     is the actual niche.
+
+     Descriptions are prose, so phrases appear once rather than repeating, and bigrams are
+     taken within punctuation-delimited segments — spanning a comma joins two unrelated
+     clauses into nonsense like "trials true". */
+  function phrasesFromAbout(about) {
+    const tri = [];
+    const bi = [];
+    for (const segment of String(about || '').split(/[,.;:|/!?()\n]+/)) {
+      const words = titleTokens(segment).filter((w) => GENRE_WORDS.indexOf(w) < 0);
+      for (let i = 0; i < words.length - 2; i++) {
+        tri.push(words[i] + ' ' + words[i + 1] + ' ' + words[i + 2]);
+      }
+      for (let i = 0; i < words.length - 1; i++) bi.push(words[i] + ' ' + words[i + 1]);
+    }
+    /* Longer wins. Measured: "law crime" returned one channel, while "high profile criminal
+       trials" from the same description returned @CourtTV, @48hours, @CRConfidential and
+       @NateTheLawyer. A two-word phrase is often too generic to identify a niche. */
+    return tri.concat(bi);
+  }
+
+  function topicQueries(titles, channelName, limit, about) {
     /* The channel name is deliberately NOT excluded from the subject phrase. Names usually
        describe the niche — "Pasta Kitchen", "History Marche" — so banning their words removed
        the very topic being searched for: "Pasta Kitchen" lost "pasta recipe" and fell back to
@@ -705,6 +735,11 @@
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .map(([phrase]) => phrase);
 
+    /* The description leads. A phrase repeated across titles is often a running story rather
+       than the niche, and on a news or case-driven channel that is always true. */
+    const fromAbout = phrasesFromAbout(about);
+    if (fromAbout.length) ranked = fromAbout.concat(ranked);
+
     if (!ranked.length) {
       const words = new Map();
       for (const t of list) {
@@ -719,9 +754,24 @@
         .map(([w]) => w);
     }
 
+    /* A phrase made entirely of the channel's own name searches for the channel, not its
+       niche: "law crime" returned only Law&Crime's second channel. Individual name words are
+       still allowed, because names describe niches — banning them outright cost "Pasta
+       Kitchen" the phrase "pasta recipe". Only an all-name phrase is rejected. */
+    const nameWords = new Set(titleTokens(channelName));
+
+    /* Phrases free of the channel's name describe the niche; phrases carrying it tend to be
+       branding that drifted into the sentence — "law crime multi", "carwow uk biggest". Both
+       are kept, but the clean ones are offered first so they take the query slots. */
+    const clean = ranked.filter((p2) => !p2.split(' ').some((w) => nameWords.has(w)));
+    const rest = ranked.filter((p2) => p2.split(' ').some((w) => nameWords.has(w)));
+    ranked = clean.concat(rest);
+
     const picked = [];
     for (const phrase of ranked) {
-      const words = new Set(phrase.split(' '));
+      const parts = phrase.split(' ');
+      if (parts.every((w) => nameWords.has(w))) continue;
+      const words = new Set(parts);
       if (picked.some((p) => p.split(' ').some((w) => words.has(w)))) continue;
       picked.push(phrase);
       if (picked.length >= (limit || 3)) break;
