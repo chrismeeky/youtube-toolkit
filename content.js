@@ -980,12 +980,19 @@
   /* The channel's own description of itself. Titles say what the latest videos are about;
      the description says what the channel is about, and on a news or case-driven channel
      those are entirely different things. */
+  /* Strictly the channel header. Searching the whole document found the featured video's
+     description instead — "How did a small fire create chaos onboard a cargo airliner..." —
+     and built the queries "air story", "ocean story" and "flight story" from it, which
+     returned @NatGeo, @FreeDocumentaryNature and @bedtimestoryco. A video's description
+     describes a video; only the header describes the channel. */
   function channelAboutText() {
-    const el = document.querySelector(
-      'yt-description-preview-view-model, #description-container, ' +
-      'ytd-channel-tagline-renderer, #channel-tagline, ' +
-      'yt-page-header-view-model yt-attributed-string');
-    const t = el ? text(el) : '';
+    const header = document.querySelector(
+      'yt-page-header-view-model, #channel-header, ytd-channel-tagline-renderer');
+    if (!header) return '';
+    const el = header.querySelector(
+      'yt-description-preview-view-model, #description-container, #channel-tagline, ' +
+      'yt-attributed-string') || header;
+    const t = text(el);
     return t.length > 12 ? t.slice(0, 600) : '';
   }
 

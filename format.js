@@ -693,9 +693,18 @@
        "multi live court" and "law crime multi", which read as news queries and returned
        @KSATnews, @GBHNews, @7news and @WIRED. The intact clause "high profile criminal
        trials" returned @CourtTV, @48hours, @CRConfidential and @NateTheLawyer. */
+    /* Plenty of descriptions are not descriptions. "Business inquiries:
+       aircrashinvestigation@intheblackmedia.com" is the whole visible description of a channel
+       about air crashes, and it produced the query "business inquiries story", which returned
+       @BusinessStoriesOfficial and @SapphicStories2026. Contact details, links and
+       social-media plugs are dropped before anything is built from them. */
+    const JUNK = /business inquir|inquiries|contact|sponsor|collab|patreon|instagram|twitter|tiktok|discord|merch|subscribe|@|https?:|www\.|\.com|\.net|\.org/i;
+
     const clauses = [];
+    const tails = [];
     const windows = [];
     for (const segment of String(about || '').split(/[,.;:|/!?()\n]+/)) {
+      if (JUNK.test(segment)) continue;
       const words = titleTokens(segment).filter((w) => GENRE_WORDS.indexOf(w) < 0);
       if (words.length >= 2 && words.length <= 5) {
         clauses.push(words.join(' '));
@@ -703,12 +712,18 @@
       }
       // Long clause: its tail carries the specifics, its opening carries boilerplate
       // ("X is the leading multi-platform network that covers ...").
-      if (words.length > 5) clauses.push(words.slice(-3).join(' '));
+      if (words.length > 5) tails.push(words.slice(-3).join(' '));
       for (let i = 0; i < words.length - 2; i++) {
         windows.push(words[i] + ' ' + words[i + 1] + ' ' + words[i + 2]);
       }
     }
-    return clauses.concat(windows);
+    /* Ordered by how much each is trusted, which the failures established:
+         intact clause  — the description said this, in one piece. Best.
+         tail           — the end of a long clause. Its opening was boilerplate, and these
+                          produced "law crime multi live court" and "history documentaries
+                          covering". Usable, not trusted.
+         window         — a sliding fragment. Last resort. */
+    return { clauses: clauses, tails: tails.concat(windows) };
   }
 
   function topicQueries(titles, channelName, limit, about) {
@@ -749,7 +764,36 @@
     /* The description leads. A phrase repeated across titles is often a running story rather
        than the niche, and on a news or case-driven channel that is always true. */
     const fromAbout = phrasesFromAbout(about);
-    if (fromAbout.length) ranked = fromAbout.concat(ranked);
+
+    /* The name, as a last resort. Channels routinely name their niche — "Air Crash
+       Investigation", "HistoryMarche" — and when the description is a contact address and the
+       titles are clickbait ("The Dubai Inferno That No One Survived"), the name is the only
+       thing on the page that says what the channel is about. */
+    const nameParts = titleTokens(channelName).filter((w) => GENRE_WORDS.indexOf(w) < 0);
+    const namePhrase = nameParts.length >= 2 ? nameParts.join(' ') : '';
+    /* A multi-word channel name beats a single-word fallback. "air story" and "flight story"
+       are what is left when nothing repeats and there is no usable description, and they
+       return whatever is vaguely about air; "air crash investigation" returns
+       @MaydayAirDisaster. The name goes above single words but stays below real phrases. */
+    /* Final order. An intact clause from the description is the strongest statement of what a
+       channel is; the channel's own name is next, since channels routinely name their niche;
+       then title phrases, then the untrusted fragments, then bare words. */
+    const titlePhrases = ranked.filter((r) => r.indexOf(' ') >= 0);
+    const singles = ranked.filter((r) => r.indexOf(' ') < 0);
+    /* Within the description's own clauses, the ones free of the channel's name come first.
+       The opening clause is almost always "<Channel> is the leading ... that covers", which
+       survives as a phrase but describes the company rather than the subject. */
+    const nameSet = new Set(titleTokens(channelName));
+    const orderedClauses = fromAbout.clauses
+      .map((c, i) => ({ c: c, i: i, owned: c.split(' ').filter((w) => nameSet.has(w)).length }))
+      .sort((a, b) => a.owned - b.owned || a.i - b.i)
+      .map((x) => x.c);
+
+    ranked = orderedClauses
+      .concat(namePhrase ? [namePhrase] : [])
+      .concat(titlePhrases)
+      .concat(fromAbout.tails)
+      .concat(singles);
 
     if (!ranked.length) {
       const words = new Map();
@@ -773,15 +817,29 @@
 
     /* Phrases free of the channel's name describe the niche; phrases carrying it tend to be
        branding that drifted into the sentence — "law crime multi", "carwow uk biggest". Both
-       are kept, but the clean ones are offered first so they take the query slots. */
-    const clean = ranked.filter((p2) => !p2.split(' ').some((w) => nameWords.has(w)));
-    const rest = ranked.filter((p2) => p2.split(' ').some((w) => nameWords.has(w)));
+       are kept, but the clean ones are offered first so they take the query slots.
+
+       The name phrase itself is exempt. It is a deliberate fallback, not drift, and this
+       partition was silently demoting it behind fragments like "first officer take" — which
+       is why the ordering above appeared to have no effect. */
+    /* Demote only phrases MOSTLY made of the name. Demoting on any shared word punished the
+       description's own clauses on channels named after their niche: "true crime legal" was
+       pushed behind "tupac murder" because Law&Crime contains the word "crime", which is the
+       subject, not the branding. */
+    const demoted = (p2) => {
+      if (p2 === namePhrase) return false;
+      const parts2 = p2.split(' ');
+      const owned = parts2.filter((w) => nameWords.has(w)).length;
+      return owned * 2 > parts2.length;   // strict majority: 2 of 4 is still a real phrase
+    };
+    const clean = ranked.filter((p2) => !demoted(p2));
+    const rest = ranked.filter(demoted);
     ranked = clean.concat(rest);
 
     const picked = [];
     for (const phrase of ranked) {
       const parts = phrase.split(' ');
-      if (parts.every((w) => nameWords.has(w))) continue;
+      if (parts.every((w) => nameWords.has(w)) && (picked.length || phrase !== namePhrase)) continue;
       /* Reject only a phrase that adds nothing — every word already used. Rejecting on any
          shared word was too strict: it threw away "criminal trials" and "true crime" for
          overlapping with "high profile criminal", then fell through to title-derived phrases
