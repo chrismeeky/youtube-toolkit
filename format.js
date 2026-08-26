@@ -658,17 +658,34 @@
   }
 
   /* "23 hours ago" -> "2026-08-22" (best effort; returns original on failure) */
+  const RELATIVE_MS = {
+    second: 1e3, minute: 6e4, hour: 36e5, day: 864e5,
+    week: 6048e5, month: 2592e6, year: 31536e6
+  };
+  /* YouTube writes "2mo ago" in search results and "2 months ago" elsewhere. "mo" is listed
+     before "m" so it is not read as minutes, which would date a two-month-old video to today. */
+  const SHORT_UNITS = { s: 'second', m: 'minute', h: 'hour', d: 'day', w: 'week', mo: 'month', y: 'year' };
+
   function relativeToISO(text, now) {
     if (!text) return '';
-    const m = String(text).match(/(\d+)\s*(second|minute|hour|day|week|month|year)/i);
-    if (!m) return text;
-    const n = parseInt(m[1], 10);
-    const unit = m[2].toLowerCase();
-    const ms = {
-      second: 1e3, minute: 6e4, hour: 36e5, day: 864e5,
-      week: 6048e5, month: 2592e6, year: 31536e6
-    }[unit];
-    const d = new Date((now ? now.getTime() : Date.now()) - n * ms);
+    const src = String(text);
+    let n = null;
+    let unit = null;
+
+    const long = src.match(/(\d+)\s*(second|minute|hour|day|week|month|year)/i);
+    if (long) {
+      n = parseInt(long[1], 10);
+      unit = long[2].toLowerCase();
+    } else {
+      const short = src.match(/(\d+)\s*(mo|s|m|h|d|w|y)\s*ago/i);
+      if (short) {
+        n = parseInt(short[1], 10);
+        unit = SHORT_UNITS[short[2].toLowerCase()];
+      }
+    }
+    if (n == null || !unit) return text;
+
+    const d = new Date((now ? now.getTime() : Date.now()) - n * RELATIVE_MS[unit]);
     return d.toISOString().slice(0, 10);
   }
 

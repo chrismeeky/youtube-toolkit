@@ -108,8 +108,12 @@
   /* View count and upload time live in unlabeled sibling spans, and YouTube renames the
      wrapper classes between builds — so match on the text itself, not on the markup. */
   const VIEWS_RE = /^(no views|[\d.,]+\s*[kmb]?\s*(views?|watching(\s+now)?))$/i;
+  /* "mo" must precede "m" in the alternation, otherwise "2mo ago" matches as 2 minutes and
+     leaves a stray "o". YouTube uses the compact forms in search and increasingly elsewhere;
+     the long forms remain in other surfaces, so both are accepted. */
   const DATE_RE = new RegExp(
     '^((streamed|premiered)\\s+)?\\d+\\s+(second|minute|hour|day|week|month|year)s?\\s+ago$' +
+    '|^((streamed|premiered)\\s+)?\\d+\\s*(mo|s|m|h|d|w|y)\\s+ago$' +
     '|^(premieres?|scheduled|starts|live)\\b' +
     '|^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\.?\\s+\\d{1,2},?\\s*\\d{0,4}$',
     'i'
