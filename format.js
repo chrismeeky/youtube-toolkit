@@ -685,19 +685,30 @@
      taken within punctuation-delimited segments — spanning a comma joins two unrelated
      clauses into nonsense like "trials true". */
   function phrasesFromAbout(about) {
-    const tri = [];
-    const bi = [];
+    /* Whole clauses first, sliding windows only as a fallback.
+
+       A description is written in phrases, and its punctuation already marks them out:
+       "...covers live court video, high-profile criminal trials, true crime and legal
+       analysis" is three ready-made queries. Sliding a window across it instead produced
+       "multi live court" and "law crime multi", which read as news queries and returned
+       @KSATnews, @GBHNews, @7news and @WIRED. The intact clause "high profile criminal
+       trials" returned @CourtTV, @48hours, @CRConfidential and @NateTheLawyer. */
+    const clauses = [];
+    const windows = [];
     for (const segment of String(about || '').split(/[,.;:|/!?()\n]+/)) {
       const words = titleTokens(segment).filter((w) => GENRE_WORDS.indexOf(w) < 0);
-      for (let i = 0; i < words.length - 2; i++) {
-        tri.push(words[i] + ' ' + words[i + 1] + ' ' + words[i + 2]);
+      if (words.length >= 2 && words.length <= 5) {
+        clauses.push(words.join(' '));
+        continue;                       // already a usable phrase
       }
-      for (let i = 0; i < words.length - 1; i++) bi.push(words[i] + ' ' + words[i + 1]);
+      // Long clause: its tail carries the specifics, its opening carries boilerplate
+      // ("X is the leading multi-platform network that covers ...").
+      if (words.length > 5) clauses.push(words.slice(-3).join(' '));
+      for (let i = 0; i < words.length - 2; i++) {
+        windows.push(words[i] + ' ' + words[i + 1] + ' ' + words[i + 2]);
+      }
     }
-    /* Longer wins. Measured: "law crime" returned one channel, while "high profile criminal
-       trials" from the same description returned @CourtTV, @48hours, @CRConfidential and
-       @NateTheLawyer. A two-word phrase is often too generic to identify a niche. */
-    return tri.concat(bi);
+    return clauses.concat(windows);
   }
 
   function topicQueries(titles, channelName, limit, about) {
@@ -771,25 +782,50 @@
     for (const phrase of ranked) {
       const parts = phrase.split(' ');
       if (parts.every((w) => nameWords.has(w))) continue;
-      const words = new Set(parts);
-      if (picked.some((p) => p.split(' ').some((w) => words.has(w)))) continue;
+      /* Reject only a phrase that adds nothing — every word already used. Rejecting on any
+         shared word was too strict: it threw away "criminal trials" and "true crime" for
+         overlapping with "high profile criminal", then fell through to title-derived phrases
+         and put "tupac murder" back in the third slot, which is the story-chasing query the
+         description was brought in to replace. */
+      /* Require real novelty. Rejecting only exact repeats let a sliding window over one
+         sentence produce "high profile criminal" and "profile criminal trials", which are the
+         same query twice; rejecting any overlap was too strict and fell through to titles.
+         A phrase must contribute at least two words nobody has used, or one if it is short. */
+      const used = new Set();
+      picked.forEach((p2) => p2.split(' ').forEach((w) => used.add(w)));
+      const fresh = parts.filter((w) => !used.has(w)).length;
+      if (picked.length && fresh < Math.min(2, parts.length)) continue;
       picked.push(phrase);
       if (picked.length >= (limit || 3)) break;
     }
     // Attach the genre so the query finds makers of this kind of video, not sellers or
     // an unrelated franchise that happens to share the words.
-    return picked.map((p) => (genre ? p + ' ' + genre : p));
+    /* Do not append a genre the phrase already carries in another form — "military history
+       documentaries" must not become "military history documentaries documentary". */
+    const stem = genre.slice(0, 5);
+    return picked.map((p) => {
+      if (!genre) return p;
+      if (p.split(' ').some((w) => w.slice(0, 5) === stem)) return p;
+      return p + ' ' + genre;
+    });
   }
 
   /* Channel handles from a search results page, in rank order and de-duplicated. */
-  function channelsFromSearch(html, exclude) {
+  /* Only the top of each result page. A channel ranking third for a topic is about that
+     topic; one appearing fortieth is usually a general-interest or local-news channel that
+     ranks a little for everything. Measured on Law&Crime, the tail is where @WatchMojo,
+     @WIRED, @KSATnews and @GBHNews came from. */
+  const SEARCH_DEPTH = 12;
+
+  function channelsFromSearch(html, exclude, depth) {
     if (!html) return [];
     const skip = String(exclude || '').toLowerCase();
+    const cut = depth || SEARCH_DEPTH;
     const seen = new Set();
     const out = [];
     const re = /"canonicalBaseUrl":"\/(@[\w.-]+)"|"\/(@[\w.-]+)"/g;
     let m;
-    while ((m = re.exec(html))) {
+    while ((m = re.exec(html)) && out.length < cut) {
       const handle = m[1] || m[2];
       if (!handle) continue;
       const low = handle.toLowerCase();
@@ -816,6 +852,10 @@
     const names = new Map();
     for (const list of perQuery || []) for (const h of list) names.set(h.toLowerCase(), h);
 
+    /* Appearing for two different topics is far stronger evidence than ranking well for one,
+       so that dominates the sort and search position only breaks ties. Without enough
+       queries to produce any overlap this degrades to plain concatenation, which is what it
+       was doing when every row read "rank N" and none read "both topics". */
     return Array.from(hits.keys())
       .filter((k) => names.has(k))
       .map((k) => ({ handle: names.get(k), queries: hits.get(k), rank: bestRank.get(k) }))

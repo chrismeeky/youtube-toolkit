@@ -1023,7 +1023,9 @@
     const rows = list.map((c) => {
       /* "Appeared for both topics" is the whole ranking signal — there is no similarity
          score here, and showing a percentage would imply a model that does not exist. */
-      const strength = c.queries > 1 ? 'both topics' : 'rank ' + (c.rank + 1);
+      const strength = c.queries > 1
+        ? c.queries + ' topics'          // confirmed across searches — the strongest signal
+        : 'rank ' + (c.rank + 1);
       return '<a class="ytc-sim__row" href="https://www.youtube.com/' + encodeURI(c.handle) +
         '" target="_blank" rel="noopener noreferrer">' +
         '<span class="ytc-sim__name">' + escapeHtml(c.handle) + '</span>' +

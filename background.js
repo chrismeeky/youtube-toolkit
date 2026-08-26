@@ -404,7 +404,11 @@ async function getMonetization(key, force) {
 
    Two search pages per channel, cached for a week. The titles come from the page the user is
    already looking at, so nothing is fetched to build the queries. */
-const SIM_QUERIES = 2;
+/* Three, not two. With two the result sets came back disjoint, so nothing was ever confirmed
+   by more than one topic and the ranking degraded to concatenating them — which is how
+   general-interest channels stayed near the top. A third query gives the overlap something to
+   happen in. */
+const SIM_QUERIES = 3;
 const SIM_BYTES = 2500000;
 const TTL_SIM = 7 * 24 * 60 * 60 * 1000;
 /* An empty result is usually a transient failure — a rate-limited fetch, a dropped
