@@ -1405,7 +1405,7 @@
             parts.push('<span class="ytc-vph" title="' +
               Math.round(vph).toLocaleString() + ' views per hour on average since it was posted. ' +
               'Estimated from the card\'s relative date, so approximate">' +
-              F.formatVph(vph) + '/h</span>');
+              F.formatVph(vph) + ' VPH</span>');
           }
         } catch (e) {
           /* keep the rest of the badge */
