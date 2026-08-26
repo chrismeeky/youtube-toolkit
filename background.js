@@ -51,7 +51,10 @@ const MAX_ACTIVE = 2;                      // be gentle: channel pages are ~1MB 
 const GAP_MS = 150;
 /* Bumped whenever a parsing bug could have written wrong values: entries from older
    versions are ignored, so a bad count can't outlive the fix that corrects it. */
-const CACHE_VERSION = 7;  // monetization now gated on the YPP subscriber threshold
+/* Bump whenever a cached value's MEANING changes, not just its shape. Similar-channel
+   results are cached for a week, so six rounds of query fixes were invisible to anyone who
+   had already opened the panel once — they kept seeing results built by the old logic. */
+const CACHE_VERSION = 8;  // similar-channel queries rebuilt; old results are not comparable
 
 const MAX_BYTES = 3000000;      // some channel pages bury the count deep in ytInitialData
 /* The /about cap is its own number because the lifetime totals sit at the very END of the
