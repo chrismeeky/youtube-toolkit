@@ -57,6 +57,12 @@
       publishDate: mf.publishDate || mf.uploadDate || '',
       category: mf.category || '',
       lengthSeconds: n(mf.lengthSeconds != null ? mf.lengthSeconds : vd.lengthSeconds),
+      /* Which channel this video actually belongs to, taken from the live player response
+         rather than the DOM. On a soft navigation the watch metadata element is reused and
+         its channel link can still name the previous video's channel, which is how a
+         monetization verdict carried over from one video to the next. */
+      channelHandle: (String(mf.ownerProfileUrl || '').match(/@[\w.-]+/) || [''])[0],
+      channelId: vd.channelId || mf.externalChannelId || '',
       // Real Shorts report isShortsEligible true (checked against 36s and 74s Shorts, and
       // against long videos which report false). The URL is definitive when it is present.
       shortsEligible: mf.isShortsEligible === true,

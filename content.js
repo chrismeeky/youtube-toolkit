@@ -1049,6 +1049,8 @@
     trackCardVideo(videoId);
     const tools = ensureTools(card);
     const el = wantMoney ? ensureMoneyBadge(tools, false) : null;
+    // The badge element survives navigation; clear the previous video's verdict from it.
+    if (el) el.removeAttribute('title');
 
     const page = await freshPage(videoId);
     if (card.dataset.ytcMoneyVid !== videoId) return true;   // navigated away while waiting
@@ -1073,7 +1075,12 @@
       const note = ads
         ? (ads.placements > 0 ? 'This video carries ad slots' : 'This video carries none')
         : '';
-      const key = findChannelKey(card);
+      /* Prefer the channel the live player names over the one the DOM shows. They disagree
+         for a moment after a soft navigation, and acting on the DOM's answer is what pinned
+         the previous video's monetization onto the next one. */
+      const st = page && page.stats;
+      const key = (st && (st.channelHandle || (st.channelId && 'channel/' + st.channelId))) ||
+        findChannelKey(card);
       if (!key) {
         paintMoney(el, null, false, note);
       } else {
@@ -1150,17 +1157,40 @@
   const ACTION_ROW = 'yt-flexible-actions-view-model, .yt-flexible-actions-view-model-wiz, ' +
     '#inner-header-container, #meta, #channel-header-container';
 
+  const CHANNEL_SCOPES = [
+    'ytd-browse[page-subtype="channels"]:not([hidden])',
+    'ytd-browse[page-subtype="channels"]',
+    'yt-page-header-view-model'
+  ];
+
+  function visible(el) {
+    return !!el && el.offsetParent !== null;
+  }
+
+  /* Searching the whole document took the first Subscribe button in document order, which
+     after leaving a watch page can be that page's own button, still in the DOM and hidden.
+     The badge then attached to something invisible and only a reload — which rebuilds the
+     document — appeared to fix it. Search inside the channel browser, and require the
+     element to actually be on screen. */
   function channelHeaderHost() {
-    const sub = document.querySelector(SUBSCRIBE_SELECTOR);
-    if (sub) {
+    let scope = null;
+    for (const sel of CHANNEL_SCOPES) {
+      const el = document.querySelector(sel);
+      if (visible(el)) { scope = el; break; }
+    }
+    if (!scope) return null;
+
+    const subs = Array.from(scope.querySelectorAll(SUBSCRIBE_SELECTOR)).filter(visible);
+    for (const sub of subs) {
       // Sit beside Subscribe, not inside its own wrapper, so YouTube's own re-renders of
       // that button do not take the badge with them.
       const row = sub.closest(ACTION_ROW);
-      if (row) return row;
-      if (sub.parentElement) return sub.parentElement;
+      if (visible(row)) return row;
+      if (visible(sub.parentElement)) return sub.parentElement;
     }
-    return document.querySelector('yt-page-header-view-model') ||
-           document.querySelector('#channel-header') || null;
+    const header = scope.querySelector('yt-page-header-view-model') ||
+      scope.querySelector('#channel-header');
+    return visible(header) ? header : null;
   }
 
   /* Re-evaluated on every scan rather than latched once, for the same reason the watch-page
