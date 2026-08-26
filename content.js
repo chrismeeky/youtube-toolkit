@@ -1080,10 +1080,12 @@
          the URL is missing its /k/<token> prefix, which otherwise looks like the feature
          quietly deciding to be worse. */
       if (res.indexProblem) {
-        note = '<b>Index not used: ' + escapeHtml(res.indexProblem) + '.</b> ' +
-          (/40[34]/.test(res.indexProblem)
-            ? 'Check the Index API URL includes its /k/&lt;token&gt; path. '
-            : '') + note;
+        const hint = /40[34]/.test(res.indexProblem)
+          ? 'Check the Index API URL includes its /k/&lt;token&gt; path. '
+          : /not been seeded/.test(res.indexProblem)
+            ? 'Seed this niche to get similarity scores and the Smaller filter. '
+            : '';
+        note = '<b>Index not used: ' + escapeHtml(res.indexProblem) + '.</b> ' + hint + note;
       }
     }
 

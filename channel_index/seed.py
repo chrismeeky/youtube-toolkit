@@ -91,6 +91,88 @@ def discover(query):
     return out
 
 
+def pending_sightings(url, service_key, limit):
+    """Channels users have looked at that nobody has indexed yet.
+
+    This is the flywheel. The service records a sighting whenever the extension asks about a
+    channel, so the queue fills with the channels people actually research rather than the
+    ones I thought to seed. Draining it grows the corpus along real demand — and the channels
+    someone looked at are, by definition, in a niche someone cares about.
+
+    Ordered by how often a channel has been seen: something twenty people opened is worth
+    indexing before something one person glanced at.
+    """
+    query = (url.rstrip("/") + "/rest/v1/channel_sightings"
+             "?select=id,handle,seen_count&fetched=is.false"
+             "&order=seen_count.desc,last_seen.desc&limit=" + str(limit))
+    req = urllib.request.Request(query, headers={
+        "apikey": service_key, "Authorization": "Bearer " + service_key})
+    with urllib.request.urlopen(req, timeout=30) as res:
+        rows = json.loads(res.read().decode("utf-8", "replace"))
+    return [(r["id"], r.get("handle") or "") for r in rows]
+
+
+def mark_fetched(ids, url, service_key):
+    """Clear the queue for what was just indexed, so the next drain moves on."""
+    if not ids:
+        return
+    quoted = ",".join('"' + i + '"' for i in ids)
+    endpoint = (url.rstrip("/") + "/rest/v1/channel_sightings?id=in.(" + quoted + ")")
+    body = json.dumps({"fetched": True}).encode()
+    req = urllib.request.Request(endpoint, data=body, method="PATCH", headers={
+        "apikey": service_key, "Authorization": "Bearer " + service_key,
+        "Content-Type": "application/json", "Prefer": "return=minimal"})
+    urllib.request.urlopen(req, timeout=30).close()
+
+
+JUNK_CLAUSE = re.compile(
+    r"business inquir|contact|sponsor|collab|patreon|instagram|twitter|tiktok|discord|merch|"
+    r"subscribe|@|https?:|www\.|\.com|\.net|\.org", re.I)
+# Openings that describe a company rather than a subject.
+BOILERPLATE = re.compile(r"^(welcome|this is|we are|i am|the official|official)\b|"
+                         r"\bis (the|a|an) (leading|official|home|best|number)\b", re.I)
+
+
+def expand_from(channel):
+    """A search query describing a channel, so its neighbours can be discovered.
+
+    Indexing the channels people look at is not enough on its own. A viewed channel arrives
+    alone, and a corpus of lone channels has nothing to compare against — Law&Crime was
+    indexed from the queue and still matched nothing, because the index held no other true
+    crime channel. Expanding turns each sighting into its niche.
+
+    Descriptions are written in clauses and their punctuation marks them out, so an intact
+    short clause is used rather than the opening sentence. Taking the opening produced
+    "Law&Crime Network Law & Crime is the leading", which describes the company; the third
+    clause of the same sentence is "high-profile criminal trials", which describes the work.
+    """
+    snip = channel.get("snippet") or {}
+    title = (snip.get("title") or "").strip()
+    desc = (snip.get("description") or "").strip()
+
+    for clause in re.split(r"[,.;:|\n]+", desc):
+        clause = clause.strip()
+        if not clause or JUNK_CLAUSE.search(clause) or BOILERPLATE.search(clause):
+            continue
+        words = clause.split()
+        if 2 <= len(words) <= 6:
+            return re.sub(r"\s+", " ", clause)[:80]
+
+    # No clause of a usable length: take the opening of the best one there is. A single long
+    # sentence with no commas is common, and its first words still name the subject.
+    for clause in re.split(r"[,.;:|\n]+", desc):
+        clause = clause.strip()
+        if not clause or JUNK_CLAUSE.search(clause) or BOILERPLATE.search(clause):
+            continue
+        words = clause.split()
+        if len(words) > 6:
+            return re.sub(r"\s+", " ", " ".join(words[:5]))[:80]
+
+    # Nothing usable in the description: the name often states the niche outright.
+    words = re.sub(r"[^\w\s]", " ", title).split()
+    return " ".join(words[:4]) if len(words) >= 2 else ""
+
+
 def resolve_handles(handles, api_key, quota):
     """@handle -> channel id. One unit each, so only used for explicitly named channels."""
     out = []
@@ -242,6 +324,11 @@ def main():
     ap = argparse.ArgumentParser(description="Seed the channel index.")
     ap.add_argument("--queries", help="comma-separated search queries to discover from")
     ap.add_argument("--channels", help="comma-separated @handles to seed directly")
+    ap.add_argument("--drain", action="store_true",
+                    help="index the channels users have actually looked at, most-seen first")
+    ap.add_argument("--expand", action="store_true",
+                    help="after indexing a channel, discover and index its neighbours too — "
+                         "a lone channel has nothing to be similar to")
     ap.add_argument("--limit", type=int, default=100, help="max channels this run")
     ap.add_argument("--cadence", action="store_true",
                     help="also fetch recent uploads (1 unit/channel) for upload rate and "
@@ -288,6 +375,15 @@ def main():
         handles = [h.strip() for h in args.channels.split(",") if h.strip()]
         found.extend(resolve_handles(handles, yt_key, quota))
 
+    drained = []
+    if args.drain:
+        if not (sb_url and sb_key):
+            print("--drain needs SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY", file=sys.stderr)
+            return 1
+        drained = pending_sightings(sb_url, sb_key, args.limit)
+        print(f"  queue: {len(drained)} channels users looked at but nobody indexed")
+        found.extend(drained)
+
     # De-duplicate, preserving discovery order.
     seen, ids = set(), []
     for cid, _ in found:
@@ -315,6 +411,26 @@ def main():
     channels = fetch_channels(ids, yt_key, quota)
     print(f"fetched {len(channels)} channel records  ({quota['units']} quota units so far)")
 
+    if args.expand:
+        extra = []
+        for ch in list(channels.values()):
+            query = expand_from(ch)
+            if not query:
+                continue
+            try:
+                pairs = discover(query)
+            except Exception as e:
+                print(f"  ! expand {query!r}: {e}", file=sys.stderr)
+                continue
+            fresh = [cid for cid, _ in pairs if cid not in channels]
+            print(f"  expand {query!r}: {len(fresh)} new")
+            extra.extend(fresh)
+            time.sleep(SCRAPE_GAP)
+        extra = [c for c in dict.fromkeys(extra)][:max(0, args.limit - len(channels))]
+        if extra:
+            channels.update(fetch_channels(extra, yt_key, quota))
+            print(f"expanded to {len(channels)} channels  ({quota['units']} units)")
+
     rows, texts, meta = [], [], []
     for cid, ch in channels.items():
         titles, newest, oldest = [], None, None
@@ -334,6 +450,10 @@ def main():
         rows.append(to_row(cid, ch, titles, newest, oldest, vec))
 
     upsert(rows, sb_url, sb_key)
+    # Only clear what actually made it in, so a channel that failed to fetch is offered again.
+    if drained:
+        stored = {r["id"] for r in rows}
+        mark_fetched([cid for cid, _ in drained if cid in stored], sb_url, sb_key)
     print(f"\nstored {len(rows)} channels")
     print(f"quota used: {quota['units']} units of 10,000/day")
     return 0

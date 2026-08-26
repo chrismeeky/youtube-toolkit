@@ -501,7 +501,12 @@ async function getSimilarChannels(key, titles, about, force, opts) {
      page fetches. */
   if (base) {
     const out = await similarFromIndex(base, key, titles, about, opts);
-    if (out && out.ok) {
+    /* An empty index answer is not an answer. The index only knows the niches that have been
+       seeded, so a channel from an unseeded one matches nothing above the similarity floor —
+       Law&Crime against an index holding only aviation channels returns zero rows, correctly,
+       and showing "nothing found" would be wrong when a live search would have found plenty.
+       Treat empty as a miss and fall through. */
+    if (out && out.ok && (out.channels || []).length) {
       return {
         channels: (out.channels || []).map((c) => ({
           handle: c.handle || c.title,
@@ -524,7 +529,9 @@ async function getSimilarChannels(key, titles, about, force, opts) {
        the user nothing — a URL missing its /k/<token> prefix answers 404, and the panel just
        quietly showed search results instead. Carry the reason through so the panel can say
        what happened. */
-    indexProblem = (out && out.reason) || 'index unavailable';
+    indexProblem = (out && out.ok)
+      ? 'no match in the index yet — this niche has not been seeded'
+      : ((out && out.reason) || 'index unavailable');
   }
 
   const id = 'sim:' + key;
