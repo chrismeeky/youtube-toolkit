@@ -379,7 +379,8 @@
      good on a second ask. Being strict here is what made auto-retry look dead while a manual
      click on the same badge worked. */
   function isTransientFailure(reason) {
-    return /HTTP (429|5\d\d)|fetch failed|no count in/i.test(reason || '');
+    // "rate limited" is our own backoff, not an answer about the channel — always retry it.
+    return /HTTP (429|5\d\d)|fetch failed|no count in|rate limited/i.test(reason || '');
   }
 
   function isRetryableFailure(reason) {

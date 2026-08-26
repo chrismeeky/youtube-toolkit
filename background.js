@@ -76,6 +76,33 @@ function pump() {
   }
 }
 
+/* Google answers a burst of channel lookups with its "unusual traffic" interstitial: the
+   request is redirected to google.com/sorry, which is cross-origin, so the fetch is rejected
+   by CORS and every lookup after it fails the same way. Retrying into that makes it worse.
+
+   Detect the pattern from consecutive failures rather than the URL, since a CORS rejection
+   never exposes where it landed, and stop making requests for a while. Existing cached
+   answers keep working; only new lookups pause. */
+const BREAKER_TRIP = 4;              // consecutive failures before backing off
+const BREAKER_COOLDOWN_MS = 90000;
+let consecutiveFailures = 0;
+let breakerUntil = 0;
+
+function noteResult(ok) {
+  if (ok) { consecutiveFailures = 0; breakerUntil = 0; return; }
+  consecutiveFailures++;
+  if (consecutiveFailures >= BREAKER_TRIP) breakerUntil = Date.now() + BREAKER_COOLDOWN_MS;
+}
+
+function breakerOpen() {
+  if (!breakerUntil) return false;
+  if (Date.now() < breakerUntil) return true;
+  // Cooldown over: allow one probe through rather than releasing the whole queue at once.
+  breakerUntil = 0;
+  consecutiveFailures = BREAKER_TRIP - 1;
+  return false;
+}
+
 function schedule(run) {
   return new Promise((resolve, reject) => {
     queue.push({ run, resolve, reject });
@@ -169,6 +196,9 @@ function attempts(key) {
 }
 
 async function fetchSubscribers(key) {
+  if (breakerOpen()) {
+    return { text: null, reason: 'rate limited by YouTube — backing off', stats: null };
+  }
   const notes = [];
   let stats = null;
   for (const a of attempts(key)) {
@@ -176,10 +206,11 @@ async function fetchSubscribers(key) {
     // Only /about carries the totals, so a later attempt that finds the count must not
     // discard what the first attempt already learned.
     if (out.stats && !stats) stats = out.stats;
-    if (out.text) return { ...out, stats: out.stats || stats };
+    if (out.text) { noteResult(true); return { ...out, stats: out.stats || stats }; }
     notes.push((a.credentials === 'omit' ? 'plain' : a.url.includes('/about') ? 'about' : 'cookies') +
       ': ' + out.reason);
   }
+  noteResult(false);
   return { text: null, reason: notes.join(' | '), stats };
 }
 
@@ -332,6 +363,11 @@ async function getMonetization(key, force) {
     const entry = { state: 'not-eligible', checked: 0, withAds: 0, subs, t: Date.now(), v: CACHE_VERSION };
     await chrome.storage.local.set({ [id]: entry });
     return entry;
+  }
+
+  if (breakerOpen()) {
+    // Do not cache a rate-limited miss as a verdict; leave it unknown and short-lived.
+    return { state: 'unknown', checked: 0, withAds: 0, t: 0, v: CACHE_VERSION };
   }
 
   const ids = await recentVideoIds(key, MON_SAMPLE);

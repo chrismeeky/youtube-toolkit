@@ -1474,11 +1474,50 @@
     retryNow(badge.dataset.key, 0);
   }, true);
 
+  /* A search page or feed can hold dozens of distinct channels, and each lookup pulls a
+     ~1.6MB /about page. Firing them all the moment the cards are decorated is a burst that
+     Google answers with its "unusual traffic" interstitial — the request is redirected to
+     google.com/sorry, which is cross-origin, so the fetch dies on CORS and every lookup after
+     it fails the same way. Badges then go missing in patches, which is what this looked like.
+
+     So only look up channels whose cards are on screen or nearly so, and let the rest arrive
+     as the user scrolls to them. */
+  const NEAR_VIEWPORT_PX = 600;
+
+  function nearViewport(card) {
+    const r = card.getBoundingClientRect();
+    // Height alone decides it: a card can have width while still being collapsed to nothing,
+    // and requiring both to be zero let those through as if they were on screen.
+    if (!r.height) return false;                      // not laid out yet
+    return r.top < window.innerHeight + NEAR_VIEWPORT_PX && r.bottom > -NEAR_VIEWPORT_PX;
+  }
+
+  const subsObserver = typeof IntersectionObserver === 'function'
+    ? new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          subsObserver.unobserve(e.target);
+          e.target.dataset.ytcNear = '1';
+          wantSubs(e.target);
+        }
+      }, { rootMargin: NEAR_VIEWPORT_PX + 'px' })
+    : null;
+
   function wantSubs(card) {
     if (!settings.showSubs) return;
     if (isAd(card)) return;
     // Playables, playlists and shelf tiles aren't videos and have no channel to look up.
     if (!findUrl(card).id) return;
+
+    // Far below the fold: wait until it is scrolled towards rather than fetching now.
+    if (!card.dataset.ytcNear && !nearViewport(card)) {
+      if (subsObserver && card.dataset.ytcObserved !== '1') {
+        card.dataset.ytcObserved = '1';
+        subsObserver.observe(card);
+      }
+      return;
+    }
+    card.dataset.ytcNear = '1';
 
     // The watch page prints the count next to the channel name — read it instead of
     // fetching, which is both faster and immune to picking the wrong channel's number.
