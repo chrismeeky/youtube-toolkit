@@ -131,6 +131,11 @@ JUNK_CLAUSE = re.compile(
 # Openings that describe a company rather than a subject.
 BOILERPLATE = re.compile(r"^(welcome|this is|we are|i am|the official|official)\b|"
                          r"\bis (the|a|an) (leading|official|home|best|number)\b", re.I)
+# A clause opening with one of these is a sentence about the channel, not a subject: "At ZOZA
+# & Friends", "every story sparks joy", "Our channel is a safe". The subjects come later —
+# "bedtime stories", "African folktales" — and those are what find neighbours.
+FILLER_START = re.compile(r"^(at|our|we|you|your|it|this|that|these|those|every|all|and|but|"
+                          r"or|so|then|here|there|i|my|from|with|for)\b", re.I)
 
 
 def expand_from(channel):
@@ -150,9 +155,23 @@ def expand_from(channel):
     title = (snip.get("title") or "").strip()
     desc = (snip.get("description") or "").strip()
 
+    title_words = {w.lower() for w in re.sub(r"[^\w\s]", " ", title).split()}
+
+    def usable(clause):
+        if not clause or JUNK_CLAUSE.search(clause) or BOILERPLATE.search(clause):
+            return False
+        if FILLER_START.match(clause):
+            return False
+        words = [w.lower() for w in re.sub(r"[^\w\s]", " ", clause).split()]
+        if not words:
+            return False
+        # Mostly the channel's own name: searching it finds the channel, not its niche.
+        owned = sum(1 for w in words if w in title_words)
+        return owned * 2 <= len(words)
+
     for clause in re.split(r"[,.;:|\n]+", desc):
         clause = clause.strip()
-        if not clause or JUNK_CLAUSE.search(clause) or BOILERPLATE.search(clause):
+        if not usable(clause):
             continue
         words = clause.split()
         if 2 <= len(words) <= 6:
@@ -162,7 +181,7 @@ def expand_from(channel):
     # sentence with no commas is common, and its first words still name the subject.
     for clause in re.split(r"[,.;:|\n]+", desc):
         clause = clause.strip()
-        if not clause or JUNK_CLAUSE.search(clause) or BOILERPLATE.search(clause):
+        if not usable(clause):
             continue
         words = clause.split()
         if len(words) > 6:
