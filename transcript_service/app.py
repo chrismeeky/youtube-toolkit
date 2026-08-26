@@ -31,6 +31,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
+import urllib.request
 from collections import OrderedDict, defaultdict, deque
 from hmac import compare_digest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,6 +59,143 @@ EXTRACTOR_ARGS = os.environ.get("YTDLP_EXTRACTOR_ARGS", "").strip()
 SUB_LANGS = os.environ.get("YTDLP_SUB_LANGS", "en.*,en").strip()
 
 MAX_CONCURRENCY = _int("MAX_CONCURRENCY", 2)
+
+# ─── channel index ───────────────────────────────────────────────────────────
+
+# Backs "Similar channels". The extension cannot query this itself: doing so would need the
+# Supabase service key and an OpenAI key in an extension anyone can unpack.
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
+EMBED_MODEL = "text-embedding-3-small"
+EMBED_DIMS = 512                  # must match vector(512) in migration 0003
+INDEX_READY = bool(SUPABASE_URL and SUPABASE_KEY)
+
+
+def _post_json(url, payload, headers, timeout=30):
+    body = json.dumps(payload).encode()
+    hdrs = {"Content-Type": "application/json"}
+    hdrs.update(headers)
+    req = urllib.request.Request(url, data=body, headers=hdrs, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        raw = res.read()
+    return json.loads(raw.decode("utf-8", "replace")) if raw else None
+
+
+def _supabase(path, payload, timeout=30, prefer=None):
+    headers = {"apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY}
+    if prefer:
+        headers["Prefer"] = prefer
+    return _post_json(SUPABASE_URL + path, payload, headers, timeout)
+
+
+def embed(text):
+    """One embedding, for the channel being asked about.
+
+    The query channel is usually already indexed, in which case its stored vector is used and
+    this is never called. It matters for a channel nobody has crawled yet: the extension sends
+    the text it can already see on the page, so an unknown channel still gets an answer.
+    """
+    if not OPENAI_KEY:
+        return None
+    data = {"model": EMBED_MODEL, "input": text[:2000], "dimensions": EMBED_DIMS}
+    out = _post_json("https://api.openai.com/v1/embeddings", data,
+                     {"Authorization": "Bearer " + OPENAI_KEY}, timeout=30)
+    rows = (out or {}).get("data") or []
+    return rows[0]["embedding"] if rows else None
+
+
+def indexed_channel(handle):
+    """Look up a channel by handle. Case-insensitively — the YouTube API returns customUrl
+    lowercased, so what is stored rarely matches what appears in the address bar."""
+    query = ("/rest/v1/channels?select=id,handle,title,embedding"
+             "&handle=ilike." + urllib.parse.quote(handle) + "&limit=1")
+    req = urllib.request.Request(
+        SUPABASE_URL + query,
+        headers={"apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as res:
+            rows = json.loads(res.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    return rows[0] if rows else None
+
+
+def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity):
+    """Nearest channels by topic, with the source channel excluded.
+
+    Ranking happens in Postgres via the match_channels RPC rather than here, so the rule
+    lives in one place and the vector never crosses the network twice.
+    """
+    known = indexed_channel(handle) if handle else None
+    vector = None
+    exclude = None
+    if known:
+        exclude = known.get("id")
+        raw = known.get("embedding")
+        # PostgREST returns a vector as its text form, "[0.1,0.2,...]".
+        if isinstance(raw, str):
+            try:
+                vector = json.loads(raw)
+            except ValueError:
+                vector = None
+        elif isinstance(raw, list):
+            vector = raw
+    if vector is None:
+        if not text:
+            return {"ok": False, "reason": "channel not indexed yet and no text supplied"}
+        vector = embed(text)
+    if vector is None:
+        return {"ok": False, "reason": "could not embed this channel"}
+
+    rows = _supabase("/rest/v1/rpc/match_channels", {
+        "query_embedding": vector,
+        "match_count": limit,
+        "exclude_id": exclude,
+        "min_subscribers": min_subs,
+        "max_subscribers": max_subs,
+        "min_similarity": min_similarity,
+    }, timeout=30)
+    return {"ok": True, "indexed": bool(known), "channels": rows or []}
+
+
+def _clamp(query, name, default, low, high):
+    try:
+        return max(low, min(high, int((query.get(name) or [default])[0])))
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp_float(query, name, default, low, high):
+    try:
+        return max(low, min(high, float((query.get(name) or [default])[0])))
+    except (TypeError, ValueError):
+        return default
+
+
+def _opt_int(query, name):
+    raw = (query.get(name) or [""])[0]
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        return None
+
+
+def record_sighting(channel_id, handle):
+    """A channel someone looked at. The crawler drains this queue later.
+
+    Deliberately fire-and-forget: a failure here must never affect the answer the user asked
+    for, and the queue is a convenience for growing the corpus, not part of the request.
+    """
+    if not (INDEX_READY and channel_id):
+        return
+    try:
+        _supabase("/rest/v1/channel_sightings?on_conflict=id",
+                  [{"id": channel_id, "handle": handle or None}],
+                  timeout=10, prefer="resolution=merge-duplicates,return=minimal")
+    except Exception:
+        pass
+
 RATE_LIMIT = _int("RATE_LIMIT", 30)          # requests per IP per window
 RATE_WINDOW = _int("RATE_WINDOW", 3600)      # seconds
 CACHE_SIZE = _int("CACHE_SIZE", 256)
@@ -316,6 +455,73 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self._send(204, {})
 
+    def do_POST(self):
+        """POST carries the channel's own text, for channels not yet in the index.
+
+        The extension is standing on the channel page and can already read its title,
+        description and recent video titles. Sending those means an unknown channel still
+        gets an answer — the server embeds what it was given rather than trying to fetch the
+        channel itself, which from a datacenter IP would mostly be refused anyway.
+        """
+        route = urlparse(self.path)
+        query = parse_qs(route.query)
+        ok, path = self.authorised(route.path, query)
+        if not ok:
+            self._send(404, {"ok": False, "reason": "not found"})
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 64000:
+            self._send(400, {"ok": False, "reason": "bad body"})
+            return
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8", "replace"))
+        except ValueError:
+            self._send(400, {"ok": False, "reason": "bad json"})
+            return
+        if not isinstance(body, dict):
+            self._send(400, {"ok": False, "reason": "bad json"})
+            return
+
+        if path == "/similar":
+            if not INDEX_READY:
+                self._send(200, {"ok": False, "reason": "channel index not configured"})
+                return
+            handle = str(body.get("channel") or "").strip()
+            if handle and not handle.startswith("@"):
+                handle = "@" + handle
+            if not handle:
+                self._send(400, {"ok": False, "reason": "channel required"})
+                return
+
+            text = "\n".join(str(x) for x in [
+                body.get("title") or "",
+                (body.get("about") or "")[:800],
+                " · ".join([str(t) for t in (body.get("videoTitles") or [])][:10]),
+            ] if x)
+
+            def as_int(name):
+                try:
+                    v = body.get(name)
+                    return int(v) if v not in (None, "") else None
+                except (TypeError, ValueError):
+                    return None
+
+            limit = as_int("limit") or 25
+            result = similar_channels(
+                handle, text, max(1, min(100, limit)),
+                as_int("minSubs"), as_int("maxSubs"),
+                float(body.get("minSimilarity") or 0.55))
+            # Growing the corpus is a side effect of being asked, never a precondition.
+            record_sighting(body.get("channelId"), handle)
+            self._send(200, result)
+            return
+
+        self._send(404, {"ok": False, "reason": "unknown route"})
+
     def do_GET(self):
         route = urlparse(self.path)
         query = parse_qs(route.query)
@@ -331,6 +537,24 @@ class Handler(BaseHTTPRequestHandler):
         if not ok:
             # 404 rather than 401: an unauthenticated scanner learns nothing about what is here.
             self._send(404, {"ok": False, "reason": "not found"})
+            return
+
+        if path == "/similar":
+            if not INDEX_READY:
+                self._send(200, {"ok": False, "reason": "channel index not configured"})
+                return
+            handle = (query.get("channel") or [""])[0].strip()
+            if handle and not handle.startswith("@"):
+                handle = "@" + handle
+            if not handle:
+                self._send(400, {"ok": False, "reason": "channel required"})
+                return
+            self._send(200, similar_channels(
+                handle, "",
+                _clamp(query, "limit", 25, 1, 100),
+                _opt_int(query, "min_subs"),
+                _opt_int(query, "max_subs"),
+                _clamp_float(query, "min_similarity", 0.55, 0.0, 1.0)))
             return
 
         if path == "/health":

@@ -138,20 +138,29 @@ def fetch_uploads(playlist_id, api_key, quota, want=15):
     except urllib.error.HTTPError:
         return [], None
     quota["units"] += 1
-    titles, newest = [], None
+    titles, newest, oldest = [], None, None
     for item in data.get("items") or []:
         snip = item.get("snippet") or {}
         title = (snip.get("title") or "").strip()
         if title and title.lower() not in ("private video", "deleted video"):
             titles.append(title)
         stamp = snip.get("publishedAt")
-        if stamp and (newest is None or stamp > newest):
-            newest = stamp
-    return titles, newest
+        if stamp:
+            if newest is None or stamp > newest:
+                newest = stamp
+            if oldest is None or stamp < oldest:
+                oldest = stamp
+    return titles, newest, oldest
 
 
-def uploads_per_month(titles_count, oldest, newest):
-    if not oldest or not newest or titles_count < 2:
+def uploads_per_month(count, oldest, newest):
+    """Uploads per month across the sampled window.
+
+    Derived from the sample's own span rather than the channel's lifetime: a channel that
+    posted daily for a year and then stopped is not uploading thirty times a month now, and
+    the recent window is what the question is about.
+    """
+    if not oldest or not newest or count < 2:
         return None
     from datetime import datetime
     fmt = "%Y-%m-%dT%H:%M:%SZ"
@@ -161,7 +170,7 @@ def uploads_per_month(titles_count, oldest, newest):
     except ValueError:
         return None
     months = max((b - a).days / 30.0, 0.25)
-    return round(titles_count / months, 2)
+    return round(count / months, 2)
 
 
 # ─── embedding ───────────────────────────────────────────────────────────────
@@ -201,7 +210,7 @@ def upsert(rows, url, service_key):
     })
 
 
-def to_row(cid, channel, video_titles, newest, vector):
+def to_row(cid, channel, video_titles, newest, oldest, vector):
     snip = channel.get("snippet") or {}
     stats = channel.get("statistics") or {}
     views = int(stats.get("viewCount") or 0)
@@ -221,6 +230,7 @@ def to_row(cid, channel, video_titles, newest, vector):
         "published_at": snip.get("publishedAt"),
         "avg_views": (views // count) if count else None,
         "last_upload_at": newest,
+        "uploads_per_mo": uploads_per_month(len(video_titles), oldest, newest),
         "embedding": vector,
         "embed_source": embed_text(channel, video_titles)[:500],
     }
@@ -307,21 +317,21 @@ def main():
 
     rows, texts, meta = [], [], []
     for cid, ch in channels.items():
-        titles, newest = [], None
+        titles, newest, oldest = [], None, None
         if args.cadence:
             uploads = ((ch.get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads")
             if uploads:
-                titles, newest = fetch_uploads(uploads, yt_key, quota)
+                titles, newest, oldest = fetch_uploads(uploads, yt_key, quota)
         texts.append(embed_text(ch, titles))
-        meta.append((cid, ch, titles, newest))
+        meta.append((cid, ch, titles, newest, oldest))
 
     print(f"embedding {len(texts)} channels ({EMBED_MODEL}, {EMBED_DIMS}d)…")
     vectors = []
     for i in range(0, len(texts), 96):
         vectors.extend(embed_batch(texts[i:i + 96], openai_key))
 
-    for (cid, ch, titles, newest), vec in zip(meta, vectors):
-        rows.append(to_row(cid, ch, titles, newest, vec))
+    for (cid, ch, titles, newest, oldest), vec in zip(meta, vectors):
+        rows.append(to_row(cid, ch, titles, newest, oldest, vec))
 
     upsert(rows, sb_url, sb_key)
     print(f"\nstored {len(rows)} channels")
