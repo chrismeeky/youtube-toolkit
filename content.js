@@ -996,6 +996,19 @@
     return t.length > 12 ? t.slice(0, 600) : '';
   }
 
+  function channelOwnStats() {
+    const header = document.querySelector('yt-page-header-view-model, #channel-header');
+    const title = header ? text(header.querySelector('h1, .yt-core-attributed-string')) : '';
+    let subscribers = null;
+    if (header) {
+      const el = Array.from(header.querySelectorAll('span, div'))
+        .find((n) => !n.children.length && /subscriber/i.test(text(n)));
+      if (el) subscribers = F.viewsToNumber(text(el));
+    }
+    const m = document.documentElement.innerHTML.match(/"channelId":"(UC[\w-]{20,24})"/);
+    return { channelId: m ? m[1] : null, title: title || '', subscribers: subscribers };
+  }
+
   function similarPanel() {
     let el = document.querySelector('.ytc-sim');
     if (el) return el;
@@ -1005,6 +1018,7 @@
       '<div class="ytc-sim__bar">' +
         '<span class="ytc-sim__title">Similar channels</span>' +
         '<span class="ytc-sim__actions">' +
+          '<button type="button" class="ytc-sim__small" title="Only channels smaller than this one">Smaller</button>' +
           '<button type="button" class="ytc-sim__refresh">Refresh</button>' +
           '<button type="button" class="ytc-sim__x" aria-label="Close">✕</button>' +
         '</span>' +
@@ -1012,14 +1026,21 @@
     el.querySelector('.ytc-sim__x').addEventListener('click', () => el.remove());
     // Results are cached for a week, so there has to be a way to ask again.
     el.querySelector('.ytc-sim__refresh').addEventListener('click', () => askSimilar(true));
+    el.querySelector('.ytc-sim__small').addEventListener('click', () => {
+      simFilter.smallOnly = !simFilter.smallOnly;
+      askSimilar(true);
+    });
     document.body.appendChild(el);
     return el;
   }
+
+  const simFilter = { smallOnly: false };
 
   function renderSimilar(res) {
     const panel = similarPanel();
     const body = panel.querySelector('.ytc-sim__body');
     const list = (res && res.channels) || [];
+    const fromIndex = res && res.source === 'index';
 
     if (!list.length) {
       body.innerHTML = '<p class="ytc-sim__note">' +
@@ -1028,21 +1049,40 @@
     }
 
     const rows = list.map((c) => {
-      /* "Appeared for both topics" is the whole ranking signal — there is no similarity
-         score here, and showing a percentage would imply a model that does not exist. */
-      const strength = c.queries > 1
-        ? c.queries + ' topics'          // confirmed across searches — the strongest signal
-        : 'rank ' + (c.rank + 1);
-      return '<a class="ytc-sim__row" href="https://www.youtube.com/' + encodeURI(c.handle) +
+      const handle = c.handle || c.title || '';
+      /* Two different things can be shown here and they must not look alike. The index gives
+         a real similarity score from an embedding; search only gives the position a channel
+         happened to rank in, which is not a score and must not be dressed up as one. */
+      const strength = fromIndex
+        ? Math.round((c.similarity || 0) * 100) + '%'
+        : (c.queries > 1 ? c.queries + ' topics' : 'rank ' + ((c.rank || 0) + 1));
+      const subs = c.subscribers ? F.compact(c.subscribers) + ' subs' : '';
+      const views = c.avgViews ? F.compact(c.avgViews) + '/video' : '';
+      const detail = [subs, views].filter(Boolean).join('  ·  ');
+      return '<a class="ytc-sim__row" href="https://www.youtube.com/' + encodeURI(handle) +
         '" target="_blank" rel="noopener noreferrer">' +
-        '<span class="ytc-sim__name">' + escapeHtml(c.handle) + '</span>' +
+        '<span class="ytc-sim__main">' +
+          '<span class="ytc-sim__name">' + escapeHtml(handle) + '</span>' +
+          (detail ? '<span class="ytc-sim__sub">' + escapeHtml(detail) + '</span>' : '') +
+        '</span>' +
         '<span class="ytc-sim__meta">' + strength + '</span></a>';
     }).join('');
 
-    const queries = (res.queries || []).map((q) => escapeHtml(q)).join('  ·  ');
-    body.innerHTML = rows +
-      '<p class="ytc-sim__note">Channels ranking for this channel\'s own topics: ' +
-      queries + '. Found by searching YouTube, not by a similarity model.</p>';
+    const note = fromIndex
+      ? 'Ranked by topic similarity against the channel index' +
+        (res.indexed ? '' : ' — this channel is not indexed yet, so its own page text was used')
+      : 'Channels ranking for this channel\'s own topics: ' +
+        (res.queries || []).map((q) => escapeHtml(q)).join('  ·  ') +
+        '. Found by searching YouTube, not by a similarity model.';
+
+    body.innerHTML = rows + '<p class="ytc-sim__note">' + note + '</p>';
+
+    const toggle = panel.querySelector('.ytc-sim__small');
+    if (toggle) {
+      toggle.classList.toggle('ytc-sim__small--on', simFilter.smallOnly);
+      // Only the index can answer "smaller than this" — search returns whoever ranks.
+      toggle.style.display = fromIndex ? '' : 'none';
+    }
   }
 
   function escapeHtml(v) {
@@ -1059,7 +1099,15 @@
       '<p class="ytc-sim__note"><span class="ytc-spin"></span> Searching…</p>';
     const titles = channelVideoTitles(20);
     const about = channelAboutText();
-    chrome.runtime.sendMessage({ type: 'ytc-similar', key, titles, about, force }, (res) => {
+    const own = channelOwnStats();
+    const opts = {
+      channelId: own.channelId,
+      title: own.title,
+      // "Smaller than this" is the question worth asking: an established channel's peers are
+      // easy to name, while the ones just below it are what nobody can see.
+      maxSubs: simFilter.smallOnly && own.subscribers ? own.subscribers : null
+    };
+    chrome.runtime.sendMessage({ type: 'ytc-similar', key, titles, about, force, opts }, (res) => {
       if (chrome.runtime.lastError) {
         renderSimilar({ channels: [], reason: 'Extension reloaded — refresh this tab' });
         return;

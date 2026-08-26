@@ -473,3 +473,16 @@ html[dark] .ytc-sim__row:hover { background: rgba(255,255,255,.08); }
 .ytc-sim__refresh:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06)); }
 html[dark] .ytc-sim__refresh { color: #aaa; }
 html[dark] .ytc-sim__refresh:hover { background: rgba(255,255,255,.08); }
+.ytc-sim__small {
+  border: 0; background: none; cursor: pointer; padding: 4px 6px; border-radius: 6px;
+  font: 500 11px/1 Roboto, Arial, sans-serif; color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-sim__small:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06)); }
+.ytc-sim__small--on { color: #fff; background: #0f9d58; }
+.ytc-sim__small--on:hover { background: #0c8248; }
+.ytc-sim__main { display: flex; flex-direction: column; min-width: 0; }
+.ytc-sim__sub { font-size: 10px; color: var(--yt-spec-text-secondary, #606060); margin-top: 2px; }
+html[dark] .ytc-sim__small { color: #aaa; }
+html[dark] .ytc-sim__small:hover { background: rgba(255,255,255,.08); }
+html[dark] .ytc-sim__small--on { color: #fff; }
+html[dark] .ytc-sim__sub { color: #aaa; }

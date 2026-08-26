@@ -450,7 +450,78 @@ async function searchPage(query) {
   return buf;
 }
 
-async function getSimilarChannels(key, titles, about, force) {
+/* The index, when one is configured.
+
+   Scored by topic rather than by who ranks, which is the whole difference: a channel with
+   1,780 subscribers comes back at 66% similarity next to channels a thousand times its size,
+   and no amount of searching would ever have surfaced it.
+
+   The channel's own text goes with the request so a channel nobody has crawled yet still gets
+   an answer — the server embeds what it is given rather than trying to fetch the channel,
+   which from a datacenter IP would mostly be refused. */
+async function similarFromIndex(base, key, titles, about, opts) {
+  const url = base.replace(/\/$/, '') + '/similar';
+  const body = {
+    channel: key,
+    channelId: (opts && opts.channelId) || null,
+    title: (opts && opts.title) || '',
+    about: about || '',
+    videoTitles: (titles || []).slice(0, 10),
+    limit: 25,
+    minSubs: (opts && opts.minSubs) || null,
+    maxSubs: (opts && opts.maxSubs) || null,
+    minSimilarity: 0.55
+  };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    if (!res.ok) return { ok: false, reason: 'index ' + res.status };
+    return await res.json();
+  } catch (e) {
+    return { ok: false, reason: 'index unreachable' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getSimilarChannels(key, titles, about, force, opts) {
+  const settings = await chrome.storage.sync.get('apiUrl');
+  const base = (settings.apiUrl || '').trim();
+
+  /* The index answers differently depending on the filters, so its results are not cached
+     here — the server holds the corpus, and a cached list would go stale the moment the
+     filter changed. The search fallback below is cached, because each lookup there costs two
+     page fetches. */
+  if (base) {
+    const out = await similarFromIndex(base, key, titles, about, opts);
+    if (out && out.ok) {
+      return {
+        channels: (out.channels || []).map((c) => ({
+          handle: c.handle || c.title,
+          title: c.title,
+          similarity: c.similarity,
+          subscribers: c.subscribers,
+          avgViews: c.avg_views,
+          uploadsPerMo: c.uploads_per_mo,
+          lastUpload: c.last_upload_at
+        })),
+        source: 'index',
+        indexed: !!out.indexed,
+        queries: [],
+        reason: '',
+        t: Date.now(),
+        v: CACHE_VERSION
+      };
+    }
+    // Fall through to search rather than showing nothing when the backend is unavailable.
+  }
+
   const id = 'sim:' + key;
   if (!force) {
     const store = await chrome.storage.local.get(id);
@@ -473,7 +544,7 @@ async function getSimilarChannels(key, titles, about, force) {
   noteResult(perQuery.length > 0);
 
   const channels = F.rankSimilar(perQuery, 25);
-  const entry = { channels, queries, reason: '', t: Date.now(), v: CACHE_VERSION };
+  const entry = { channels, queries, source: 'search', reason: '', t: Date.now(), v: CACHE_VERSION };
   await chrome.storage.local.set({ [id]: entry });
   return entry;
 }
@@ -537,7 +608,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'ytc-similar' && msg.key) {
-    getSimilarChannels(msg.key, msg.titles, msg.about, msg.force)
+    getSimilarChannels(msg.key, msg.titles, msg.about, msg.force, msg.opts)
       .then(sendResponse)
       .catch((e) => sendResponse({ channels: [], queries: [], reason: String(e) }));
     return true;
