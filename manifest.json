@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube Toolkit",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Copy video details as clean text, plus outlier scores, views/hour, engagement and one-click transcripts \u2014 on any YouTube page.",
   "permissions": [
     "storage",

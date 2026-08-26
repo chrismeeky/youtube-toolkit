@@ -1393,14 +1393,22 @@
          relative timestamp, so this is coarser than the watch page's figure, which has an
          exact publish time; it is for comparing cards against each other. Hidden below 1/h,
          where the number is noise rather than information. */
+      /* Wrapped because this is the last thing added to the badge and the least important
+         thing on it. An exception here previously took the whole render with it — the
+         subscriber count and the outlier vanished alongside the pill that caused it, which
+         made a small bug look like a total failure. */
       if (settings.showStats) {
-        const meta = findMeta(card);
-        const vph = F.vphFromRelative(meta.views, meta.date, Date.now());
-        if (vph != null && vph >= 1) {
-          parts.push('<span class="ytc-vph" title="' +
-            Math.round(vph).toLocaleString() + ' views per hour on average since it was posted. ' +
-            'Estimated from the card\'s relative date, so approximate">' +
-            F.formatVph(vph) + '/h</span>');
+        try {
+          const meta = findMeta(card);
+          const vph = F.vphFromRelative(meta.views, meta.date, Date.now());
+          if (vph != null && vph >= 1) {
+            parts.push('<span class="ytc-vph" title="' +
+              Math.round(vph).toLocaleString() + ' views per hour on average since it was posted. ' +
+              'Estimated from the card\'s relative date, so approximate">' +
+              F.formatVph(vph) + '/h</span>');
+          }
+        } catch (e) {
+          /* keep the rest of the badge */
         }
       }
 

@@ -560,7 +560,7 @@
     if (!stats || !stats.views) return null;
     const views = stats.views;
     const at = stats.publishDate ? new Date(stats.publishDate).getTime() : NaN;
-    const hours = isNaN(at) ? null : Math.max(1, ((now || Date.now()) - at) / 3600000);
+    const hours = isNaN(at) ? null : Math.max(1, (asMillis(now) - at) / 3600000);
     const len = lengthBand(stats);
     const per = (rpm) => (views / 1000) * rpm * len.factor;
     return {
@@ -668,6 +668,17 @@
 
   /* Shared by relativeToISO and by the cards' views-per-hour pill, which needs the elapsed
      time rather than a date string. Returns null when the text is not a relative time. */
+  /* "now" is accepted as a Date, a timestamp, or omitted. The module was inconsistent —
+     videoMetrics took a number while this took a Date — and a caller passing the wrong one
+     threw, which aborted the whole badge render rather than just losing this value. Normalise
+     instead of relying on every call site to remember. */
+  function asMillis(now) {
+    if (now == null) return Date.now();
+    if (typeof now === 'number') return now;
+    if (typeof now.getTime === 'function') return now.getTime();
+    return Date.now();
+  }
+
   function relativeToDate(text, now) {
     if (!text) return null;
     const src = String(text);
@@ -686,7 +697,7 @@
       }
     }
     if (n == null || !unit) return null;
-    return new Date((now ? now.getTime() : Date.now()) - n * RELATIVE_MS[unit]);
+    return new Date(asMillis(now) - n * RELATIVE_MS[unit]);
   }
 
   function relativeToISO(text, now) {
@@ -705,7 +716,7 @@
     if (!views) return null;
     const at = relativeToDate(dateText, now);
     if (!at) return null;
-    const hours = Math.max(1, ((now ? now.getTime() : Date.now()) - at.getTime()) / 3600000);
+    const hours = Math.max(1, (asMillis(now) - at.getTime()) / 3600000);
     return views / hours;
   }
 
