@@ -549,11 +549,29 @@ async function getSimilarChannels(key, titles, about, force, opts) {
   }
 
   const perQuery = [];
+  const discovered = [];
   for (const q of queries) {
     const html = await schedule(() => searchPage(q));
-    if (html) perQuery.push(F.channelsFromSearch(html, key));
+    if (!html) continue;
+    perQuery.push(F.channelsFromSearch(html, key));
+    // The same scrape already contains the ids the index needs. Throwing them away was why
+    // an unseeded niche stayed unseeded no matter how many people looked at it.
+    for (const pair of F.channelPairsFromSearch(html)) discovered.push(pair);
   }
   noteResult(perQuery.length > 0);
+
+  /* Hand the discovery to the index. The extension can scrape search because it runs on a
+     residential connection; the server cannot, but it holds the keys to enrich and embed.
+     Fire-and-forget — this fills the niche for whoever looks next, and must never delay or
+     break the answer being given now. */
+  if (base && discovered.length) {
+    const seed = discovered.slice(0, 40);
+    fetch(base.replace(/\/$/, '') + '/ingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channels: seed })
+    }).catch(() => { /* the answer above is unaffected */ });
+  }
 
   const channels = F.rankSimilar(perQuery, 25);
   const entry = { channels, queries, source: 'search', reason: '',

@@ -880,6 +880,28 @@
      @WIRED, @KSATnews and @GBHNews came from. */
   const SEARCH_DEPTH = 12;
 
+  /* The same scrape, but keeping the channel ids alongside the handles.
+
+     Search result pages pair browseId with canonicalBaseUrl, so a scrape the extension is
+     already performing yields exactly what the index needs to enrich a channel: the id the
+     YouTube API takes. Discovery has to happen here rather than on the server, because a
+     server scraping YouTube search gets the bot interstitial — the extension is on a
+     residential connection, which is the only reason this works at all. */
+  function channelPairsFromSearch(html, depth) {
+    if (!html) return [];
+    const cut = depth || SEARCH_DEPTH;
+    const seen = new Set();
+    const out = [];
+    const re = /"browseId":"(UC[\w-]{20,24})","canonicalBaseUrl":"\/(@[\w.-]+)"/g;
+    let m;
+    while ((m = re.exec(html)) && out.length < cut) {
+      if (seen.has(m[1])) continue;
+      seen.add(m[1]);
+      out.push({ id: m[1], handle: m[2] });
+    }
+    return out;
+  }
+
   function channelsFromSearch(html, exclude, depth) {
     if (!html) return [];
     const skip = String(exclude || '').toLowerCase();
@@ -1159,7 +1181,7 @@
     DEFAULTS, SEPARATORS, LAYOUTS, FIELD_ORDER, FIELD_LABELS, SAMPLE,
     merge, formatOne, formatList, viewsToNumber, relativeToISO, compact, parseSubscribers,
     isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken,
-    parseChannelStats, adSignalFromHtml, monetizationVerdict,
+    parseChannelStats, adSignalFromHtml, monetizationVerdict, channelPairsFromSearch,
     videoMetrics, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH,
     relativeToDate, vphFromRelative,
     topicQueries, channelsFromSearch, rankSimilar,

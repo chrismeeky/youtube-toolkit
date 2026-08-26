@@ -181,6 +181,125 @@ def _opt_int(query, name):
         return None
 
 
+YT_API = "https://www.googleapis.com/youtube/v3"
+YT_KEY = os.environ.get("YOUTUBE_API_KEY") or os.environ.get("NEXT_PUBLIC_YOUTUBE_API_KEY", "")
+# Below this, a channel is not a competitor anybody is looking for, and indexing it only
+# crowds the results. The 11-subscriber channel that reached the index during seeding is
+# exactly what this keeps out.
+MIN_INDEX_SUBS = 100
+INGEST_READY = bool(INDEX_READY and OPENAI_KEY and YT_KEY)
+
+
+def _get_json(url, timeout=30):
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return json.loads(res.read().decode("utf-8", "replace"))
+
+
+def fetch_channel_records(ids):
+    """Up to 50 channels for a single quota unit — the reason ingesting from user activity
+    is affordable rather than something that needs rationing."""
+    out = {}
+    for i in range(0, len(ids), 50):
+        batch = [c for c in ids[i:i + 50] if re.match(r"^UC[\w-]{20,24}$", c or "")]
+        if not batch:
+            continue
+        url = ("%s/channels?part=snippet,statistics&id=%s&maxResults=50&key=%s"
+               % (YT_API, ",".join(batch), YT_KEY))
+        try:
+            data = _get_json(url)
+        except Exception:
+            continue
+        for item in data.get("items") or []:
+            out[item["id"]] = item
+    return out
+
+
+def embed_many(texts):
+    data = {"model": EMBED_MODEL, "input": texts, "dimensions": EMBED_DIMS}
+    out = _post_json("https://api.openai.com/v1/embeddings", data,
+                     {"Authorization": "Bearer " + OPENAI_KEY}, timeout=60)
+    rows = sorted((out or {}).get("data") or [], key=lambda r: r["index"])
+    return [r["embedding"] for r in rows]
+
+
+def already_indexed(ids):
+    if not ids:
+        return set()
+    quoted = ",".join('"' + i + '"' for i in ids)
+    url = SUPABASE_URL + "/rest/v1/channels?select=id&id=in.(" + urllib.parse.quote(quoted) + ")"
+    req = urllib.request.Request(url, headers={
+        "apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as res:
+            return {r["id"] for r in json.loads(res.read().decode("utf-8", "replace"))}
+    except Exception:
+        return set()
+
+
+def ingest_channels(pairs):
+    """Index channels the extension discovered, so a niche fills itself in from use.
+
+    The division of labour is what makes this work: the extension scrapes search from a
+    residential connection, because a server doing the same gets the bot interstitial, and
+    the server enriches through the API, because that needs keys no extension should carry.
+    """
+    if not INGEST_READY:
+        return {"ok": False, "reason": "ingest not configured"}
+
+    wanted = [p.get("id") for p in pairs if p.get("id")][:50]
+    fresh = [c for c in wanted if c not in already_indexed(wanted)]
+    if not fresh:
+        return {"ok": True, "added": 0, "skipped": len(wanted)}
+
+    records = fetch_channel_records(fresh)
+    rows, texts, keep = [], [], []
+    for cid, ch in records.items():
+        stats = ch.get("statistics") or {}
+        subs = int(stats.get("subscriberCount") or 0)
+        if subs and subs < MIN_INDEX_SUBS:
+            continue
+        snip = ch.get("snippet") or {}
+        text = "\n".join(x for x in [snip.get("title") or "",
+                                     (snip.get("description") or "")[:800]] if x)[:2000]
+        if not text.strip():
+            continue
+        texts.append(text)
+        keep.append((cid, ch, text))
+
+    if not texts:
+        return {"ok": True, "added": 0, "skipped": len(wanted)}
+
+    vectors = embed_many(texts)
+    for (cid, ch, text), vec in zip(keep, vectors):
+        snip = ch.get("snippet") or {}
+        stats = ch.get("statistics") or {}
+        views = int(stats.get("viewCount") or 0)
+        count = int(stats.get("videoCount") or 0)
+        handle = (snip.get("customUrl") or "").strip()
+        if handle and not handle.startswith("@"):
+            handle = "@" + handle
+        rows.append({
+            "id": cid,
+            "handle": handle or None,
+            "title": snip.get("title") or cid,
+            "description": (snip.get("description") or "")[:2000] or None,
+            "subscribers": int(stats.get("subscriberCount") or 0) or None,
+            "total_views": views or None,
+            "video_count": count or None,
+            "country": snip.get("country"),
+            "published_at": snip.get("publishedAt"),
+            "avg_views": (views // count) if count else None,
+            "embedding": vec,
+            "embed_source": text[:500],
+        })
+
+    if rows:
+        _supabase("/rest/v1/channels?on_conflict=id", rows, timeout=60,
+                  prefer="resolution=merge-duplicates,return=minimal")
+    return {"ok": True, "added": len(rows), "skipped": len(wanted) - len(rows)}
+
+
 def record_sighting(channel_id, handle):
     """A channel someone looked at. The crawler drains this queue later.
 
@@ -523,6 +642,16 @@ class Handler(BaseHTTPRequestHandler):
             # Growing the corpus is a side effect of being asked, never a precondition.
             record_sighting(body.get("channelId"), handle)
             self._send(200, result)
+            return
+
+        if path == "/ingest":
+            pairs = body.get("channels")
+            if not isinstance(pairs, list) or not pairs:
+                self._send(400, {"ok": False, "reason": "channels required"})
+                return
+            clean = [{"id": str(p.get("id") or ""), "handle": str(p.get("handle") or "")}
+                     for p in pairs if isinstance(p, dict)][:50]
+            self._send(200, ingest_channels(clean))
             return
 
         self._send(404, {"ok": False, "reason": "unknown route"})
