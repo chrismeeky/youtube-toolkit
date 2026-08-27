@@ -1404,9 +1404,14 @@
     tab.className = 'ytc-tab';
     tab.setAttribute('role', 'tab');
     /* The extension's own icon, so the tab reads as ours and not as one of YouTube's. It is
-       a packaged file, so it needs the extension URL — a bare path resolves against youtube.com. */
-    const icon = chrome.runtime.getURL('icons/icon32.png');
-    tab.innerHTML = '<img class="ytc-tab__icon" src="' + icon + '" alt="">' +
+       a packaged file, so it needs the extension URL — a bare path resolves against youtube.com.
+       Guarded: after the extension is reloaded, this call throws "Extension context
+       invalidated" in any content script still on an open page, and an uncaught throw here
+       takes the whole tab out while everything drawn earlier stays put — which reads as the
+       feature vanishing rather than as a page that needs reloading. */
+    let icon = '';
+    try { icon = chrome.runtime.getURL('icons/icon32.png'); } catch (e) { icon = ''; }
+    tab.innerHTML = (icon ? '<img class="ytc-tab__icon" src="' + icon + '" alt="">' : '') +
       '<span>' + TAB_LABEL + '</span>';
     tab.addEventListener('click', (e) => {
       e.preventDefault();
