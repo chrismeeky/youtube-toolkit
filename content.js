@@ -667,6 +667,9 @@
       n++;
     }
     decorateChannelHeader();
+    /* Kept out of decorateChannelHeader deliberately: that function returns early when the
+       monetization badge is switched off, which would silently take the tab with it. */
+    ensureSimilarTab();
     renderStatsCard();
     const watch = watchCard();
     if (watch) {
@@ -1212,8 +1215,14 @@
   const TAB_LABEL = 'Similar';
 
   function tabBar() {
+    /* The inner flex row first. yt-tab-group-shape wraps its tabs in a container, and a tab
+       appended to the wrapper instead of the row lands outside the layout and reads as
+       missing — which is exactly how this failed. */
     return document.querySelector(
-      'yt-tab-group-shape, ytd-c4-tabbed-header-renderer #tabsContent, tp-yt-paper-tabs');
+      'yt-tab-group-shape .yt-tab-group-shape-wiz__tabs, ' +
+      'yt-tab-group-shape, ' +
+      'ytd-c4-tabbed-header-renderer #tabsContent, ' +
+      'tp-yt-paper-tabs');
   }
 
   function pageContent() {
@@ -1664,7 +1673,9 @@
     // Left a channel page (or the badge was switched off): clean up after ourselves.
     if (!key) {
       if (stray) stray.remove();
-      document.querySelectorAll('.ytc-sim, .ytc-simbtn').forEach((n) => n.remove());
+      // Restore YouTube's own content before dropping our view, or it stays display:none.
+      closeSimilarView();
+      document.querySelectorAll('.ytc-sim, .ytc-simview').forEach((n) => n.remove());
       return;
     }
     if (!settings.showMoney) {
