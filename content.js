@@ -1250,7 +1250,7 @@
     }
     const bar = tabBar();
     if (!bar) return;
-    let tab = bar.querySelector(':scope > .ytc-tab');
+    let tab = bar.querySelector('.ytc-tab');
     if (tab) return;
 
     tab = document.createElement('div');
@@ -1266,12 +1266,22 @@
       e.stopPropagation();
       openSimilarView();
     });
-    /* appendChild put the tab after the row's search icon, which is why it sat off on its
-       own. Land it directly after the last real tab instead, so it joins the row. */
+    /* Placement, most reliable first. appendChild alone put the tab past the row's search
+       icon, stranded from the tabs it belongs with. Anchoring on YouTube's markup is a guess
+       about a DOM that changes, so this tries several and takes the first that holds. */
     const tabs = bar.querySelectorAll('yt-tab-shape, tp-yt-paper-tab, .ytc-tab');
     const last = tabs[tabs.length - 1];
-    if (last && last.parentElement === bar) bar.insertBefore(tab, last.nextSibling);
-    else bar.appendChild(tab);
+    const search = bar.querySelector(
+      '#search-button, yt-icon-button#search, [aria-label*="Search" i], yt-searchbox');
+    if (last && last.parentElement) {
+      // Straight after the final tab — where "Similar Channels" reads as one of the row.
+      last.parentElement.insertBefore(tab, last.nextSibling);
+    } else if (search && search.parentElement) {
+      // No tab matched, but the search icon sits after them, so just ahead of it is right.
+      search.parentElement.insertBefore(tab, search);
+    } else {
+      bar.appendChild(tab);
+    }
 
     /* YouTube's own tabs do not know about this one, so clicking any of them has to put the
        page back. Without this the channel's real content stays hidden behind our view. */
