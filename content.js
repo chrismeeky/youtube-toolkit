@@ -1372,16 +1372,6 @@
      where a reader already looks for another view of a channel. */
   const TAB_LABEL = 'Similar Channels';
 
-  function tabBar() {
-    /* The inner flex row first. yt-tab-group-shape wraps its tabs in a container, and a tab
-       appended to the wrapper instead of the row lands outside the layout and reads as
-       missing — which is exactly how this failed. */
-    return document.querySelector(
-      'yt-tab-group-shape .yt-tab-group-shape-wiz__tabs, ' +
-      'yt-tab-group-shape, ' +
-      'ytd-c4-tabbed-header-renderer #tabsContent, ' +
-      'tp-yt-paper-tabs');
-  }
 
   function pageContent() {
     return document.querySelector(
@@ -1390,25 +1380,36 @@
       'ytd-two-column-browse-results-renderer');
   }
 
-  function ensureSimilarTab() {
-    if (!settings.showSimilar || !channelKeyFromLocation()) {
-      document.querySelectorAll('.ytc-tab').forEach((n) => n.remove());
-      return;
-    }
-    const bar = tabBar();
-    if (!bar) return;
-    let tab = bar.querySelector('.ytc-tab');
-    if (tab) return;
+  function tabIsVisible(el) {
+    if (!el || !el.isConnected) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
 
-    tab = document.createElement('div');
+  /* Every container the tab row has worn, most specific first. YouTube ships more than one
+     match for some of these — an overflow copy, a hidden variant — and querySelector takes
+     whichever comes first in the document, which is not always the one on screen. */
+  function tabBarCandidates() {
+    const out = [];
+    for (const sel of ['yt-tab-group-shape .yt-tab-group-shape-wiz__tabs',
+                       'yt-tab-group-shape',
+                       'ytd-c4-tabbed-header-renderer #tabsContent',
+                       'tp-yt-paper-tabs']) {
+      document.querySelectorAll(sel).forEach((el) => { if (out.indexOf(el) < 0) out.push(el); });
+    }
+    return out;
+  }
+
+  function buildSimilarTab() {
+    const tab = document.createElement('div');
     tab.className = 'ytc-tab';
     tab.setAttribute('role', 'tab');
-    /* The extension's own icon, so the tab reads as ours and not as one of YouTube's. It is
-       a packaged file, so it needs the extension URL — a bare path resolves against youtube.com.
-       Guarded: after the extension is reloaded, this call throws "Extension context
-       invalidated" in any content script still on an open page, and an uncaught throw here
-       takes the whole tab out while everything drawn earlier stays put — which reads as the
-       feature vanishing rather than as a page that needs reloading. */
+    /* The extension's own icon, so the tab reads as ours and not as one of YouTube's. It is a
+       packaged file, so it needs the extension URL — a bare path resolves against youtube.com.
+       Guarded: after the extension is reloaded this throws "Extension context invalidated" in
+       any content script still on an open page, and an uncaught throw took the whole tab out
+       while everything drawn earlier stayed put — which reads as the feature vanishing rather
+       than as a page that needs reloading. */
     let icon = '';
     try { icon = chrome.runtime.getURL('icons/icon32.png'); } catch (e) { icon = ''; }
     tab.innerHTML = (icon ? '<img class="ytc-tab__icon" src="' + icon + '" alt="">' : '') +
@@ -1418,10 +1419,11 @@
       e.stopPropagation();
       openSimilarView();
     });
-    /* Placement, most reliable first. appendChild alone put the tab past the row's search
-       icon, stranded from the tabs it belongs with. Anchoring on YouTube's markup is a guess
-       about a DOM that changes, so this tries several and takes the first that holds. */
-    const tabs = bar.querySelectorAll('yt-tab-shape, tp-yt-paper-tab, .ytc-tab');
+    return tab;
+  }
+
+  function placeSimilarTab(tab, bar) {
+    const tabs = bar.querySelectorAll('yt-tab-shape, tp-yt-paper-tab');
     const last = tabs[tabs.length - 1];
     const search = bar.querySelector(
       '#search-button, yt-icon-button#search, [aria-label*="Search" i], yt-searchbox');
@@ -1434,13 +1436,45 @@
     } else {
       bar.appendChild(tab);
     }
+  }
 
-    /* YouTube's own tabs do not know about this one, so clicking any of them has to put the
-       page back. Without this the channel's real content stays hidden behind our view. */
-    bar.addEventListener('click', (ev) => {
-      if (ev.target.closest('.ytc-tab')) return;
-      closeSimilarView();
-    }, true);
+  /* Placement is a guess about markup that changes, so this checks its own work: the tab is
+     inserted, measured, and kept only if it actually came out visible. A container that is
+     present but not on screen no longer swallows the tab silently — the next candidate is
+     tried instead. */
+  function ensureSimilarTab() {
+    try {
+      if (!settings.showSimilar || !channelKeyFromLocation()) {
+        document.querySelectorAll('.ytc-tab').forEach((n) => n.remove());
+        return;
+      }
+
+      const existing = document.querySelector('.ytc-tab');
+      if (existing && tabIsVisible(existing)) return;
+      if (existing) existing.remove();   // in a container that never rendered: try again
+
+      for (const bar of tabBarCandidates()) {
+        if (!tabIsVisible(bar)) continue;
+        const tab = buildSimilarTab();
+        placeSimilarTab(tab, bar);
+        if (!tabIsVisible(tab)) { tab.remove(); continue; }
+
+        /* YouTube's own tabs do not know about this one, so clicking any of them has to put
+           the page back. Without this the channel's real content stays hidden behind our
+           view. Attached once, alongside the tab it belongs to. */
+        if (!bar.dataset.ytcClose) {
+          bar.dataset.ytcClose = '1';
+          bar.addEventListener('click', (ev) => {
+            if (ev.target.closest('.ytc-tab')) return;
+            closeSimilarView();
+          }, true);
+        }
+        return;
+      }
+    } catch (e) {
+      // Never let this take the rest of scan() down with it.
+      console.warn('[YouTube Toolkit] Similar tab could not be placed:', e);
+    }
   }
 
   function similarHost() {
