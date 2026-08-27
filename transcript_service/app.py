@@ -763,11 +763,22 @@ class QuietServer(ThreadingHTTPServer):
 
 
 def main():
-    if not YTDLP:
-        print("yt-dlp not found on PATH. Install it with:  pip install yt-dlp", file=sys.stderr)
+    """Report what this process can actually do, not what it was originally for.
+
+    The banner used to announce a transcript service and its yt-dlp cookie and proxy
+    settings. Transcripts moved into the extension and were deprecated; this is the channel
+    index backend now, and the yt-dlp flags say nothing about whether it will work. What
+    matters is which keys are present, because a missing one surfaces much later as
+    "ingest not configured" with nothing pointing at the cause.
+    """
     shown = "/k/<token>" if ACCESS_TOKEN else ""
-    print(f"YouTube Toolkit transcript service on http://{HOST}:{PORT}{shown}"
-          f"  (cookies={'yes' if COOKIE_FILE else 'no'}, proxy={'yes' if PROXY else 'no'})")
+    print(f"YouTube Toolkit service on http://{HOST}:{PORT}{shown}")
+    print(f"  similar   {'ready' if INDEX_READY else 'OFF — needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY'}")
+    print(f"  embedding {'ready' if OPENAI_KEY else 'OFF — needs OPENAI_API_KEY (unindexed channels cannot be matched)'}")
+    print(f"  ingest    {'ready' if INGEST_READY else 'OFF — needs YOUTUBE_API_KEY (the index will not fill itself)'}")
+    if YTDLP:
+        print(f"  transcripts (deprecated) available"
+              f"  cookies={'yes' if COOKIE_FILE else 'no'} proxy={'yes' if PROXY else 'no'}")
     QuietServer((HOST, PORT), Handler).serve_forever()
 
 
