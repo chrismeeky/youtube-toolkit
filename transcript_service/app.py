@@ -730,13 +730,31 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("[helper] %s\n" % (fmt % args))
 
 
+class QuietServer(ThreadingHTTPServer):
+    """A client hanging up mid-request is normal here, not an error worth a traceback.
+
+    The extension posts discoveries to /ingest fire-and-forget and drops the connection
+    immediately, which is deliberate — filling the index must never delay the answer the user
+    asked for. The default server treats that as an unhandled exception and prints a full
+    stack trace for every one, burying anything that actually matters.
+    """
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main():
     if not YTDLP:
         print("yt-dlp not found on PATH. Install it with:  pip install yt-dlp", file=sys.stderr)
     shown = "/k/<token>" if ACCESS_TOKEN else ""
     print(f"YouTube Toolkit transcript service on http://{HOST}:{PORT}{shown}"
           f"  (cookies={'yes' if COOKIE_FILE else 'no'}, proxy={'yes' if PROXY else 'no'})")
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    QuietServer((HOST, PORT), Handler).serve_forever()
 
 
 if __name__ == "__main__":

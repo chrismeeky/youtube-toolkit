@@ -15,7 +15,7 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
-# Only the three the index needs. Anything else in that file stays out of this process.
+# Only what the index needs. Anything else in that file stays out of this process.
 for key in SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY OPENAI_API_KEY; do
   line="$(grep -m1 "^${key}=" "$ENV_FILE" || true)"
   if [ -z "$line" ]; then
@@ -24,6 +24,16 @@ for key in SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY OPENAI_API_KEY; do
   fi
   export "${line?}"
 done
+
+# Ingestion needs the YouTube key to enrich the channels the extension discovers. The web app
+# stores it under its own name, so map it across rather than asking for a duplicate entry.
+# Without this the /ingest route answers "ingest not configured" and the index never fills.
+yt_line="$(grep -m1 '^YOUTUBE_API_KEY=' "$ENV_FILE" || grep -m1 '^NEXT_PUBLIC_YOUTUBE_API_KEY=' "$ENV_FILE" || true)"
+YT_KEY="${yt_line#*=}"
+YT_KEY="${YT_KEY%\"}"; YT_KEY="${YT_KEY#\"}"
+if [ -z "$YT_KEY" ]; then
+  echo "note: no YouTube key found — /ingest will be disabled" >&2
+fi
 
 echo "index service on http://127.0.0.1:${PORT}"
 echo
@@ -34,4 +44,8 @@ echo "Ctrl-C to stop."
 echo
 
 cd "$(dirname "$0")/../transcript_service"
-HOST=127.0.0.1 PORT="$PORT" ACCESS_TOKEN="$TOKEN" MAX_CONCURRENCY=2 exec python3 app.py
+# Passed explicitly rather than exported. An exported value was not reaching the process,
+# and a silently missing key shows up only as "ingest not configured" much later.
+HOST=127.0.0.1 PORT="$PORT" ACCESS_TOKEN="$TOKEN" MAX_CONCURRENCY=2 \
+  YOUTUBE_API_KEY="$YT_KEY" \
+  exec python3 app.py
