@@ -577,22 +577,26 @@ async function getSimilarChannels(key, titles, about, force, opts) {
   }
 
   const perQuery = [];
-  const discovered = [];
   for (const q of queries) {
     const html = await schedule(() => searchPage(q));
     if (!html) continue;
     perQuery.push(F.channelsFromSearch(html, key));
-    // The same scrape already contains the ids the index needs. Throwing them away was why
-    // an unseeded niche stayed unseeded no matter how many people looked at it.
-    for (const pair of F.channelPairsFromSearch(html)) discovered.push(pair);
   }
   noteResult(perQuery.length > 0);
 
-  /* Hand the discovery to the index. The extension can scrape search because it runs on a
-     residential connection; the server cannot, but it holds the keys to enrich and embed.
-     Fire-and-forget — this fills the niche for whoever looks next, and must never delay or
-     break the answer being given now. */
-  pushToIndex(base, discovered);
+  /* Deliberately NOT ingesting `discovered` here.
+
+     These are channels YouTube search returned for topic queries derived from the page, not
+     channels anyone chose to look at. When the queries are weak the results are unrelated, and
+     each miss wrote up to 40 of them into the index: opening a few channels against an empty
+     index produced radio brands, an alarm-clock site and a Brazilian news magazine, none of
+     which had anything to do with what was being browsed.
+
+     The visited channel is pushed at the top of this function, which is the signal worth
+     keeping — someone actually went there. The cost is that a niche fills one channel per
+     visit rather than forty, so similarity stays thin until a few channels in a niche have
+     been seen. Bulk discovery still exists deliberately, in seed.py --expand, where it is run
+     knowingly rather than as a side effect of browsing. */
 
   const channels = F.rankSimilar(perQuery, 25);
   const entry = { channels, queries, source: 'search', reason: '',

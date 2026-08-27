@@ -69,9 +69,22 @@ def http(url, data=None, headers=None, method=None, timeout=60):
         hdrs["Content-Type"] = "application/json"
     hdrs.update(headers or {})
     req = urllib.request.Request(url, data=body, headers=hdrs, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as res:
-        raw = res.read()
-    return raw.decode("utf-8", "replace")
+    last = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as res:
+                return res.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError:
+            # A real answer from the server — 403 quota, 404 missing. Retrying will not help
+            # and the callers already handle these.
+            raise
+        except Exception as e:
+            # Transient: a dropped keep-alive killed an entire 40-channel batch mid-run and
+            # lost the whole run's work, which is not a price worth paying for one bad socket.
+            last = e
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+    raise last
 
 
 def http_json(url, **kw):
