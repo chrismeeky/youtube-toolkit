@@ -319,9 +319,13 @@ def to_row(cid, channel, video_titles, newest, oldest, vector):
     handle = (snip.get("customUrl") or "").strip()
     if handle and not handle.startswith("@"):
         handle = "@" + handle
+    thumbs = snip.get("thumbnails") or {}
+    # medium is 240px — large enough for a list avatar, small enough not to bloat the row.
+    avatar = ((thumbs.get("medium") or thumbs.get("default") or {}).get("url")) or None
     return {
         "id": cid,
         "handle": handle or None,
+        "avatar_url": avatar,
         "title": snip.get("title") or cid,
         "description": (snip.get("description") or "")[:2000] or None,
         "subscribers": int(stats.get("subscriberCount") or 0) or None,

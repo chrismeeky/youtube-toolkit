@@ -511,6 +511,7 @@ async function getSimilarChannels(key, titles, about, force, opts) {
         channels: (out.channels || []).map((c) => ({
           handle: c.handle || c.title,
           title: c.title,
+          avatar: c.avatar_url,
           similarity: c.similarity,
           subscribers: c.subscribers,
           avgViews: c.avg_views,

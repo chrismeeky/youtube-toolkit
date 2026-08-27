@@ -284,9 +284,12 @@ def ingest_channels(pairs):
         handle = (snip.get("customUrl") or "").strip()
         if handle and not handle.startswith("@"):
             handle = "@" + handle
+        thumbs = snip.get("thumbnails") or {}
+        avatar = ((thumbs.get("medium") or thumbs.get("default") or {}).get("url")) or None
         rows.append({
             "id": cid,
             "handle": handle or None,
+            "avatar_url": avatar,
             "title": snip.get("title") or cid,
             "description": (snip.get("description") or "")[:2000] or None,
             "subscribers": int(stats.get("subscriberCount") or 0) or None,

@@ -1025,44 +1025,7 @@
     return { channelId: channelId, title: title || '', subscribers: subscribers };
   }
 
-  function similarPanel() {
-    let el = document.querySelector('.ytc-sim');
-    if (el) return el;
-    el = document.createElement('div');
-    el.className = 'ytc-sim';
-    el.innerHTML =
-      '<div class="ytc-sim__bar">' +
-        '<span class="ytc-sim__title">Similar channels</span>' +
-        '<span class="ytc-sim__count"></span>' +
-        '<span class="ytc-sim__actions">' +
-          '<button type="button" class="ytc-sim__small" title="Only channels smaller than this one">Smaller</button>' +
-          '<button type="button" class="ytc-sim__refresh">Refresh</button>' +
-          '<button type="button" class="ytc-sim__x" aria-label="Close">✕</button>' +
-        '</span>' +
-      '</div><div class="ytc-sim__body"></div>';
-    el.querySelector('.ytc-sim__x').addEventListener('click', () => el.remove());
-    // Results are cached for a week, so there has to be a way to ask again.
-    el.querySelector('.ytc-sim__refresh').addEventListener('click', () => askSimilar(true));
-    el.querySelector('.ytc-sim__small').addEventListener('click', () => {
-      simFilter.smallOnly = !simFilter.smallOnly;
-      askSimilar(true);
-    });
-    document.body.appendChild(el);
-    return el;
-  }
-
-  const simFilter = { smallOnly: false, sort: 'similarity' };
-
-  /* Sorting is done here rather than by re-querying. The result set is at most twenty-five
-     rows that have already crossed the network; asking the server again to reorder them
-     would cost a round trip and, for an unindexed channel, another embedding. */
-  const SIM_SORTS = [
-    { key: 'similarity', label: 'Similarity', get: (c) => c.similarity || 0 },
-    { key: 'subs',       label: 'Subscribers', get: (c) => c.subscribers || 0 },
-    { key: 'views',      label: 'Avg views',  get: (c) => c.avgViews || 0 },
-    { key: 'uploads',    label: 'Uploads/mo', get: (c) => c.uploadsPerMo || 0 },
-    { key: 'newest',     label: 'Newest',     get: (c) => Date.parse(c.publishedAt || 0) || 0 }
-  ];
+  const simFilter = { smallOnly: false, sort: 'similarity', desc: true, open: false };
 
   function daysSince(iso) {
     const t = Date.parse(iso || '');
@@ -1072,92 +1035,140 @@
 
   function agoLabel(iso) {
     const d = daysSince(iso);
-    if (d === null) return '—';
+    if (d === null) return '\u2014';
     if (d === 0) return 'today';
     if (d < 30) return d + 'd ago';
     if (d < 365) return Math.round(d / 30) + 'mo ago';
     return (d / 365).toFixed(1) + 'y ago';
   }
 
-  /* One statistic: a label, a value, and nothing else. Four of them side by side is what
-     makes a channel comparable at a glance — size alone never distinguishes a channel that
-     is growing from one that stopped uploading two years ago. */
-  function statCell(label, value) {
-    return '<span class="ytc-sim__stat"><span class="ytc-sim__statv">' + value +
-      '</span><span class="ytc-sim__statl">' + label + '</span></span>';
-  }
+  /* These double as the table's columns. One definition drives the header, the sort and the
+     cell, so a column can never end up sorting by something other than what it shows.
+
+     "Age" sorts inverted deliberately: descending on a date means newest first, but the
+     column reads as an age, and the largest age is the oldest channel. */
+  const SIM_COLS = [
+    { key: 'similarity', label: 'Similarity', cls: 'ytc-t__sim',
+      get: (c) => c.similarity || 0,
+      cell: (c) => Math.round((c.similarity || 0) * 100) + '%' },
+    { key: 'subs', label: 'Subscribers',
+      get: (c) => c.subscribers || 0,
+      cell: (c) => (c.subscribers ? F.compact(c.subscribers) : '\u2014') },
+    { key: 'views', label: 'Avg views',
+      get: (c) => c.avgViews || 0,
+      cell: (c) => (c.avgViews ? F.compact(c.avgViews) : '\u2014') },
+    { key: 'uploads', label: 'Uploads/mo',
+      get: (c) => c.uploadsPerMo || 0,
+      cell: (c) => (c.uploadsPerMo ? Number(c.uploadsPerMo).toFixed(1) : '\u2014') },
+    { key: 'age', label: 'Age',
+      get: (c) => daysSince(c.publishedAt) || 0,
+      cell: (c) => {
+        const d = daysSince(c.publishedAt);
+        return d === null ? '\u2014' : (d > 365 ? (d / 365).toFixed(1) + 'y' : d + 'd');
+      } },
+    { key: 'last', label: 'Last upload',
+      get: (c) => Date.parse(c.lastUpload || 0) || 0,
+      cell: (c) => agoLabel(c.lastUpload) }
+  ];
 
   function renderSimilar(res) {
-    const panel = similarPanel();
-    const body = panel.querySelector('.ytc-sim__body');
+    const host = similarHost();
+    if (!host) return;
+    host.dataset.loaded = '1';
+
     const list = (res && res.channels) || [];
     const fromIndex = res && res.source === 'index';
 
+    const controls =
+      '<div class="ytc-t__bar">' +
+        '<span class="ytc-t__title">Similar channels' +
+          (list.length ? ' <span class="ytc-t__count">(' + list.length + ')</span>' : '') +
+        '</span>' +
+        '<span class="ytc-t__actions">' +
+          (fromIndex
+            ? '<button type="button" class="ytc-t__btn ytc-t__small' +
+              (simFilter.smallOnly ? ' ytc-t__btn--on' : '') +
+              '">Smaller than this</button>'
+            : '') +
+          '<button type="button" class="ytc-t__btn ytc-t__refresh">Refresh</button>' +
+        '</span>' +
+      '</div>';
+
     if (!list.length) {
-      body.innerHTML = '<p class="ytc-sim__note">' +
+      host.innerHTML = controls + '<p class="ytc-t__note">' +
         (res && res.reason ? escapeHtml(res.reason) : 'Nothing found for this channel') + '</p>';
+      wireSimilarControls(host, res);
       return;
     }
 
-    /* Index results carry real statistics, so they get the fuller layout. Search results
-       carry a name and a rank and nothing else, and padding them out with empty columns
-       would imply data that does not exist. */
-    const sorted = fromIndex ? list.slice() : list;
+    let body;
     if (fromIndex) {
-      const sorter = SIM_SORTS.find((x) => x.key === simFilter.sort) || SIM_SORTS[0];
-      sorted.sort((a, b) => sorter.get(b) - sorter.get(a));
+      const col = SIM_COLS.find((c) => c.key === simFilter.sort) || SIM_COLS[0];
+      const dir = simFilter.desc ? 1 : -1;
+      const sorted = list.slice().sort((a, b) => (col.get(b) - col.get(a)) * dir);
+
+      /* An arrow on every column, filled on the active one. Without a direction control the
+         table can only answer "who is biggest", never "who is smallest" — and the smallest
+         channels in a niche are the ones worth finding. */
+      const head = '<div class="ytc-t__row ytc-t__row--head">' +
+        '<span class="ytc-t__chan">Channel</span>' +
+        SIM_COLS.map((c) => {
+          const on = simFilter.sort === c.key;
+          const arrow = on ? (simFilter.desc ? '\u25BC' : '\u25B2') : '\u21C5';
+          return '<button type="button" class="ytc-t__h' + (on ? ' ytc-t__h--on' : '') +
+            '" data-col="' + c.key + '">' + c.label +
+            '<span class="ytc-t__arrow">' + arrow + '</span></button>';
+        }).join('') + '</div>';
+
+      const rows = sorted.map((c) => {
+        const handle = c.handle || c.title || '';
+        const img = c.avatar
+          ? '<img class="ytc-t__pic" src="' + escapeHtml(c.avatar) + '" alt="" loading="lazy">'
+          : '<span class="ytc-t__pic ytc-t__pic--none">' +
+            escapeHtml((c.title || handle || '?').trim().charAt(0).toUpperCase()) + '</span>';
+        return '<a class="ytc-t__row" href="https://www.youtube.com/' + encodeURI(handle) +
+          '" target="_blank" rel="noopener noreferrer">' +
+          '<span class="ytc-t__chan">' + img +
+            '<span class="ytc-t__names">' +
+              '<span class="ytc-t__name">' + escapeHtml(c.title || handle) + '</span>' +
+              '<span class="ytc-t__handle">' + escapeHtml(handle) + '</span>' +
+            '</span>' +
+          '</span>' +
+          SIM_COLS.map((c2) =>
+            '<span class="ytc-t__c' + (c2.cls ? ' ' + c2.cls : '') + '">' +
+            c2.cell(c) + '</span>').join('') +
+        '</a>';
+      }).join('');
+      body = '<div class="ytc-t">' + head + rows + '</div>';
+    } else {
+      body = '<div class="ytc-t">' + list.map((c) => {
+        const handle = c.handle || c.title || '';
+        return '<a class="ytc-t__row ytc-t__row--plain" href="https://www.youtube.com/' +
+          encodeURI(handle) + '" target="_blank" rel="noopener noreferrer">' +
+          '<span class="ytc-t__chan"><span class="ytc-t__pic ytc-t__pic--none">' +
+          escapeHtml(handle.replace('@', '').charAt(0).toUpperCase()) + '</span>' +
+          '<span class="ytc-t__names"><span class="ytc-t__name">' + escapeHtml(handle) +
+          '</span></span></span>' +
+          '<span class="ytc-t__c">' +
+          (c.queries > 1 ? c.queries + ' topics' : 'rank ' + ((c.rank || 0) + 1)) +
+          '</span></a>';
+      }).join('') + '</div>';
     }
-
-    const rows = sorted.map((c) => {
-      const handle = c.handle || c.title || '';
-      const strength = fromIndex
-        ? Math.round((c.similarity || 0) * 100) + '%'
-        : (c.queries > 1 ? c.queries + ' topics' : 'rank ' + ((c.rank || 0) + 1));
-
-      let stats = '';
-      if (fromIndex) {
-        const age = daysSince(c.publishedAt);
-        stats = '<span class="ytc-sim__stats">' +
-          statCell('avg views', c.avgViews ? F.compact(c.avgViews) : '—') +
-          statCell('uploads/mo', c.uploadsPerMo ? Number(c.uploadsPerMo).toFixed(1) : '—') +
-          statCell('age', age === null ? '—' : (age > 365 ? (age / 365).toFixed(1) + 'y' : age + 'd')) +
-          statCell('last upload', agoLabel(c.lastUpload)) +
-        '</span>';
-      } else if (c.subscribers) {
-        stats = '<span class="ytc-sim__stats">' +
-          statCell('subscribers', F.compact(c.subscribers)) + '</span>';
-      }
-
-      const subs = c.subscribers ? F.compact(c.subscribers) + ' subs' : '';
-      return '<a class="ytc-sim__row" href="https://www.youtube.com/' + encodeURI(handle) +
-        '" target="_blank" rel="noopener noreferrer">' +
-        '<span class="ytc-sim__head">' +
-          '<span class="ytc-sim__name">' + escapeHtml(handle) + '</span>' +
-          (subs ? '<span class="ytc-sim__badge">' + escapeHtml(subs) + '</span>' : '') +
-          '<span class="ytc-sim__score">' + strength + '</span>' +
-        '</span>' + stats + '</a>';
-    }).join('');
 
     let note;
     if (fromIndex) {
       note = 'Ranked by topic similarity against the channel index' +
-        (res.indexed ? '' : ' — this channel is not indexed yet, so its own page text was used');
-      /* A percentage is only meaningful if the reader knows what a good one looks like. When
-         the closest match in the corpus is a weak one, say so rather than letting a 47% sit
-         there looking like the 86% a well-covered niche produces. */
+        (res.indexed ? '' : ' \u2014 this channel is not indexed yet, so its own page text was used');
       const best = list.reduce((m, c) => Math.max(m, c.similarity || 0), 0);
       if (best < 0.55) {
         note = '<b>Weak matches (best ' + Math.round(best * 100) + '%).</b> ' +
-          'This niche is thinly indexed — the closest channels found are only loosely ' +
+          'This niche is thinly indexed \u2014 the closest channels found are only loosely ' +
           'related. ' + note;
       }
     } else {
       note = 'Channels ranking for this channel\'s own topics: ' +
-        (res.queries || []).map((q) => escapeHtml(q)).join('  ·  ') +
+        (res.queries || []).map((q) => escapeHtml(q)).join('  \u00b7  ') +
         '. Found by searching YouTube, not by a similarity model.';
-      /* Say when the index was configured but did not answer. A 404 here almost always means
-         the URL is missing its /k/<token> prefix, which otherwise looks like the feature
-         quietly deciding to be worse. */
       if (res.indexProblem) {
         const hint = /40[34]/.test(res.indexProblem)
           ? 'Check the Index API URL includes its /k/&lt;token&gt; path. '
@@ -1168,34 +1179,116 @@
       }
     }
 
-    const chips = fromIndex
-      ? '<div class="ytc-sim__sorts">' + SIM_SORTS.map((x) =>
-          '<button type="button" class="ytc-sim__sort' +
-          (simFilter.sort === x.key ? ' ytc-sim__sort--on' : '') +
-          '" data-sort="' + x.key + '">' + x.label + '</button>').join('') + '</div>'
-      : '';
+    host.innerHTML = controls + body + '<p class="ytc-t__note">' + note + '</p>';
+    wireSimilarControls(host, res);
+  }
 
-    body.innerHTML = chips + rows + '<p class="ytc-sim__note">' + note + '</p>';
+  function wireSimilarControls(host, res) {
+    const small = host.querySelector('.ytc-t__small');
+    if (small) {
+      small.addEventListener('click', () => {
+        simFilter.smallOnly = !simFilter.smallOnly;
+        askSimilar(true);
+      });
+    }
+    const refresh = host.querySelector('.ytc-t__refresh');
+    if (refresh) refresh.addEventListener('click', () => askSimilar(true));
 
-    // Re-sorting is local, so it repaints without another request.
-    body.querySelectorAll('.ytc-sim__sort').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
+    // Clicking the active column flips direction; another column takes over, descending.
+    host.querySelectorAll('.ytc-t__h').forEach((h) => {
+      h.addEventListener('click', (e) => {
         e.preventDefault();
-        e.stopPropagation();
-        simFilter.sort = btn.dataset.sort;
+        const key = h.dataset.col;
+        if (simFilter.sort === key) simFilter.desc = !simFilter.desc;
+        else { simFilter.sort = key; simFilter.desc = true; }
         renderSimilar(res);
       });
     });
+  }
 
-    const count = panel.querySelector('.ytc-sim__count');
-    if (count) count.textContent = list.length ? '(' + list.length + ')' : '';
+  /* Rendered into the channel page rather than floating over it, reached by a tab beside
+     YouTube's own. A list of channels with six figures each needs the width, and a tab is
+     where a reader already looks for another view of a channel. */
+  const TAB_LABEL = 'Similar';
 
-    const toggle = panel.querySelector('.ytc-sim__small');
-    if (toggle) {
-      toggle.classList.toggle('ytc-sim__small--on', simFilter.smallOnly);
-      // Only the index can answer "smaller than this" — search returns whoever ranks.
-      toggle.style.display = fromIndex ? '' : 'none';
+  function tabBar() {
+    return document.querySelector(
+      'yt-tab-group-shape, ytd-c4-tabbed-header-renderer #tabsContent, tp-yt-paper-tabs');
+  }
+
+  function pageContent() {
+    return document.querySelector(
+      'ytd-browse[page-subtype="channels"] #contents, ' +
+      'ytd-browse[page-subtype="channels"] ytd-section-list-renderer, ' +
+      'ytd-two-column-browse-results-renderer');
+  }
+
+  function ensureSimilarTab() {
+    if (!settings.showSimilar || !channelKeyFromLocation()) {
+      document.querySelectorAll('.ytc-tab').forEach((n) => n.remove());
+      return;
     }
+    const bar = tabBar();
+    if (!bar) return;
+    let tab = bar.querySelector(':scope > .ytc-tab');
+    if (tab) return;
+
+    tab = document.createElement('div');
+    tab.className = 'ytc-tab';
+    tab.setAttribute('role', 'tab');
+    /* The extension's own icon, so the tab reads as ours and not as one of YouTube's. It is
+       a packaged file, so it needs the extension URL — a bare path resolves against youtube.com. */
+    const icon = chrome.runtime.getURL('icons/icon32.png');
+    tab.innerHTML = '<img class="ytc-tab__icon" src="' + icon + '" alt="">' +
+      '<span>' + TAB_LABEL + '</span>';
+    tab.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openSimilarView();
+    });
+    bar.appendChild(tab);
+
+    /* YouTube's own tabs do not know about this one, so clicking any of them has to put the
+       page back. Without this the channel's real content stays hidden behind our view. */
+    bar.addEventListener('click', (ev) => {
+      if (ev.target.closest('.ytc-tab')) return;
+      closeSimilarView();
+    }, true);
+  }
+
+  function similarHost() {
+    let host = document.querySelector('.ytc-simview');
+    if (host) return host;
+    const content = pageContent();
+    if (!content || !content.parentElement) return null;
+    host = document.createElement('div');
+    host.className = 'ytc-simview';
+    content.parentElement.insertBefore(host, content);
+    return host;
+  }
+
+  function openSimilarView() {
+    simFilter.open = true;
+    const content = pageContent();
+    if (content) content.style.display = 'none';
+    document.querySelectorAll('.ytc-tab').forEach((t) => t.classList.add('ytc-tab--on'));
+    const host = similarHost();
+    if (host) {
+      host.style.display = '';
+      if (!host.dataset.loaded) {
+        host.innerHTML = '<p class="ytc-t__note"><span class="ytc-spin"></span> Searching…</p>';
+      }
+    }
+    askSimilar(false);
+  }
+
+  function closeSimilarView() {
+    simFilter.open = false;
+    const content = pageContent();
+    if (content) content.style.display = '';
+    document.querySelectorAll('.ytc-tab').forEach((t) => t.classList.remove('ytc-tab--on'));
+    const host = document.querySelector('.ytc-simview');
+    if (host) host.style.display = 'none';
   }
 
   function escapeHtml(v) {
@@ -1207,9 +1300,10 @@
   function askSimilar(force) {
     const key = channelKeyFromLocation();
     if (!key) return;
-    const panel = similarPanel();
-    panel.querySelector('.ytc-sim__body').innerHTML =
-      '<p class="ytc-sim__note"><span class="ytc-spin"></span> Searching…</p>';
+    const host = similarHost();
+    if (host && !host.dataset.loaded) {
+      host.innerHTML = '<p class="ytc-t__note"><span class="ytc-spin"></span> Searching…</p>';
+    }
     const titles = channelVideoTitles(20);
     const about = channelAboutText();
     const own = channelOwnStats();
@@ -1563,26 +1657,6 @@
     }
   }
 
-  function ensureSimilarButton(host) {
-    if (!settings.showSimilar) {
-      const gone = host.querySelector(':scope > .ytc-simbtn');
-      if (gone) gone.remove();
-      return;
-    }
-    if (host.querySelector(':scope > .ytc-simbtn')) return;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'ytc-simbtn';
-    btn.textContent = 'Similar channels';
-    btn.title = 'Find channels ranking for this channel\'s topics';
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      askSimilar(false);
-    });
-    host.appendChild(btn);
-  }
-
   function decorateChannelHeader() {
     const key = channelKeyFromLocation();
     const stray = document.querySelector('.ytc-money--lg');
@@ -1596,7 +1670,6 @@
     if (!settings.showMoney) {
       if (stray) stray.remove();
       const host0 = channelHeaderHost();
-      if (host0) ensureSimilarButton(host0);
       return;
     }
 
@@ -1610,7 +1683,6 @@
     if (stray && !attached) stray.remove();
     host.dataset.ytcMoney = key;
 
-    ensureSimilarButton(host);
     const el = ensureMoneyBadge(host, true);
     el.dataset.key = key;
     requestMonetizationOnce(key, (res) => {

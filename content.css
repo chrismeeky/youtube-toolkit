@@ -186,8 +186,7 @@ html[dark] .ytc-btn:hover { color: #fff; }
 .ytc-ratio--good  { background: #5c9e14; }   /* >= 3x   strong */
 .ytc-ratio--ok    { background: #d9822b; }   /* >= 1x   beat the sub count */
 .ytc-ratio--low   { background: #e2551f; }   /* >= 0.5x soft */
-.ytc-ratio--poor  { background: #c62828; }   /* < 0.5x  flopped */
-
+.ytc-ratio--poor  { background: #c62828; }   
 /* retry / empty affordances */
 .ytc-subs--failed { cursor: pointer; }
 .ytc-subs--failed .ytc-subs__n {
@@ -288,8 +287,6 @@ html[dark] .ytc-spin { border-color: rgba(255, 255, 255, .25); border-top-color:
 .ytc-money--lg.ytc-money--unknown { color: #909090; border-color: #606060; opacity: .8; }
 .ytc-money--lg.ytc-money--loading { color: #909090; border-color: #444; opacity: .6; }
 
-/* Loading state. The spinner element is .ytc-spin, shared with the subscriber badge, so it
-   inherits that rule's reduced-motion fallback (a soft pulse instead of rotation). */
 /* The base loading rule dims the whole pill to .35, which would drag the spinner down with
    it. Carry the muting in the background colour instead so the spinner stays legible. */
 .ytc-money--loading {
@@ -316,7 +313,6 @@ html[dark] .ytc-spin { border-color: rgba(255, 255, 255, .25); border-top-color:
    failure never needs a page reload to clear. */
 .ytc-money--retry { cursor: pointer; }
 .ytc-money--retry:hover { filter: brightness(1.25); }
-
 
 /* Watch-sidebar metrics card, sized to sit above the related videos without competing with
    them. Values carry their own tooltips; the footer states the earnings caveat inline,
@@ -399,135 +395,108 @@ html.ytc-grabbing-transcript [target-id*="transcript"] {
 }
 html:not([dark]) .ytc-vph { color: #1668b8; background: rgba(0, 0, 0, .07); }
 
-/* "Similar channels" trigger, sized to sit in the channel header beside the monetization
-   pill and YouTube's own buttons. */
-.ytc-simbtn {
-  height: 36px;
-  padding: 0 16px;
-  margin-left: 8px;
-  border-radius: 18px;
-  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.15));
-  background: transparent;
-  color: var(--yt-spec-text-primary, #0f0f0f);
+/* The tab sits with YouTube's own. It borrows their metrics rather than inventing a look,
+   because a tab that does not match the row beside it reads as a rendering fault. */
+.ytc-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0 16px; height: 48px; cursor: pointer;
   font: 500 14px/1 Roboto, Arial, sans-serif;
-  cursor: pointer;
-  vertical-align: middle;
+  color: var(--yt-spec-text-secondary, #606060);
+  border-bottom: 2px solid transparent; white-space: nowrap;
 }
-.ytc-simbtn:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05)); }
-html[dark] .ytc-simbtn { color: #f1f1f1; border-color: rgba(255,255,255,.2); }
-html[dark] .ytc-simbtn:hover { background: rgba(255,255,255,.1); }
+.ytc-tab:hover { color: var(--yt-spec-text-primary, #0f0f0f); }
+.ytc-tab--on {
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  border-bottom-color: var(--yt-spec-text-primary, #0f0f0f);
+}
+.ytc-tab__icon { width: 16px; height: 16px; border-radius: 3px; flex: 0 0 auto; }
+html[dark] .ytc-tab { color: #aaa; }
+html[dark] .ytc-tab:hover, html[dark] .ytc-tab--on { color: #f1f1f1; }
+html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
 
-/* Results panel. Fixed rather than inline: the channel header is rebuilt constantly by
-   YouTube, and a panel anchored into it would be destroyed mid-read. */
-.ytc-sim {
-  position: fixed;
-  right: 24px;
-  bottom: 24px;
-  width: 460px;
-  max-width: calc(100vw - 48px);
-  max-height: 74vh;
-  display: flex;
-  flex-direction: column;
-  z-index: 2400;
-  border-radius: 12px;
-  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12));
-  background: var(--yt-spec-general-background-a, #fff);
-  box-shadow: 0 8px 28px rgba(0,0,0,.28);
-  font-family: Roboto, Arial, sans-serif;
-  overflow: hidden;
+.ytc-simview { padding: 16px 0 32px; font-family: Roboto, Arial, sans-serif; }
+
+.ytc-t__bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.ytc-t__title { font: 700 16px/1 Roboto, Arial, sans-serif; color: var(--yt-spec-text-primary, #0f0f0f); }
+.ytc-t__count { font-weight: 400; color: var(--yt-spec-text-secondary, #606060); }
+.ytc-t__actions { margin-left: auto; display: flex; gap: 8px; }
+.ytc-t__btn {
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.15));
+  background: transparent; color: var(--yt-spec-text-primary, #0f0f0f);
+  font: 500 13px/1 Roboto, Arial, sans-serif; padding: 8px 14px;
+  border-radius: 18px; cursor: pointer;
 }
-.ytc-sim__bar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+.ytc-t__btn:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05)); }
+.ytc-t__btn--on { background: #0f9d58; border-color: #0f9d58; color: #fff; }
+.ytc-t__btn--on:hover { background: #0c8248; }
+
+/* Grid rather than a table element: the header and every row share one column definition,
+   so a column can never drift out of alignment with its heading. */
+.ytc-t { display: flex; flex-direction: column; }
+/* The repeat() count below must equal SIM_COLS.length in content.js. They are coupled:
+   add a column there and the grid silently misaligns until this changes too. */
+.ytc-t__row {
+  display: grid;
+  grid-template-columns: minmax(200px, 2.2fr) repeat(6, minmax(78px, 1fr));
+  align-items: center; gap: 8px;
+  padding: 10px 12px; border-radius: 10px; text-decoration: none;
 }
-.ytc-sim__title { font-size: 13px; font-weight: 700; color: var(--yt-spec-text-primary, #0f0f0f); }
-.ytc-sim__x {
-  border: 0; background: none; cursor: pointer; font-size: 13px; line-height: 1;
-  color: var(--yt-spec-text-secondary, #606060); padding: 4px;
+.ytc-t__row--plain { grid-template-columns: minmax(200px, 3fr) minmax(90px, 1fr); }
+.ytc-t__row:not(.ytc-t__row--head):hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05)); }
+.ytc-t__row--head {
+  border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12));
+  border-radius: 0; padding-bottom: 8px; margin-bottom: 4px;
+  font: 500 12px/1 Roboto, Arial, sans-serif; color: var(--yt-spec-text-secondary, #606060);
 }
-.ytc-sim__body { overflow-y: auto; padding: 6px; }
-.ytc-sim__row {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 7px 8px; border-radius: 8px; text-decoration: none;
+.ytc-t__h {
+  display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px;
+  border: 0; background: none; cursor: pointer; padding: 4px 0;
+  font: 500 12px/1 Roboto, Arial, sans-serif; color: inherit; text-align: right;
 }
-.ytc-sim__row:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06)); }
-.ytc-sim__name {
-  font-size: 13px; font-weight: 500; color: var(--yt-spec-text-primary, #0f0f0f);
+.ytc-t__h:hover { color: var(--yt-spec-text-primary, #0f0f0f); }
+.ytc-t__h--on { color: var(--yt-spec-text-primary, #0f0f0f); font-weight: 700; }
+.ytc-t__arrow { font-size: 9px; opacity: .55; }
+.ytc-t__h--on .ytc-t__arrow { opacity: 1; color: #0f9d58; }
+
+.ytc-t__chan { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ytc-t__pic { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; object-fit: cover; }
+.ytc-t__pic--none {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.1));
+  color: var(--yt-spec-text-secondary, #606060);
+  font: 600 14px/1 Roboto, Arial, sans-serif;
+}
+.ytc-t__names { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.ytc-t__name {
+  font: 500 14px/1.2 Roboto, Arial, sans-serif; color: var(--yt-spec-text-primary, #0f0f0f);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.ytc-sim__meta { font-size: 11px; color: var(--yt-spec-text-secondary, #606060); white-space: nowrap; }
-.ytc-sim__note {
-  margin: 8px 8px 4px; font-size: 10px; line-height: 1.4;
+.ytc-t__handle {
+  font: 400 12px/1.2 Roboto, Arial, sans-serif; color: var(--yt-spec-text-secondary, #606060);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ytc-t__c {
+  text-align: right; font: 400 13px/1.2 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-primary, #0f0f0f); white-space: nowrap;
+}
+.ytc-t__sim { font-weight: 700; color: #0f9d58; }
+.ytc-t__note {
+  margin: 14px 12px 0; font: 400 12px/1.5 Roboto, Arial, sans-serif;
   color: var(--yt-spec-text-secondary, #606060);
 }
-html[dark] .ytc-sim { background: #212121; border-color: rgba(255,255,255,.15); }
-html[dark] .ytc-sim__bar { border-bottom-color: rgba(255,255,255,.12); }
-html[dark] .ytc-sim__title, html[dark] .ytc-sim__name { color: #f1f1f1; }
-html[dark] .ytc-sim__meta, html[dark] .ytc-sim__note, html[dark] .ytc-sim__x { color: #aaa; }
-html[dark] .ytc-sim__row:hover { background: rgba(255,255,255,.08); }
-.ytc-sim__actions { display: inline-flex; align-items: center; gap: 6px; }
-.ytc-sim__refresh {
-  border: 0; background: none; cursor: pointer; padding: 4px 6px; border-radius: 6px;
-  font: 500 11px/1 Roboto, Arial, sans-serif; color: var(--yt-spec-text-secondary, #606060);
-}
-.ytc-sim__refresh:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06)); }
-html[dark] .ytc-sim__refresh { color: #aaa; }
-html[dark] .ytc-sim__refresh:hover { background: rgba(255,255,255,.08); }
-.ytc-sim__small {
-  border: 0; background: none; cursor: pointer; padding: 4px 6px; border-radius: 6px;
-  font: 500 11px/1 Roboto, Arial, sans-serif; color: var(--yt-spec-text-secondary, #606060);
-}
-.ytc-sim__small:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06)); }
-.ytc-sim__small--on { color: #fff; background: #0f9d58; }
-.ytc-sim__small--on:hover { background: #0c8248; }
-.ytc-sim__main { display: flex; flex-direction: column; min-width: 0; }
-.ytc-sim__sub { font-size: 10px; color: var(--yt-spec-text-secondary, #606060); margin-top: 2px; }
-html[dark] .ytc-sim__small { color: #aaa; }
-html[dark] .ytc-sim__small:hover { background: rgba(255,255,255,.08); }
-html[dark] .ytc-sim__small--on { color: #fff; }
-html[dark] .ytc-sim__sub { color: #aaa; }
 
-/* Similar-channels list: a name, a size, a score, and four statistics per row. Size alone
-   never says whether a channel is growing or dormant, which is the comparison this is for. */
-.ytc-sim__count { font-size: 11px; color: var(--yt-spec-text-secondary, #606060); margin-left: 6px; }
+html[dark] .ytc-t__title, html[dark] .ytc-t__name, html[dark] .ytc-t__c,
+html[dark] .ytc-t__h--on, html[dark] .ytc-t__h:hover { color: #f1f1f1; }
+html[dark] .ytc-t__count, html[dark] .ytc-t__handle, html[dark] .ytc-t__note,
+html[dark] .ytc-t__row--head, html[dark] .ytc-t__pic--none { color: #aaa; }
+html[dark] .ytc-t__btn { color: #f1f1f1; border-color: rgba(255,255,255,.2); }
+html[dark] .ytc-t__btn:hover { background: rgba(255,255,255,.1); }
+html[dark] .ytc-t__btn--on { color: #fff; }
+html[dark] .ytc-t__row:not(.ytc-t__row--head):hover { background: rgba(255,255,255,.08); }
+html[dark] .ytc-t__row--head { border-bottom-color: rgba(255,255,255,.12); }
+html[dark] .ytc-t__pic--none { background: rgba(255,255,255,.12); }
 
-.ytc-sim__sorts {
-  display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 4px 8px;
-  border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.08)); margin-bottom: 4px;
+@media (max-width: 1100px) {
+  .ytc-t__row { grid-template-columns: minmax(150px, 2fr) repeat(6, minmax(60px, 1fr)); }
+  .ytc-t__pic { width: 30px; height: 30px; }
 }
-.ytc-sim__sort {
-  border: 1px solid transparent; background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05));
-  color: var(--yt-spec-text-secondary, #606060); cursor: pointer;
-  font: 500 11px/1 Roboto, Arial, sans-serif; padding: 5px 9px; border-radius: 12px;
-}
-.ytc-sim__sort:hover { filter: brightness(0.95); }
-.ytc-sim__sort--on { background: #0f9d58; color: #fff; }
-
-.ytc-sim__row { flex-direction: column; align-items: stretch; gap: 4px; padding: 8px; }
-.ytc-sim__head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.ytc-sim__badge {
-  font: 500 10px/1 Roboto, Arial, sans-serif; padding: 3px 6px; border-radius: 8px;
-  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.07));
-  color: var(--yt-spec-text-secondary, #606060); white-space: nowrap;
-}
-.ytc-sim__score {
-  margin-left: auto; font: 700 12px/1 Roboto, Arial, sans-serif; color: #0f9d58; white-space: nowrap;
-}
-.ytc-sim__stats { display: flex; gap: 14px; flex-wrap: wrap; }
-.ytc-sim__stat { display: flex; flex-direction: column; gap: 1px; min-width: 56px; }
-.ytc-sim__statv {
-  font: 600 11px/1.2 Roboto, Arial, sans-serif; color: var(--yt-spec-text-primary, #0f0f0f);
-}
-.ytc-sim__statl {
-  font: 400 9px/1.2 Roboto, Arial, sans-serif; color: var(--yt-spec-text-secondary, #606060);
-  text-transform: uppercase; letter-spacing: .3px;
-}
-
-html[dark] .ytc-sim__count, html[dark] .ytc-sim__statl,
-html[dark] .ytc-sim__badge { color: #aaa; }
-html[dark] .ytc-sim__badge { background: rgba(255,255,255,.1); }
-html[dark] .ytc-sim__sort { background: rgba(255,255,255,.08); color: #aaa; }
-html[dark] .ytc-sim__sort--on { background: #0f9d58; color: #fff; }
-html[dark] .ytc-sim__statv { color: #f1f1f1; }
-html[dark] .ytc-sim__sorts { border-bottom-color: rgba(255,255,255,.1); }
