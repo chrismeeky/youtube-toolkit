@@ -399,6 +399,9 @@ html:not([dark]) .ytc-vph { color: #1668b8; background: rgba(0, 0, 0, .07); }
    because a tab that does not match the row beside it reads as a rendering fault. */
 .ytc-tab {
   display: inline-flex; align-items: center; gap: 6px;
+  /* border-box, or the 2px active underline makes the tab 50px against YouTube's 48 and the
+     underline lands below the row's divider — drawn, but invisible. */
+  box-sizing: border-box;
   padding: 0 16px; height: 48px; cursor: pointer;
   font: 500 14px/1 Roboto, Arial, sans-serif;
   color: var(--yt-spec-text-secondary, #606060);
