@@ -1053,16 +1053,77 @@
       test: (c) => (daysSince(c.lastUpload) === null ? 1e9 : daysSince(c.lastUpload)) <= 31 }
   ];
 
-  /* Subscriber count is the only monetization signal the index carries. That is enough to say
-     a channel cannot be monetized, and not enough to say it is — reading ad slots would mean
-     a page fetch per row. So this reports eligibility and does not overclaim. */
-  function eligibilityPill(c) {
-    if (!c.subscribers) return '';
-    const ok = c.subscribers >= YPP_MIN_SUBS;
-    return '<span class="ytc-elig ' + (ok ? 'ytc-elig--yes' : 'ytc-elig--no') + '" title="' +
-      (ok ? 'Has the 1,000 subscribers ad monetization requires'
-          : 'Under the 1,000 subscribers ad monetization requires') + '">' +
-      (ok ? 'Eligible' : 'Not eligible') + '</span>';
+  const ROW_MONEY = {
+    'likely-monetized': { label: 'Monetized', cls: 'ytc-mon--yes',
+      tip: 'Ads run on most recent videos' },
+    'likely-not': { label: 'Not monetized', cls: 'ytc-mon--no',
+      tip: 'No ad slots on most recent videos' },
+    'not-eligible': { label: 'Not eligible', cls: 'ytc-mon--off',
+      tip: 'Under the 1,000 subscribers ad monetization requires' },
+    unknown: { label: 'Unknown', cls: 'ytc-mon--off',
+      tip: 'Could not read enough videos to judge' }
+  };
+
+  /* Subscriber count settles the cheap half of the question: below the threshold nothing needs
+     fetching, which is the same gate the channel badge uses. Above it the verdict costs watch
+     page reads, so the pill starts as a placeholder and is filled in by hydrateRowMoney. */
+  function monetizationPill(c) {
+    const handle = c.handle || '';
+    if (c.subscribers && c.subscribers < YPP_MIN_SUBS) {
+      const m = ROW_MONEY['not-eligible'];
+      return '<span class="ytc-mon ' + m.cls + '" title="' + m.tip + '">' + m.label + '</span>';
+    }
+    if (!handle.startsWith('@')) return '';
+    return '<span class="ytc-mon ytc-mon--wait" data-mon="' + escapeHtml(handle) +
+      '" title="Checking recent videos for ad slots">\u2026</span>';
+  }
+
+  /* Each verdict costs a few watch page reads, so this never runs ahead of the reader: a row
+     is only checked once it is actually on screen, two at a time. Cached verdicts come back
+     immediately and cost nothing, so scrolling back over seen rows is free. The breaker in the
+     service worker still governs the rest. */
+  let moneyQueue = [];
+  let moneyBusy = 0;
+
+  function pumpRowMoney() {
+    while (moneyBusy < 2 && moneyQueue.length) {
+      const el = moneyQueue.shift();
+      if (!el.isConnected || !el.dataset.mon) continue;
+      const key = el.dataset.mon;
+      delete el.dataset.mon;              // claim it, so a re-observe cannot double-fetch
+      moneyBusy++;
+      chrome.runtime.sendMessage({ type: 'ytc-monetization', key }, (entry) => {
+        moneyBusy--;
+        if (!chrome.runtime.lastError && el.isConnected) {
+          const m = ROW_MONEY[(entry && entry.state)] || ROW_MONEY.unknown;
+          el.className = 'ytc-mon ' + m.cls;
+          el.textContent = m.label;
+          el.title = m.tip +
+            (entry && entry.checked ? ' (' + entry.withAds + ' of ' + entry.checked + ' checked)' : '');
+        }
+        pumpRowMoney();
+      });
+    }
+  }
+
+  let moneyIO = null;
+
+  function hydrateRowMoney(host) {
+    // A chip or sort redraw replaces every row; the previous observer would otherwise sit on
+    // detached nodes that can never intersect.
+    if (moneyIO) { moneyIO.disconnect(); moneyIO = null; }
+    const pending = host.querySelectorAll('.ytc-mon--wait[data-mon]');
+    if (!pending.length) return;
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        io.unobserve(e.target);
+        moneyQueue.push(e.target);
+      }
+      pumpRowMoney();
+    }, { rootMargin: '100px' });
+    moneyIO = io;
+    pending.forEach((el) => io.observe(el));
   }
 
   function daysSince(iso) {
@@ -1208,7 +1269,7 @@
             '<span class="ytc-t__names">' +
               '<span class="ytc-t__nameline">' +
                 '<span class="ytc-t__name">' + escapeHtml(c.title || handle) + '</span>' +
-                eligibilityPill(c) +
+                monetizationPill(c) +
               '</span>' +
               '<span class="ytc-t__handle">' + escapeHtml(handle) + '</span>' +
             '</span>' +
@@ -1260,6 +1321,10 @@
 
     host.innerHTML = controls + body + '<p class="ytc-t__note">' + note + '</p>';
     wireSimilarControls(host, res);
+    /* Re-rendering (a chip, a sort) drops the old placeholders, so anything still queued
+       against them is stale. */
+    moneyQueue = [];
+    hydrateRowMoney(host);
   }
 
   function wireSimilarControls(host, res) {

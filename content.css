@@ -535,10 +535,16 @@ html[dark] .ytc-chip--on { background: #f1f1f1; color: #0f0f0f; border-color: #f
 
 /* ---- per-row monetization eligibility ---- */
 .ytc-t__nameline { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.ytc-elig {
+.ytc-mon {
   flex: 0 0 auto; padding: 1px 7px; border-radius: 9px;
   font: 500 11px/1.5 Roboto, Arial, sans-serif; border: 1px solid;
+  white-space: nowrap;
 }
-.ytc-elig--yes { color: #0f9d58; border-color: rgba(15,157,88,.5); }
-.ytc-elig--no { color: #909090; border-color: rgba(144,144,144,.45); }
-html[dark] .ytc-elig--yes { color: #4ecb71; border-color: rgba(78,203,113,.5); }
+.ytc-mon--yes { color: #0f9d58; border-color: rgba(15,157,88,.5); }
+.ytc-mon--no { color: #c5221f; border-color: rgba(197,34,31,.45); }
+.ytc-mon--off { color: #909090; border-color: rgba(144,144,144,.45); }
+/* Placeholder while the verdict is being read — sized like the real pill so the row does
+   not jump when it resolves. */
+.ytc-mon--wait { color: #b0b0b0; border-color: transparent; min-width: 18px; text-align: center; }
+html[dark] .ytc-mon--yes { color: #4ecb71; border-color: rgba(78,203,113,.5); }
+html[dark] .ytc-mon--no { color: #ff8a80; border-color: rgba(255,138,128,.45); }
