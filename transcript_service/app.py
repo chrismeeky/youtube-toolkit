@@ -121,7 +121,7 @@ def indexed_channel(handle):
     return rows[0] if rows else None
 
 
-def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity):
+def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity, channel_id=None):
     """Nearest channels by topic, with the source channel excluded.
 
     Ranking happens in Postgres via the match_channels RPC rather than here, so the rule
@@ -129,9 +129,15 @@ def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity):
     """
     known = indexed_channel(handle) if handle else None
     vector = None
+    # Exclusion must not hang on the lookup succeeding. When it comes back empty — the row was
+    # written moments ago by ingest, or the lookup itself failed and was swallowed — the source
+    # channel used to be free to rank against itself, which is how Eagle FC appeared in its own
+    # list at 84%: page text embedded on one side, stored description on the other.
     exclude = None
     if known:
         exclude = known.get("id")
+    elif channel_id:
+        exclude = channel_id
         raw = known.get("embedding")
         # PostgREST returns a vector as its text form, "[0.1,0.2,...]".
         if isinstance(raw, str):
@@ -156,7 +162,11 @@ def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity):
         "max_subscribers": max_subs,
         "min_similarity": min_similarity,
     }, timeout=30)
-    return {"ok": True, "indexed": bool(known), "channels": rows or []}
+    # Last line of defence: the id may be absent or stale, but the handle came from the URL.
+    want = (handle or "").lstrip("@").lower()
+    out = [r for r in (rows or [])
+           if (r.get("handle") or "").lstrip("@").lower() != want]
+    return {"ok": True, "indexed": bool(known), "channels": out}
 
 
 def _clamp(query, name, default, low, high):
@@ -681,7 +691,8 @@ class Handler(BaseHTTPRequestHandler):
 
             result = similar_channels(
                 handle, text, max(1, min(100, limit)),
-                as_int("minSubs"), as_int("maxSubs"), max(0.0, min(1.0, floor)))
+                as_int("minSubs"), as_int("maxSubs"), max(0.0, min(1.0, floor)),
+                channel_id=body.get("channelId") or None)
             # Growing the corpus is a side effect of being asked, never a precondition.
             record_sighting(body.get("channelId"), handle)
             self._send(200, result)
