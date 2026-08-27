@@ -1829,6 +1829,14 @@
       if (visible(row)) return row;
       if (visible(sub.parentElement)) return sub.parentElement;
     }
+    /* An owner looking at their own channel gets Customize / Manage where Subscribe would be,
+       so the search above finds nothing and the badge fell through to the whole header — which
+       parks it under the avatar instead of in the button row. Match the row by structure, not
+       by button label: a label test would be one locale away from breaking. */
+    for (const row of Array.from(scope.querySelectorAll(ACTION_ROW)).filter(visible)) {
+      if (Array.from(row.querySelectorAll('button, yt-button-shape')).some(visible)) return row;
+    }
+
     const header = scope.querySelector('yt-page-header-view-model') ||
       scope.querySelector('#channel-header');
     return visible(header) ? header : null;
