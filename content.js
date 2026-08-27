@@ -1036,6 +1036,20 @@
     return Math.max(0, Math.round((Date.now() - t) / 86400000));
   }
 
+  /* Age reads in the largest unit that still says something: a channel opened last week is
+     "3w", not "0.0y", and one opened years ago carries its months so two old channels are
+     still tellable apart. */
+  function ageLabel(iso) {
+    const d = daysSince(iso);
+    if (d === null) return '\u2014';
+    if (d < 7) return d + 'd';
+    if (d < 30) return Math.floor(d / 7) + 'w';
+    if (d < 365) return Math.floor(d / 30) + 'mo';
+    const y = Math.floor(d / 365);
+    const mo = Math.floor((d % 365) / 30);
+    return mo ? y + 'y ' + mo + 'mo' : y + 'y';
+  }
+
   function agoLabel(iso) {
     const d = daysSince(iso);
     if (d === null) return '\u2014';
@@ -1065,10 +1079,7 @@
       cell: (c) => (c.uploadsPerMo ? Number(c.uploadsPerMo).toFixed(1) : '\u2014') },
     { key: 'age', label: 'Age',
       get: (c) => daysSince(c.publishedAt) || 0,
-      cell: (c) => {
-        const d = daysSince(c.publishedAt);
-        return d === null ? '\u2014' : (d > 365 ? (d / 365).toFixed(1) + 'y' : d + 'd');
-      } },
+      cell: (c) => ageLabel(c.publishedAt) },
     { key: 'last', label: 'Last upload',
       get: (c) => Date.parse(c.lastUpload || 0) || 0,
       cell: (c) => agoLabel(c.lastUpload) }
@@ -1212,7 +1223,7 @@
   /* Rendered into the channel page rather than floating over it, reached by a tab beside
      YouTube's own. A list of channels with six figures each needs the width, and a tab is
      where a reader already looks for another view of a channel. */
-  const TAB_LABEL = 'Similar';
+  const TAB_LABEL = 'Similar Channels';
 
   function tabBar() {
     /* The inner flex row first. yt-tab-group-shape wraps its tabs in a container, and a tab
@@ -1255,7 +1266,12 @@
       e.stopPropagation();
       openSimilarView();
     });
-    bar.appendChild(tab);
+    /* appendChild put the tab after the row's search icon, which is why it sat off on its
+       own. Land it directly after the last real tab instead, so it joins the row. */
+    const tabs = bar.querySelectorAll('yt-tab-shape, tp-yt-paper-tab, .ytc-tab');
+    const last = tabs[tabs.length - 1];
+    if (last && last.parentElement === bar) bar.insertBefore(tab, last.nextSibling);
+    else bar.appendChild(tab);
 
     /* YouTube's own tabs do not know about this one, so clicking any of them has to put the
        page back. Without this the channel's real content stays hidden behind our view. */
