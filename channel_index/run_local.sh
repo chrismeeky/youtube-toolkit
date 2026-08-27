@@ -46,6 +46,10 @@ echo
 cd "$(dirname "$0")/../transcript_service"
 # Passed explicitly rather than exported. An exported value was not reaching the process,
 # and a silently missing key shows up only as "ingest not configured" much later.
+# PYTHONDONTWRITEBYTECODE: the service lives inside the folder Chrome loads as an unpacked
+# extension, and Chrome refuses any directory whose name starts with "_" — a __pycache__ left
+# here makes the whole extension fail to load with "Could not load manifest". The profile then
+# keeps running whatever it loaded last, so the symptom is a stale extension, not an error.
 HOST=127.0.0.1 PORT="$PORT" ACCESS_TOKEN="$TOKEN" MAX_CONCURRENCY=2 \
-  YOUTUBE_API_KEY="$YT_KEY" \
+  YOUTUBE_API_KEY="$YT_KEY" PYTHONDONTWRITEBYTECODE=1 \
   exec python3 app.py

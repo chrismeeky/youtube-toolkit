@@ -20,6 +20,13 @@ Config is all environment variables (see README.md). Serves:
 where <prefix> is "" locally, or "/k/<ACCESS_TOKEN>" when a token is configured.
 """
 
+# This file sits inside the folder Chrome loads as an unpacked extension, and Chrome rejects
+# any directory whose name begins with "_" — a stray __pycache__ makes the whole extension
+# fail with "Could not load manifest", after which the profile silently keeps running the
+# build it loaded last. Set before any local import can generate one.
+import sys
+sys.dont_write_bytecode = True
+
 import base64
 import importlib.util
 import json

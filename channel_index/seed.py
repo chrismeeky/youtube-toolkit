@@ -21,6 +21,13 @@ instead, which is why this fits in the free quota.
     python3 seed.py --queries "true crime documentary" --limit 40 --dry-run
 """
 
+# This file sits inside the folder Chrome loads as an unpacked extension, and Chrome rejects
+# any directory whose name begins with "_" — a stray __pycache__ makes the whole extension
+# fail with "Could not load manifest", after which the profile silently keeps running the
+# build it loaded last. Set before any local import can generate one.
+import sys
+sys.dont_write_bytecode = True
+
 import argparse
 import json
 import os
