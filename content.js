@@ -300,7 +300,7 @@
 
   async function saveThumbs(videos, label) {
     if (!videos.length) { toast('Nothing to download', true); return; }
-    chrome.runtime.sendMessage({ type: 'ytc-thumbs', videos }, (res) => {
+    sendMessage({ type: 'ytc-thumbs', videos }, (res) => {
       if (chrome.runtime.lastError || !res) { toast('Download failed', true); return; }
       if (!res.saved) { toast('No thumbnail found', true); return; }
       toast(label || ('Saved ' + res.saved + ' thumbnail' + (res.saved > 1 ? 's' : '')) +
@@ -482,7 +482,7 @@
      carrying a chrome-extension:// origin, which is what the service worker sends. */
   function askBackground(type, id) {
     return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type, id }, (res) => {
+      sendMessage({ type, id }, (res) => {
         if (chrome.runtime.lastError) resolve({ ok: false, reason: 'extension not loaded' });
         else resolve(res || { ok: false, reason: 'no response' });
       });
@@ -558,7 +558,7 @@
     });
 
     if (settings.transcriptSave) {
-      chrome.runtime.sendMessage({
+      sendMessage({
         type: 'ytc-save-text',
         text: out,
         filename: F.safeFilename(video.title, video.id || 'transcript', 'txt')
@@ -657,7 +657,36 @@
   }
 
   let lastCount = -1;
+  /* After the extension reloads, every content script left on an already-open page keeps
+     running against a dead context: chrome.runtime.id is gone and every API call throws
+     "Extension context invalidated". Scans fire on each mutation, so a single stale tab
+     emits that error forever and buries whatever is actually wrong. Stand down instead —
+     the page needs reloading, and nothing here can do that for it. */
+  let contextDead = false;
+  function contextAlive() {
+    if (contextDead) return false;
+    try {
+      if (chrome.runtime && chrome.runtime.id) return true;
+    } catch (e) { /* reading chrome.runtime can itself throw once torn down */ }
+    contextDead = true;
+    try { if (typeof observer !== 'undefined' && observer) observer.disconnect(); } catch (e) {}
+    return false;
+  }
+
+  /* One way in and out for messaging, so a dead context is checked in one place rather than
+     at nine call sites that each had to remember. The callback simply never fires — the same
+     thing that happens when the service worker has nothing to say. */
+  function sendMessage(msg, cb) {
+    if (!contextAlive()) return;
+    try {
+      chrome.runtime.sendMessage(msg, cb);
+    } catch (e) {
+      contextDead = true;
+    }
+  }
+
   function scan() {
+    if (!contextAlive()) return;
     const cards = document.querySelectorAll(CARD_SELECTOR);
     let n = 0;
     for (const card of cards) {
@@ -1097,7 +1126,7 @@
       const key = el.dataset.mon;
       delete el.dataset.mon;              // claim it, so a re-observe cannot double-fetch
       moneyBusy++;
-      chrome.runtime.sendMessage({ type: 'ytc-monetization', key }, (entry) => {
+      sendMessage({ type: 'ytc-monetization', key }, (entry) => {
         moneyBusy--;
         if (!chrome.runtime.lastError && el.isConnected) {
           const m = ROW_MONEY[(entry && entry.state)] || ROW_MONEY.unknown;
@@ -1535,7 +1564,7 @@
       // easy to name, while the ones just below it are what nobody can see.
       maxSubs: simFilter.smallOnly && own.subscribers ? own.subscribers : null
     };
-    chrome.runtime.sendMessage({ type: 'ytc-similar', key, titles, about, force, opts }, (res) => {
+    sendMessage({ type: 'ytc-similar', key, titles, about, force, opts }, (res) => {
       if (chrome.runtime.lastError) {
         renderSimilar({ channels: [], reason: 'Extension reloaded — refresh this tab' });
         return;
@@ -1627,7 +1656,7 @@
     if (!host) return;
     const fresh = ensureMoneyBadge(host, big);
     fresh.dataset.key = key;
-    chrome.runtime.sendMessage({ type: 'ytc-monetization', key, force: true }, (res) => {
+    sendMessage({ type: 'ytc-monetization', key, force: true }, (res) => {
       if (!fresh.isConnected) return;
       paintMoney(fresh, chrome.runtime.lastError ? null : res, big);
     });
@@ -1864,7 +1893,7 @@
       done(null);
     }, MONEY_TIMEOUT);
     try {
-      chrome.runtime.sendMessage({ type: 'ytc-monetization', key }, (res) => {
+      sendMessage({ type: 'ytc-monetization', key }, (res) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -2021,7 +2050,7 @@
   }
 
   function askFor(key, force, tries) {
-    chrome.runtime.sendMessage({ type: 'ytc-subs', key, force }, (res) => {
+    sendMessage({ type: 'ytc-subs', key, force }, (res) => {
       if (chrome.runtime.lastError) { requested.delete(key); return; }
       const entry = {
         text: (res && res.text) || null,
@@ -2158,7 +2187,7 @@
       });
       if (watchKey && !(cached && cached.stats) && !statsRequested.has(watchKey)) {
         statsRequested.add(watchKey);
-        chrome.runtime.sendMessage({ type: 'ytc-subs', key: watchKey }, (res) => {
+        sendMessage({ type: 'ytc-subs', key: watchKey }, (res) => {
           statsRequested.delete(watchKey);
           if (chrome.runtime.lastError) return;
           const stats = (res && res.stats) || null;
