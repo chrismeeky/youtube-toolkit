@@ -515,7 +515,9 @@ async function getSimilarChannels(key, titles, about, force, opts) {
           subscribers: c.subscribers,
           avgViews: c.avg_views,
           uploadsPerMo: c.uploads_per_mo,
-          lastUpload: c.last_upload_at
+          lastUpload: c.last_upload_at,
+          publishedAt: c.published_at,
+          videoCount: c.video_count
         })),
         source: 'index',
         indexed: !!out.indexed,

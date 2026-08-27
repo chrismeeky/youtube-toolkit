@@ -423,8 +423,9 @@ html[dark] .ytc-simbtn:hover { background: rgba(255,255,255,.1); }
   position: fixed;
   right: 24px;
   bottom: 24px;
-  width: 320px;
-  max-height: 70vh;
+  width: 460px;
+  max-width: calc(100vw - 48px);
+  max-height: 74vh;
   display: flex;
   flex-direction: column;
   z-index: 2400;
@@ -486,3 +487,47 @@ html[dark] .ytc-sim__small { color: #aaa; }
 html[dark] .ytc-sim__small:hover { background: rgba(255,255,255,.08); }
 html[dark] .ytc-sim__small--on { color: #fff; }
 html[dark] .ytc-sim__sub { color: #aaa; }
+
+/* Similar-channels list: a name, a size, a score, and four statistics per row. Size alone
+   never says whether a channel is growing or dormant, which is the comparison this is for. */
+.ytc-sim__count { font-size: 11px; color: var(--yt-spec-text-secondary, #606060); margin-left: 6px; }
+
+.ytc-sim__sorts {
+  display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 4px 8px;
+  border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.08)); margin-bottom: 4px;
+}
+.ytc-sim__sort {
+  border: 1px solid transparent; background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05));
+  color: var(--yt-spec-text-secondary, #606060); cursor: pointer;
+  font: 500 11px/1 Roboto, Arial, sans-serif; padding: 5px 9px; border-radius: 12px;
+}
+.ytc-sim__sort:hover { filter: brightness(0.95); }
+.ytc-sim__sort--on { background: #0f9d58; color: #fff; }
+
+.ytc-sim__row { flex-direction: column; align-items: stretch; gap: 4px; padding: 8px; }
+.ytc-sim__head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ytc-sim__badge {
+  font: 500 10px/1 Roboto, Arial, sans-serif; padding: 3px 6px; border-radius: 8px;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.07));
+  color: var(--yt-spec-text-secondary, #606060); white-space: nowrap;
+}
+.ytc-sim__score {
+  margin-left: auto; font: 700 12px/1 Roboto, Arial, sans-serif; color: #0f9d58; white-space: nowrap;
+}
+.ytc-sim__stats { display: flex; gap: 14px; flex-wrap: wrap; }
+.ytc-sim__stat { display: flex; flex-direction: column; gap: 1px; min-width: 56px; }
+.ytc-sim__statv {
+  font: 600 11px/1.2 Roboto, Arial, sans-serif; color: var(--yt-spec-text-primary, #0f0f0f);
+}
+.ytc-sim__statl {
+  font: 400 9px/1.2 Roboto, Arial, sans-serif; color: var(--yt-spec-text-secondary, #606060);
+  text-transform: uppercase; letter-spacing: .3px;
+}
+
+html[dark] .ytc-sim__count, html[dark] .ytc-sim__statl,
+html[dark] .ytc-sim__badge { color: #aaa; }
+html[dark] .ytc-sim__badge { background: rgba(255,255,255,.1); }
+html[dark] .ytc-sim__sort { background: rgba(255,255,255,.08); color: #aaa; }
+html[dark] .ytc-sim__sort--on { background: #0f9d58; color: #fff; }
+html[dark] .ytc-sim__statv { color: #f1f1f1; }
+html[dark] .ytc-sim__sorts { border-bottom-color: rgba(255,255,255,.1); }
