@@ -36,7 +36,7 @@ import urllib.request
 from collections import OrderedDict, defaultdict, deque
 from hmac import compare_digest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 
 
 def _int(name, default):
@@ -201,6 +201,28 @@ def _get_json(url, timeout=30):
         return json.loads(res.read().decode("utf-8", "replace"))
 
 
+def resolve_handles(handles):
+    """Handle -> channel id, one quota unit each.
+
+    Ingest keys off channel ids, so a payload carrying only a handle used to be dropped in
+    silence. That is affordable here because it runs for the handful of channels a person
+    actually visits, not for bulk discovery, which always arrives with ids attached.
+    """
+    out = {}
+    for h in handles[:5]:
+        handle = h if h.startswith("@") else "@" + h
+        url = ("%s/channels?part=id&forHandle=%s&key=%s"
+               % (YT_API, quote(handle), YT_KEY))
+        try:
+            data = _get_json(url)
+        except Exception:
+            continue
+        items = data.get("items") or []
+        if items:
+            out[handle] = items[0]["id"]
+    return out
+
+
 def fetch_channel_records(ids):
     """Up to 50 channels for a single quota unit — the reason ingesting from user activity
     is affordable rather than something that needs rationing."""
@@ -253,6 +275,10 @@ def ingest_channels(pairs):
         return {"ok": False, "reason": "ingest not configured"}
 
     wanted = [p.get("id") for p in pairs if p.get("id")][:50]
+    # Anything that arrived with only a handle: look the id up rather than dropping it.
+    bare = [p.get("handle") for p in pairs if not p.get("id") and p.get("handle")]
+    if bare and len(wanted) < 50:
+        wanted += [cid for cid in resolve_handles(bare).values() if cid not in wanted]
     fresh = [c for c in wanted if c not in already_indexed(wanted)]
     if not fresh:
         return {"ok": True, "added": 0, "skipped": len(wanted)}

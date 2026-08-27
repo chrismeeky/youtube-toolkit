@@ -493,6 +493,17 @@ async function similarFromIndex(base, key, titles, about, opts) {
   }
 }
 
+/* Hand channels to the index without waiting. Never allowed to delay or break the answer
+   being returned now — a failed ingest costs the corpus one row, not the user their panel. */
+function pushToIndex(base, pairs) {
+  if (!base || !pairs || !pairs.length) return;
+  fetch(base.replace(/\/$/, '') + '/ingest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channels: pairs.slice(0, 40) })
+  }).catch(() => { /* the answer above is unaffected */ });
+}
+
 async function getSimilarChannels(key, titles, about, force, opts) {
   const settings = await chrome.storage.sync.get('apiUrl');
   const base = (settings.apiUrl || '').trim();
@@ -502,6 +513,14 @@ async function getSimilarChannels(key, titles, about, force, opts) {
      here — the server holds the corpus, and a cached list would go stale the moment the
      filter changed. The search fallback below is cached, because each lookup there costs two
      page fetches. */
+  /* The channel being looked at is the one channel we know is real, is current, and someone
+     cares about — and it was the only one never being added. Ingest ran solely on the search
+     fallback, and only for channels search turned up, so visiting Bellator taught the index
+     nothing about Bellator: its niche stayed one-sided, and UFC could not find it back. */
+  if (base && key.startsWith('@')) {
+    pushToIndex(base, [{ id: (opts && opts.channelId) || '', handle: key }]);
+  }
+
   if (base) {
     const out = await similarFromIndex(base, key, titles, about, opts);
     /* An empty index answer is not an answer. The index only knows the niches that have been
@@ -570,14 +589,7 @@ async function getSimilarChannels(key, titles, about, force, opts) {
      residential connection; the server cannot, but it holds the keys to enrich and embed.
      Fire-and-forget — this fills the niche for whoever looks next, and must never delay or
      break the answer being given now. */
-  if (base && discovered.length) {
-    const seed = discovered.slice(0, 40);
-    fetch(base.replace(/\/$/, '') + '/ingest', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channels: seed })
-    }).catch(() => { /* the answer above is unaffected */ });
-  }
+  pushToIndex(base, discovered);
 
   const channels = F.rankSimilar(perQuery, 25);
   const entry = { channels, queries, source: 'search', reason: '',
