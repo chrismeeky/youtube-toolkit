@@ -30,6 +30,7 @@ sys.dont_write_bytecode = True
 import base64
 import importlib.util
 import json
+from datetime import datetime
 import os
 import re
 import shutil
@@ -264,7 +265,7 @@ def fetch_channel_records(ids):
         batch = [c for c in ids[i:i + 50] if re.match(r"^UC[\w-]{20,24}$", c or "")]
         if not batch:
             continue
-        url = ("%s/channels?part=snippet,statistics&id=%s&maxResults=50&key=%s"
+        url = ("%s/channels?part=snippet,statistics,contentDetails&id=%s&maxResults=50&key=%s"
                % (YT_API, ",".join(batch), YT_KEY))
         try:
             data = _get_json(url)
@@ -297,6 +298,49 @@ def already_indexed(ids):
         return set()
 
 
+def recent_uploads(playlist_id, want=15):
+    """Recent uploads: cadence, last upload, and the titles that go into the embedding.
+
+    One quota unit per channel. seed.py has always done this; ingest did not, so channels
+    that arrived through user activity had no Uploads/mo or Last upload and a thinner
+    embedding than crawled ones — two grades of row in the same table.
+    """
+    url = ("%s/playlistItems?part=snippet&playlistId=%s&maxResults=%d&key=%s"
+           % (YT_API, playlist_id, want, YT_KEY))
+    try:
+        data = _get_json(url)
+    except Exception:
+        return [], None, None
+    titles, newest, oldest = [], None, None
+    for item in data.get("items") or []:
+        snip = item.get("snippet") or {}
+        title = (snip.get("title") or "").strip()
+        if title and title.lower() not in ("private video", "deleted video"):
+            titles.append(title)
+        stamp = snip.get("publishedAt")
+        if stamp:
+            if newest is None or stamp > newest:
+                newest = stamp
+            if oldest is None or stamp < oldest:
+                oldest = stamp
+    return titles, newest, oldest
+
+
+def uploads_per_month(count, oldest, newest):
+    """Uploads per month across the sampled window, not the channel's lifetime — a channel
+    that posted daily for a year then stopped is not uploading thirty times a month now."""
+    if not oldest or not newest or count < 2:
+        return None
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    try:
+        a = datetime.strptime(oldest, fmt)
+        b = datetime.strptime(newest, fmt)
+    except ValueError:
+        return None
+    months = max((b - a).days / 30.0, 0.25)
+    return round(count / months, 2)
+
+
 def ingest_channels(pairs):
     """Index channels the extension discovered, so a niche fills itself in from use.
 
@@ -324,18 +368,24 @@ def ingest_channels(pairs):
         if subs and subs < MIN_INDEX_SUBS:
             continue
         snip = ch.get("snippet") or {}
+        uploads = (((ch.get("contentDetails") or {}).get("relatedPlaylists") or {})
+                   .get("uploads"))
+        titles, newest, oldest = recent_uploads(uploads) if uploads else ([], None, None)
+        # Titles as well as the description: a channel whose description is a business email
+        # has nothing else saying what it is about. seed.py embeds both; this now matches.
         text = "\n".join(x for x in [snip.get("title") or "",
-                                     (snip.get("description") or "")[:800]] if x)[:2000]
+                                      (snip.get("description") or "")[:800],
+                                      " \u00b7 ".join(titles[:10])] if x)[:2000]
         if not text.strip():
             continue
         texts.append(text)
-        keep.append((cid, ch, text))
+        keep.append((cid, ch, text, titles, newest, oldest))
 
     if not texts:
         return {"ok": True, "added": 0, "skipped": len(wanted)}
 
     vectors = embed_many(texts)
-    for (cid, ch, text), vec in zip(keep, vectors):
+    for (cid, ch, text, titles, newest, oldest), vec in zip(keep, vectors):
         snip = ch.get("snippet") or {}
         stats = ch.get("statistics") or {}
         views = int(stats.get("viewCount") or 0)
@@ -357,6 +407,8 @@ def ingest_channels(pairs):
             "country": snip.get("country"),
             "published_at": snip.get("publishedAt"),
             "avg_views": (views // count) if count else None,
+            "last_upload_at": newest,
+            "uploads_per_mo": uploads_per_month(len(titles), oldest, newest),
             "embedding": vec,
             "embed_source": text[:500],
         })
