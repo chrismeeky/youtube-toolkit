@@ -475,24 +475,32 @@ async function similarFromIndex(base, key, titles, about, opts) {
     maxSubs: (opts && opts.maxSubs) || null,
     minSimilarity: 0.45
   };
-  const controller = new AbortController();
-  /* 90s, because Render's free tier spins the instance down when idle and warns that the
-     first request can be delayed 50 seconds or more. At 45s every cold start aborted and the
-     panel quietly fell back to search — the index looking broken when it was only asleep. */
-  const timer = setTimeout(() => controller.abort(), 90000);
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-    if (!res.ok) return { ok: false, reason: 'index ' + res.status };
-    return await res.json();
-  } catch (e) {
-    return { ok: false, reason: 'index unreachable' };
-  } finally {
-    clearTimeout(timer);
+  /* Two attempts, because a free-tier instance sleeps when idle. Waking it takes upwards of
+     50 seconds, and while it wakes the CORS preflight itself fails — the browser blocks the
+     request before it is sent, so the fetch throws rather than returning a status, and no
+     timeout can help. The first attempt is what wakes it; the second usually lands. */
+  for (const attempt of [1, 2]) {
+    const controller = new AbortController();
+    // 90s: Render warns the first request after a spin-down can take 50 seconds or more.
+    const timer = setTimeout(() => controller.abort(), 90000);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      // A status is a real answer — the URL is wrong, or the token is. Retrying cannot fix it.
+      if (!res.ok) return { ok: false, reason: 'index ' + res.status };
+      return await res.json();
+    } catch (e) {
+      if (attempt === 2) {
+        return { ok: false, reason: 'index unreachable — check the URL includes /k/<token>' };
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
