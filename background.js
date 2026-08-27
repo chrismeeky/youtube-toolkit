@@ -476,7 +476,10 @@ async function similarFromIndex(base, key, titles, about, opts) {
     minSimilarity: 0.45
   };
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 45000);
+  /* 90s, because Render's free tier spins the instance down when idle and warns that the
+     first request can be delayed 50 seconds or more. At 45s every cold start aborted and the
+     panel quietly fell back to search — the index looking broken when it was only asleep. */
+  const timer = setTimeout(() => controller.abort(), 90000);
   try {
     const res = await fetch(url, {
       method: 'POST',
