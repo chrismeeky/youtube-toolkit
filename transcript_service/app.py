@@ -635,10 +635,19 @@ class Handler(BaseHTTPRequestHandler):
                     return None
 
             limit = as_int("limit") or 25
+
+            # `or` treats 0.0 as absent, so a caller asking for no floor silently got the
+            # default one — which made "show me everything" indistinguishable from "show me
+            # good matches" while debugging an empty result.
+            raw_floor = body.get("minSimilarity")
+            try:
+                floor = float(raw_floor) if raw_floor is not None else 0.55
+            except (TypeError, ValueError):
+                floor = 0.55
+
             result = similar_channels(
                 handle, text, max(1, min(100, limit)),
-                as_int("minSubs"), as_int("maxSubs"),
-                float(body.get("minSimilarity") or 0.55))
+                as_int("minSubs"), as_int("maxSubs"), max(0.0, min(1.0, floor)))
             # Growing the corpus is a side effect of being asked, never a precondition.
             record_sighting(body.get("channelId"), handle)
             self._send(200, result)
