@@ -120,12 +120,20 @@ def indexed_channel(handle):
     req = urllib.request.Request(
         SUPABASE_URL + query,
         headers={"apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as res:
-            rows = json.loads(res.read().decode("utf-8", "replace"))
-    except Exception:
-        return None
-    return rows[0] if rows else None
+    # One retry: Supabase drops idle keep-alive connections, and a RemoteDisconnected here
+    # does not fail the request — it quietly downgrades the answer to page-text embedding.
+    # That made results differ run to run for the same channel.
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as res:
+                return (json.loads(res.read().decode("utf-8", "replace")) or [None])[0]
+        except Exception as e:
+            # Never silently. A failure here does not stop an answer being produced, so
+            # swallowing it turned a broken lookup into quietly worse results that still
+            # claimed to come from the index.
+            print("  indexed_channel(%s) attempt %d failed: %s: %s"
+                  % (handle, attempt, type(e).__name__, e), flush=True)
+    return None
 
 
 def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity, channel_id=None):
@@ -143,8 +151,6 @@ def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity, ch
     exclude = None
     if known:
         exclude = known.get("id")
-    elif channel_id:
-        exclude = channel_id
         raw = known.get("embedding")
         # PostgREST returns a vector as its text form, "[0.1,0.2,...]".
         if isinstance(raw, str):
@@ -154,7 +160,16 @@ def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity, ch
                 vector = None
         elif isinstance(raw, list):
             vector = raw
+    elif channel_id:
+        exclude = channel_id
+    used_stored = vector is not None
     if vector is None:
+        if known:
+            # The row exists but its vector did not survive the round trip. Say so: reporting
+            # indexed=True here made a page-text fallback look like an index hit, which is how
+            # UFC and Bellator ended up disagreeing about how similar they are.
+            print("  %s is indexed but its embedding was unusable (%s)"
+                  % (handle, type(known.get("embedding")).__name__), flush=True)
         if not text:
             return {"ok": False, "reason": "channel not indexed yet and no text supplied"}
         vector = embed(text)
@@ -173,7 +188,8 @@ def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity, ch
     want = (handle or "").lstrip("@").lower()
     out = [r for r in (rows or [])
            if (r.get("handle") or "").lstrip("@").lower() != want]
-    return {"ok": True, "indexed": bool(known), "channels": out}
+    # "indexed" means the stored vector was used, not merely that a row exists.
+    return {"ok": True, "indexed": used_stored, "channels": out}
 
 
 def _clamp(query, name, default, low, high):
