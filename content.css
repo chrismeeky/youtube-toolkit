@@ -459,6 +459,8 @@ html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
 .ytc-t__h:hover { color: var(--yt-spec-text-primary, #0f0f0f); }
 .ytc-t__h--on { color: var(--yt-spec-text-primary, #0f0f0f); font-weight: 700; }
 .ytc-t__arrow { font-size: 9px; opacity: .55; }
+/* Inactive columns keep the same glyph, faded, so the row does not shift as sorting moves. */
+.ytc-t__arrow--off { opacity: .25; }
 .ytc-t__h--on .ytc-t__arrow { opacity: 1; color: #0f9d58; }
 
 .ytc-t__chan { display: flex; align-items: center; gap: 10px; min-width: 0; }

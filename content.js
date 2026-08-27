@@ -1040,7 +1040,12 @@
      channels punching above their size, not admiring the biggest ones. */
   const SIM_CHIPS = [
     { key: 'all', label: 'All channels', test: () => true },
-    { key: 'outliers', label: 'Outliers',
+    /* Deliberately NOT called "Outliers". That word already means something exact in this
+       extension — a video's views against its own channel's lifetime average — and the index
+       holds no per-video data for other channels, so that score cannot be computed here. This
+       is the views-to-subscribers ratio, which is a different question: who is reaching far
+       past their own audience. */
+    { key: 'outliers', label: 'Overperforming',
       test: (c) => c.subscribers > 0 && c.avgViews >= c.subscribers * 2 },
     { key: 'lowsub', label: 'Low subs, high views',
       test: (c) => c.subscribers > 0 && c.subscribers <= 25000 && c.avgViews >= 50000 },
@@ -1251,10 +1256,13 @@
         '<span class="ytc-t__chan">Channel</span>' +
         SIM_COLS.map((c) => {
           const on = simFilter.sort === c.key;
-          const arrow = on ? (simFilter.desc ? '\u25BC' : '\u25B2') : '\u21C5';
+          /* One glyph family, dimmed when inactive. The up/down-pair character (U+21C5) is
+             absent from Roboto and rendered as tofu boxes. */
+          const arrow = (on && !simFilter.desc) ? '\u25B2' : '\u25BC';
           return '<button type="button" class="ytc-t__h' + (on ? ' ytc-t__h--on' : '') +
             '" data-col="' + c.key + '">' + c.label +
-            '<span class="ytc-t__arrow">' + arrow + '</span></button>';
+            '<span class="ytc-t__arrow' + (on ? '' : ' ytc-t__arrow--off') + '">' +
+            arrow + '</span></button>';
         }).join('') + '</div>';
 
       const rows = sorted.map((c) => {
