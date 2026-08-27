@@ -187,6 +187,11 @@ YT_KEY = os.environ.get("YOUTUBE_API_KEY") or os.environ.get("NEXT_PUBLIC_YOUTUB
 # crowds the results. The 11-subscriber channel that reached the index during seeding is
 # exactly what this keeps out.
 MIN_INDEX_SUBS = 100
+# Below this a match is noise. It was 0.55, which withheld everything for a channel whose
+# best neighbour scored 50% — the panel then read as though nothing had been indexed at all,
+# when the truth was "indexed, but not close". A scored 50% match the reader can judge beats
+# silence they cannot.
+DEFAULT_FLOOR = 0.45
 INGEST_READY = bool(INDEX_READY and OPENAI_KEY and YT_KEY)
 
 
@@ -641,9 +646,9 @@ class Handler(BaseHTTPRequestHandler):
             # good matches" while debugging an empty result.
             raw_floor = body.get("minSimilarity")
             try:
-                floor = float(raw_floor) if raw_floor is not None else 0.55
+                floor = float(raw_floor) if raw_floor is not None else DEFAULT_FLOOR
             except (TypeError, ValueError):
-                floor = 0.55
+                floor = DEFAULT_FLOOR
 
             result = similar_channels(
                 handle, text, max(1, min(100, limit)),
@@ -697,7 +702,7 @@ class Handler(BaseHTTPRequestHandler):
                 _clamp(query, "limit", 25, 1, 100),
                 _opt_int(query, "min_subs"),
                 _opt_int(query, "max_subs"),
-                _clamp_float(query, "min_similarity", 0.55, 0.0, 1.0)))
+                _clamp_float(query, "min_similarity", DEFAULT_FLOOR, 0.0, 1.0)))
             return
 
         if path == "/health":

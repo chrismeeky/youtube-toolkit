@@ -470,7 +470,7 @@ async function similarFromIndex(base, key, titles, about, opts) {
     limit: 25,
     minSubs: (opts && opts.minSubs) || null,
     maxSubs: (opts && opts.maxSubs) || null,
-    minSimilarity: 0.55
+    minSimilarity: 0.45
   };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 45000);

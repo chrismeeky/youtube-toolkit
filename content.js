@@ -1088,6 +1088,15 @@
     if (fromIndex) {
       note = 'Ranked by topic similarity against the channel index' +
         (res.indexed ? '' : ' — this channel is not indexed yet, so its own page text was used');
+      /* A percentage is only meaningful if the reader knows what a good one looks like. When
+         the closest match in the corpus is a weak one, say so rather than letting a 47% sit
+         there looking like the 86% a well-covered niche produces. */
+      const best = list.reduce((m, c) => Math.max(m, c.similarity || 0), 0);
+      if (best < 0.55) {
+        note = '<b>Weak matches (best ' + Math.round(best * 100) + '%).</b> ' +
+          'This niche is thinly indexed — the closest channels found are only loosely ' +
+          'related. ' + note;
+      }
     } else {
       note = 'Channels ranking for this channel\'s own topics: ' +
         (res.queries || []).map((q) => escapeHtml(q)).join('  ·  ') +
