@@ -1028,7 +1028,42 @@
     return { channelId: channelId, title: title || '', subscribers: subscribers };
   }
 
-  const simFilter = { smallOnly: false, sort: 'similarity', desc: true, open: false };
+  const simFilter = { smallOnly: false, sort: 'similarity', desc: true, open: false, chip: 'all' };
+
+  /* Ad monetization needs 1,000 subscribers. Below that the question "is it monetized" has no
+     answer worth giving, which is the same gate the channel badge uses. */
+  const YPP_MIN_SUBS = 1000;
+
+  /* Preset views over the fetched rows. These filter what was already returned rather than
+     asking the server again, so switching between them is instant and costs nothing. Each
+     one answers a question a channel hunter actually asks — the point of the list is finding
+     channels punching above their size, not admiring the biggest ones. */
+  const SIM_CHIPS = [
+    { key: 'all', label: 'All channels', test: () => true },
+    { key: 'outliers', label: 'Outliers',
+      test: (c) => c.subscribers > 0 && c.avgViews >= c.subscribers * 2 },
+    { key: 'lowsub', label: 'Low subs, high views',
+      test: (c) => c.subscribers > 0 && c.subscribers <= 25000 && c.avgViews >= 50000 },
+    { key: 'newfast', label: 'High views, new channel',
+      test: (c) => c.avgViews >= 50000 && (daysSince(c.publishedAt) || 1e9) <= 365 },
+    { key: 'big', label: 'Above 50k avg views', test: (c) => c.avgViews >= 50000 },
+    { key: 'new', label: 'New channels',
+      test: (c) => (daysSince(c.publishedAt) || 1e9) <= 180 },
+    { key: 'active', label: 'Active this month',
+      test: (c) => (daysSince(c.lastUpload) === null ? 1e9 : daysSince(c.lastUpload)) <= 31 }
+  ];
+
+  /* Subscriber count is the only monetization signal the index carries. That is enough to say
+     a channel cannot be monetized, and not enough to say it is — reading ad slots would mean
+     a page fetch per row. So this reports eligibility and does not overclaim. */
+  function eligibilityPill(c) {
+    if (!c.subscribers) return '';
+    const ok = c.subscribers >= YPP_MIN_SUBS;
+    return '<span class="ytc-elig ' + (ok ? 'ytc-elig--yes' : 'ytc-elig--no') + '" title="' +
+      (ok ? 'Has the 1,000 subscribers ad monetization requires'
+          : 'Under the 1,000 subscribers ad monetization requires') + '">' +
+      (ok ? 'Eligible' : 'Not eligible') + '</span>';
+  }
 
   function daysSince(iso) {
     const t = Date.parse(iso || '');
@@ -1090,14 +1125,32 @@
     if (!host) return;
     host.dataset.loaded = '1';
 
-    const list = (res && res.channels) || [];
+    const all = (res && res.channels) || [];
     const fromIndex = res && res.source === 'index';
+
+    /* Chips only where the numbers behind them exist. The search fallback returns names, not
+       stats, so a chip row there would filter on fields that are all undefined. */
+    const chip = (fromIndex && SIM_CHIPS.find((x) => x.key === simFilter.chip)) || SIM_CHIPS[0];
+    const list = fromIndex ? all.filter(chip.test) : all;
+
+    const count = !all.length ? '' :
+      ' <span class="ytc-t__count">(' + list.length +
+      (list.length === all.length ? '' : ' of ' + all.length) + ')</span>';
+
+    const chips = !fromIndex ? '' :
+      '<div class="ytc-chips">' + SIM_CHIPS.map((x) => {
+        // A chip that would empty the table is still shown, but says so rather than lying.
+        const n = all.filter(x.test).length;
+        return '<button type="button" class="ytc-chip' +
+          (x.key === chip.key ? ' ytc-chip--on' : '') + (n ? '' : ' ytc-chip--empty') +
+          '" data-chip="' + x.key + '">' + escapeHtml(x.label) +
+          (x.key === 'all' ? '' : ' <span class="ytc-chip__n">' + n + '</span>') +
+        '</button>';
+      }).join('') + '</div>';
 
     const controls =
       '<div class="ytc-t__bar">' +
-        '<span class="ytc-t__title">Similar channels' +
-          (list.length ? ' <span class="ytc-t__count">(' + list.length + ')</span>' : '') +
-        '</span>' +
+        '<span class="ytc-t__title">Similar channels' + count + '</span>' +
         '<span class="ytc-t__actions">' +
           (fromIndex
             ? '<button type="button" class="ytc-t__btn ytc-t__small' +
@@ -1106,11 +1159,20 @@
             : '') +
           '<button type="button" class="ytc-t__btn ytc-t__refresh">Refresh</button>' +
         '</span>' +
-      '</div>';
+      '</div>' + chips;
 
-    if (!list.length) {
+    if (!all.length) {
       host.innerHTML = controls + '<p class="ytc-t__note">' +
         (res && res.reason ? escapeHtml(res.reason) : 'Nothing found for this channel') + '</p>';
+      wireSimilarControls(host, res);
+      return;
+    }
+
+    /* Filtered to nothing is a different state from found nothing, and saying so keeps the
+       chips on screen so there is a way back out. */
+    if (!list.length) {
+      host.innerHTML = controls + '<p class="ytc-t__note">No channels here match \u201c' +
+        escapeHtml(chip.label) + '\u201d. ' + all.length + ' found in total.</p>';
       wireSimilarControls(host, res);
       return;
     }
@@ -1144,7 +1206,10 @@
           '" target="_blank" rel="noopener noreferrer">' +
           '<span class="ytc-t__chan">' + img +
             '<span class="ytc-t__names">' +
-              '<span class="ytc-t__name">' + escapeHtml(c.title || handle) + '</span>' +
+              '<span class="ytc-t__nameline">' +
+                '<span class="ytc-t__name">' + escapeHtml(c.title || handle) + '</span>' +
+                eligibilityPill(c) +
+              '</span>' +
               '<span class="ytc-t__handle">' + escapeHtml(handle) + '</span>' +
             '</span>' +
           '</span>' +
@@ -1207,6 +1272,15 @@
     }
     const refresh = host.querySelector('.ytc-t__refresh');
     if (refresh) refresh.addEventListener('click', () => askSimilar(true));
+
+    // Chips re-filter what is already here, so they redraw rather than refetch.
+    host.querySelectorAll('.ytc-chip').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        simFilter.chip = b.dataset.chip;
+        renderSimilar(res);
+      });
+    });
 
     // Clicking the active column flips direction; another column takes over, descending.
     host.querySelectorAll('.ytc-t__h').forEach((h) => {

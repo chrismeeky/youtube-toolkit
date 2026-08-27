@@ -473,6 +473,9 @@ html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
 .ytc-t__name {
   font: 500 14px/1.2 Roboto, Arial, sans-serif; color: var(--yt-spec-text-primary, #0f0f0f);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* Flex child now that the eligibility pill sits beside it: without this a long title
+     refuses to shrink and shoves the pill out of the row. */
+  min-width: 0;
 }
 .ytc-t__handle {
   font: 400 12px/1.2 Roboto, Arial, sans-serif; color: var(--yt-spec-text-secondary, #606060);
@@ -503,3 +506,39 @@ html[dark] .ytc-t__pic--none { background: rgba(255,255,255,.12); }
   .ytc-t__row { grid-template-columns: minmax(150px, 2fr) repeat(6, minmax(60px, 1fr)); }
   .ytc-t__pic { width: 30px; height: 30px; }
 }
+
+/* ---- filter chips ---- */
+/* Preset views over the rows already fetched. They redraw rather than refetch, so they are
+   styled as a quiet row of pills rather than as an action. */
+.ytc-chips {
+  display: flex; gap: 8px; margin: 0 0 14px; padding-bottom: 4px;
+  overflow-x: auto; scrollbar-width: none;
+}
+.ytc-chips::-webkit-scrollbar { display: none; }
+.ytc-chip {
+  flex: 0 0 auto; cursor: pointer;
+  padding: 0 14px; height: 32px; border-radius: 16px;
+  background: transparent; color: var(--yt-spec-text-primary, #0f0f0f);
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12));
+  font: 500 13px/1 Roboto, Arial, sans-serif; white-space: nowrap;
+}
+.ytc-chip:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05)); }
+.ytc-chip--on {
+  background: #0f0f0f; color: #fff; border-color: #0f0f0f;
+}
+/* Kept clickable, but honest about leading to an empty table. */
+.ytc-chip--empty { opacity: .45; }
+.ytc-chip__n { opacity: .6; margin-left: 2px; }
+html[dark] .ytc-chip { color: #f1f1f1; border-color: rgba(255,255,255,.2); }
+html[dark] .ytc-chip:hover { background: rgba(255,255,255,.1); }
+html[dark] .ytc-chip--on { background: #f1f1f1; color: #0f0f0f; border-color: #f1f1f1; }
+
+/* ---- per-row monetization eligibility ---- */
+.ytc-t__nameline { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ytc-elig {
+  flex: 0 0 auto; padding: 1px 7px; border-radius: 9px;
+  font: 500 11px/1.5 Roboto, Arial, sans-serif; border: 1px solid;
+}
+.ytc-elig--yes { color: #0f9d58; border-color: rgba(15,157,88,.5); }
+.ytc-elig--no { color: #909090; border-color: rgba(144,144,144,.45); }
+html[dark] .ytc-elig--yes { color: #4ecb71; border-color: rgba(78,203,113,.5); }

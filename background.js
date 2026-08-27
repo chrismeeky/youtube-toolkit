@@ -467,7 +467,10 @@ async function similarFromIndex(base, key, titles, about, opts) {
     title: (opts && opts.title) || '',
     about: about || '',
     videoTitles: (titles || []).slice(0, 10),
-    limit: 25,
+    /* 50, not 25. The filter chips narrow this set client-side, and a chip like "new channels"
+       has nothing to bite on if the fetch already cut the list short. Costs one DB query
+       either way. */
+    limit: 50,
     minSubs: (opts && opts.minSubs) || null,
     maxSubs: (opts && opts.maxSubs) || null,
     minSimilarity: 0.45
