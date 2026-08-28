@@ -1216,6 +1216,50 @@
       cell: (c) => agoLabel(c.lastUpload) }
   ];
 
+  /* Shown while the lookup is in flight. Built from the same grid classes as the real
+     table, so the rows that replace it land in the same columns instead of reflowing the
+     page under the reader's eye. A lookup can take several seconds — long enough that a
+     bare spinner reads as nothing happening. */
+  function similarSkeleton() {
+    const chips = '<div class="ytc-chips">' +
+      [56, 92, 78, 86, 70].map((w) =>
+        '<span class="ytc-sk ytc-sk--chip" style="width:' + w + 'px"></span>').join('') +
+      '</div>';
+
+    const head = '<div class="ytc-t__row ytc-t__row--head ytc-t__row--sk">' +
+      '<span class="ytc-t__chan"><span class="ytc-sk ytc-sk--head"></span></span>' +
+      SIM_COLS.map(() =>
+        '<span class="ytc-t__c"><span class="ytc-sk ytc-sk--head"></span></span>').join('') +
+      '</div>';
+
+    /* Percentages of the names column, which the stylesheet stretches to fill its grid
+       cell — so the block spans the container at any width. They still vary per row, so it
+       reads as a list of different channels rather than a stack of identical bars. */
+    const NAME_W = [88, 62, 96, 72, 84, 56, 78, 66];
+    const rows = NAME_W.map((w) =>
+      '<div class="ytc-t__row ytc-t__row--sk">' +
+        '<span class="ytc-t__chan">' +
+          '<span class="ytc-sk ytc-sk--pic"></span>' +
+          '<span class="ytc-t__names">' +
+            '<span class="ytc-sk ytc-sk--name" style="width:' + w + '%"></span>' +
+            '<span class="ytc-sk ytc-sk--handle" style="width:' +
+              Math.round(w * 0.55) + '%"></span>' +
+          '</span>' +
+        '</span>' +
+        SIM_COLS.map(() =>
+          '<span class="ytc-t__c"><span class="ytc-sk ytc-sk--cell"></span></span>').join('') +
+      '</div>').join('');
+
+    return '<div class="ytc-sk-view" aria-busy="true" aria-label="Loading similar channels">' +
+      '<div class="ytc-t__bar">' +
+        '<span class="ytc-t__title">Similar channels</span>' +
+        '<span class="ytc-t__actions"><span class="ytc-sk ytc-sk--btn"></span></span>' +
+      '</div>' + chips +
+      '<div class="ytc-t">' + head + rows + '</div>' +
+      '<p class="ytc-t__note"><span class="ytc-spin"></span> Searching\u2026</p>' +
+    '</div>';
+  }
+
   function renderSimilar(res) {
     const host = similarHost();
     if (!host) return;
@@ -1635,7 +1679,7 @@
     if (host) {
       host.style.display = '';
       if (!host.dataset.loaded) {
-        host.innerHTML = '<p class="ytc-t__note"><span class="ytc-spin"></span> Searching…</p>';
+        host.innerHTML = similarSkeleton();
       }
     }
     askSimilar(false);
@@ -1660,8 +1704,10 @@
     const key = channelKeyFromLocation();
     if (!key) return;
     const host = similarHost();
-    if (host && !host.dataset.loaded) {
-      host.innerHTML = '<p class="ytc-t__note"><span class="ytc-spin"></span> Searching…</p>';
+    /* Also on a forced refetch: Refresh and "Smaller than this" replace the whole table, and
+       leaving the old rows up makes a slow lookup look like a dead button. */
+    if (host && (force || !host.dataset.loaded)) {
+      host.innerHTML = similarSkeleton();
     }
     const titles = channelVideoTitles(20);
     const about = channelAboutText();

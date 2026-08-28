@@ -422,7 +422,15 @@ html[dark] .ytc-tab { color: #aaa; }
 html[dark] .ytc-tab:hover, html[dark] .ytc-tab--on { color: #f1f1f1; }
 html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
 
-.ytc-simview { padding: 16px 0 32px; font-family: Roboto, Arial, sans-serif; }
+/* Width is declared rather than left to the content. YouTube lays this container's parent
+   out as a centred flex row, so a child sizes to its own content: the loaded table only
+   filled the page because names and numbers made it wide, and the skeleton — whose bars are
+   percentages, contributing no intrinsic width — collapsed to a narrow centred block. */
+.ytc-simview {
+  padding: 16px 0 32px; font-family: Roboto, Arial, sans-serif;
+  width: 100%; box-sizing: border-box;
+  flex: 1 1 auto; align-self: stretch; justify-self: stretch;
+}
 
 .ytc-t__bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .ytc-t__title { font: 700 16px/1 Roboto, Arial, sans-serif; color: var(--yt-spec-text-primary, #0f0f0f); }
@@ -450,7 +458,7 @@ html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
   padding: 10px 12px; border-radius: 10px; text-decoration: none;
 }
 .ytc-t__row--plain { grid-template-columns: minmax(200px, 3fr) minmax(90px, 1fr); }
-.ytc-t__row:not(.ytc-t__row--head):hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05)); }
+.ytc-t__row:not(.ytc-t__row--head):not(.ytc-t__row--sk):hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05)); }
 .ytc-t__row--head {
   border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12));
   border-radius: 0; padding-bottom: 8px; margin-bottom: 4px;
@@ -505,13 +513,56 @@ html[dark] .ytc-t__row--head, html[dark] .ytc-t__pic--none { color: #aaa; }
 html[dark] .ytc-t__btn { color: #f1f1f1; border-color: rgba(255,255,255,.2); }
 html[dark] .ytc-t__btn:hover { background: rgba(255,255,255,.1); }
 html[dark] .ytc-t__btn--on { color: #fff; }
-html[dark] .ytc-t__row:not(.ytc-t__row--head):hover { background: rgba(255,255,255,.08); }
+html[dark] .ytc-t__row:not(.ytc-t__row--head):not(.ytc-t__row--sk):hover { background: rgba(255,255,255,.08); }
 html[dark] .ytc-t__row--head { border-bottom-color: rgba(255,255,255,.12); }
 html[dark] .ytc-t__pic--none { background: rgba(255,255,255,.12); }
 
 @media (max-width: 1100px) {
   .ytc-t__row { grid-template-columns: minmax(150px, 2fr) repeat(6, minmax(60px, 1fr)); }
   .ytc-t__pic { width: 30px; height: 30px; }
+}
+
+/* ---- skeleton while similar channels load ---- */
+/* Placeholders reuse .ytc-t__row and .ytc-t__c, so they inherit the real table's grid and
+   every bar spans its own column: when the rows arrive they replace the bars in place
+   rather than shifting the page. */
+.ytc-sk {
+  display: block;
+  border-radius: 4px;
+  background-color: rgba(0, 0, 0, .09);
+  background-image: linear-gradient(90deg, transparent, rgba(0, 0, 0, .06), transparent);
+  background-repeat: no-repeat;
+  background-size: 180px 100%;
+  animation: ytc-sk-shine 1.3s ease-in-out infinite;
+}
+.ytc-sk-view { width: 100%; }
+.ytc-t__row--sk { cursor: default; }
+/* The names column is shrink-to-fit for real text; stretching it here gives the name bars a
+   definite width to be a percentage of, so the skeleton fills the row edge to edge. */
+.ytc-t__row--sk .ytc-t__names { flex: 1 1 auto; }
+
+.ytc-sk--pic { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; }
+.ytc-sk--name { height: 13px; }
+.ytc-sk--handle { height: 10px; }
+/* Full width of the grid cell they stand in for, so every column is covered. */
+.ytc-sk--cell { width: 100%; height: 12px; }
+.ytc-sk--head { width: 100%; height: 10px; }
+.ytc-sk--chip { height: 32px; border-radius: 16px; }
+.ytc-sk--btn { width: 86px; height: 34px; border-radius: 18px; }
+
+@keyframes ytc-sk-shine {
+  from { background-position: -180px 0; }
+  to   { background-position: calc(100% + 180px) 0; }
+}
+
+html[dark] .ytc-sk {
+  background-color: rgba(255, 255, 255, .11);
+  background-image: linear-gradient(90deg, transparent, rgba(255, 255, 255, .09), transparent);
+}
+
+/* The bars still hold the layout; only the sweep goes. */
+@media (prefers-reduced-motion: reduce) {
+  .ytc-sk { animation: none; background-image: none; }
 }
 
 /* ---- filter chips ---- */

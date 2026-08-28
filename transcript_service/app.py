@@ -344,6 +344,243 @@ def uploads_per_month(count, oldest, newest):
     return round(count / months, 2)
 
 
+# The dashboard is one self-contained page: it is served from the same token-gated path it
+# queries, so it needs no build step, no CDN and no second origin to configure.
+DASHBOARD_HTML = """<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Channel index</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg:#fff; --fg:#0f0f0f; --dim:#606060; --line:rgba(0,0,0,.12); --card:#fafafa;
+    --ok:#0f9d58; --bad:#c5221f; --warn:#e37400;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f0f0f; --fg:#f1f1f1; --dim:#aaa; --line:rgba(255,255,255,.16); --card:#1b1b1b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:28px 20px 60px; background:var(--bg); color:var(--fg);
+         font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--dim); margin:0 0 24px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:26px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .card b { display:block; font-size:26px; font-weight:600; letter-spacing:-.5px; }
+  .card span { color:var(--dim); font-size:12px; }
+  h2 { font-size:14px; margin:26px 0 10px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--dim); font-weight:500; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  td { padding:7px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  td.wide { white-space:normal; color:var(--dim); }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .run { color:var(--warn); }
+  button { font:inherit; padding:8px 14px; border-radius:999px; cursor:pointer;
+           border:1px solid var(--line); background:var(--card); color:var(--fg); }
+  button:hover:not(:disabled) { border-color:var(--fg); }
+  button:disabled { opacity:.45; cursor:default; }
+  .bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .note { color:var(--dim); font-size:12px; margin-top:10px; }
+  .err { color:var(--bad); }
+</style>
+<div class="wrap">
+  <h1>Channel index</h1>
+  <p class="sub" id="updated">Loading…</p>
+
+  <div class="grid" id="cards"></div>
+
+  <div class="bar">
+    <button id="go" disabled>Run crawl</button>
+    <select id="preset">
+      <option value="drain">Queue + graph (60)</option>
+      <option value="drain-wide">Queue + graph (150)</option>
+      <option value="queue-only">Queue only, no graph (100)</option>
+    </select>
+    <span class="note" id="runnote"></span>
+  </div>
+
+  <h2>Recent runs</h2>
+  <table id="runs"><thead><tr>
+    <th>Started</th><th>Mode</th><th>In</th><th>Stored</th><th>Edges</th><th>Quota</th><th>Result</th>
+  </tr></thead><tbody></tbody></table>
+  <p class="note" id="foot"></p>
+</div>
+<script>
+  // Same directory as this page, so the token path carries over without being written down.
+  const API = location.pathname.replace(/\\/dashboard$/, '');
+  const $ = (id) => document.getElementById(id);
+
+  const num = (n) => n == null ? '—' : n.toLocaleString();
+  const ago = (iso) => {
+    if (!iso) return '—';
+    const s = (Date.now() - Date.parse(iso)) / 1000;
+    if (s < 60) return Math.round(s) + 's ago';
+    if (s < 3600) return Math.round(s / 60) + 'm ago';
+    if (s < 86400) return Math.round(s / 3600) + 'h ago';
+    return Math.round(s / 86400) + 'd ago';
+  };
+
+  function card(v, label) {
+    return '<div class="card"><b>' + v + '</b><span>' + label + '</span></div>';
+  }
+
+  async function load() {
+    let d;
+    try {
+      d = await (await fetch(API + '/stats', { cache: 'no-store' })).json();
+    } catch (e) {
+      $('updated').innerHTML = '<span class="err">Cannot reach the service.</span>';
+      return;
+    }
+    if (!d.ok) {
+      $('updated').innerHTML = '<span class="err">' + (d.reason || 'unavailable') + '</span>';
+      return;
+    }
+
+    const runs = d.runs || [];
+    const last = runs[0];
+    $('cards').innerHTML =
+      card(num(d.channels), 'channels indexed') +
+      card(num(d.edges), 'edges') +
+      card(num(d.small_channels), 'under 5K subs') +
+      card(num(d.queue), 'queued, not yet indexed') +
+      card(last ? ago(last.started_at) : 'never', 'last crawl started');
+
+    // A crawl that stopped weeks ago looks exactly like one with nothing to do, which is the
+    // whole reason this page exists — so say it outright rather than leaving it to be read
+    // off a timestamp.
+    let health = '';
+    if (!last) health = '<span class="bad">The crawler has never run.</span>';
+    else {
+      const days = (Date.now() - Date.parse(last.started_at)) / 86400000;
+      if (d.crawl_running) health = '<span class="run">A crawl is running now.</span>';
+      else if (last.ok === false) health = '<span class="bad">The last run failed.</span>';
+      else if (days > 2) health = '<span class="bad">No crawl in ' + Math.floor(days) +
+        ' days — the schedule may have stopped.</span>';
+      else health = '<span class="ok">Healthy.</span>';
+    }
+    $('updated').innerHTML = health + ' Updated ' + new Date().toLocaleTimeString() + '.';
+
+    $('runs').querySelector('tbody').innerHTML = runs.map((r) => {
+      const result = r.ok === true ? '<span class="ok">ok</span>'
+        : r.ok === false ? '<span class="bad">' + (r.error || 'failed') + '</span>'
+        : '<span class="run">running…</span>';
+      return '<tr><td>' + ago(r.started_at) + '</td><td>' + (r.mode || '—') + '</td><td>' +
+        num(r.channels_in) + '</td><td>' + num(r.channels_out) + '</td><td>' +
+        num(r.edges_out) + '</td><td>' + num(r.quota_units) + '</td><td class="wide">' +
+        result + '</td></tr>';
+    }).join('') || '<tr><td colspan="7" class="wide">No runs recorded yet.</td></tr>';
+
+    const can = d.crawler_available && !d.crawl_running;
+    $('go').disabled = !can;
+    $('runnote').textContent = !d.crawler_available
+      ? 'This host cannot crawl — a datacenter IP gets blocked, so run it from your own machine.'
+      : d.crawl_running ? 'Running…' : (d.crawl_last || '');
+    $('foot').textContent = 'Discovery is free scraping; only enrichment spends quota, ' +
+      'roughly one unit per new channel against 10,000 a day.';
+  }
+
+  $('go').addEventListener('click', async () => {
+    $('go').disabled = true;
+    $('runnote').textContent = 'Starting…';
+    try {
+      const r = await (await fetch(API + '/run', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preset: $('preset').value })
+      })).json();
+      if (!r.ok) $('runnote').textContent = r.reason || 'could not start';
+    } catch (e) {
+      $('runnote').textContent = 'could not start';
+    }
+    setTimeout(load, 1500);
+  });
+
+  load();
+  setInterval(load, 15000);
+</script>
+"""
+
+
+def _rest_get(path, timeout=20):
+    req = urllib.request.Request(
+        SUPABASE_URL + path,
+        headers={"apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY,
+                 "Prefer": "count=exact", "Range": "0-0"})
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        # PostgREST reports the true total in Content-Range as "0-0/1234" even when one row
+        # was asked for, which is far cheaper than pulling the rows to count them.
+        rng = res.headers.get("Content-Range") or ""
+        body = res.read().decode("utf-8", "replace")
+    total = None
+    if "/" in rng:
+        try:
+            total = int(rng.rsplit("/", 1)[1])
+        except ValueError:
+            total = None
+    return total, (json.loads(body) if body.strip() else [])
+
+
+def index_stats():
+    """Numbers for the dashboard: how big the index is, how much of it has been walked, and
+    whether the crawler has run recently."""
+    if not INDEX_READY:
+        return {"ok": False, "reason": "channel index not configured"}
+    out = {"ok": True}
+    try:
+        out["channels"], _ = _rest_get("/rest/v1/channels?select=id")
+        out["edges"], _ = _rest_get("/rest/v1/channel_edges?select=source_id")
+        out["small_channels"], _ = _rest_get("/rest/v1/channels?select=id&subscribers=lt.5000")
+        out["queue"], _ = _rest_get("/rest/v1/channel_sightings?select=id&fetched=is.false")
+        req = urllib.request.Request(
+            SUPABASE_URL + "/rest/v1/crawl_runs?select=*&order=started_at.desc&limit=12",
+            headers={"apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY})
+        with urllib.request.urlopen(req, timeout=20) as res:
+            out["runs"] = json.loads(res.read().decode("utf-8", "replace"))
+    except Exception as e:
+        return {"ok": False, "reason": "%s: %s" % (type(e).__name__, e)}
+    out["crawler_available"] = os.path.exists(SEED_SCRIPT)
+    return out
+
+
+# The crawler is a sibling of this file in the repo and absent from the deployed image, which
+# is the honest test for "can this host crawl": scraping from a datacenter IP gets the bot
+# interstitial anyway, so the button is offered only where it would actually work.
+SEED_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "channel_index", "seed.py")
+CRAWL_LOCK = threading.Lock()
+CRAWL_STATE = {"running": False, "started": None, "last": ""}
+
+
+def start_crawl(mode_args):
+    """Run the crawler in the background and return immediately.
+
+    Deliberately fire-and-forget: a graph walk takes minutes, far longer than any sensible
+    HTTP request, so the dashboard polls /stats for the run row rather than holding a socket
+    open for it.
+    """
+    if not os.path.exists(SEED_SCRIPT):
+        return {"ok": False, "reason": "crawler not present on this host"}
+    with CRAWL_LOCK:
+        if CRAWL_STATE["running"]:
+            return {"ok": False, "reason": "a crawl is already running"}
+        CRAWL_STATE["running"] = True
+        CRAWL_STATE["started"] = time.time()
+
+    def run():
+        try:
+            proc = subprocess.run([sys.executable, SEED_SCRIPT] + mode_args,
+                                  capture_output=True, text=True, timeout=3600)
+            tail = (proc.stdout or proc.stderr or "").strip().splitlines()
+            CRAWL_STATE["last"] = tail[-1] if tail else "finished"
+        except Exception as e:
+            CRAWL_STATE["last"] = "%s: %s" % (type(e).__name__, e)
+        finally:
+            CRAWL_STATE["running"] = False
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "started": True}
+
+
 def record_edges(source_handle, target_handles):
     """Store co-recommendation edges the extension observed on a watch page.
 
@@ -838,6 +1075,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, result)
             return
 
+        if path == "/run":
+            preset = str(body.get("preset") or "drain")
+            # A fixed menu, not free-form arguments: this endpoint runs a subprocess, and the
+            # token is only as private as the extension package it ships in.
+            presets = {
+                "drain": ["--drain", "--graph", "--limit", "60"],
+                "drain-wide": ["--drain", "--graph", "--limit", "150"],
+                "queue-only": ["--drain", "--limit", "100"],
+            }
+            if preset not in presets:
+                self._send(400, {"ok": False, "reason": "unknown preset"})
+                return
+            self._send(200, start_crawl(presets[preset]))
+            return
+
         if path == "/edges":
             if not INDEX_READY:
                 self._send(200, {"ok": False, "reason": "channel index not configured"})
@@ -891,6 +1143,23 @@ class Handler(BaseHTTPRequestHandler):
                 _opt_int(query, "min_subs"),
                 _opt_int(query, "max_subs"),
                 _clamp_float(query, "min_similarity", DEFAULT_FLOOR, 0.0, 1.0)))
+            return
+
+        if path == "/stats":
+            out = index_stats()
+            out["crawl_running"] = CRAWL_STATE["running"]
+            out["crawl_last"] = CRAWL_STATE["last"]
+            self._send(200, out)
+            return
+
+        if path == "/dashboard":
+            page = DASHBOARD_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(page)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(page)
             return
 
         if path == "/health":

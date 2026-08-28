@@ -30,6 +30,7 @@ sys.dont_write_bytecode = True
 
 import argparse
 import json
+from datetime import datetime, timezone
 import os
 import collections
 import re
@@ -159,6 +160,51 @@ def graph_neighbours(handle, videos=5):
             tally[pair] += 1
         time.sleep(SCRAPE_GAP)
     return tally
+
+
+def _rest(method, path, url, service_key, payload=None, prefer=None):
+    headers = {"apikey": service_key, "Authorization": "Bearer " + service_key,
+               "Content-Type": "application/json"}
+    if prefer:
+        headers["Prefer"] = prefer
+    req = urllib.request.Request(
+        url.rstrip("/") + path,
+        data=json.dumps(payload).encode() if payload is not None else None,
+        method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as res:
+        raw = res.read().decode("utf-8", "replace")
+    return json.loads(raw) if raw.strip() else None
+
+
+# Held at module level so a crash can still close the row. A run that dies mid-way would
+# otherwise sit with finished_at null forever, which the dashboard cannot tell apart from a
+# run still in progress — the one state that must not be ambiguous.
+CURRENT_RUN = {"id": None, "url": None, "key": None}
+
+
+def start_run(mode, args_text, url, service_key):
+    """Open a row for this run. A crawl that leaves no trace cannot be monitored: a cron job
+    that silently died looks identical to one with nothing to do."""
+    if not (url and service_key):
+        return None
+    try:
+        rows = _rest("POST", "/rest/v1/crawl_runs", url, service_key,
+                     [{"mode": mode, "args": args_text}], prefer="return=representation")
+        return rows[0]["id"] if rows else None
+    except Exception as e:
+        print(f"  ! could not record run start: {e}", file=sys.stderr)
+        return None
+
+
+def finish_run(run_id, url, service_key, **fields):
+    if not run_id or not (url and service_key):
+        return
+    fields["finished_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        _rest("PATCH", "/rest/v1/crawl_runs?id=eq.%d" % run_id, url, service_key,
+              fields, prefer="return=minimal")
+    except Exception as e:
+        print(f"  ! could not record run finish: {e}", file=sys.stderr)
 
 
 def store_edges(source_id, tally, url, service_key):
@@ -359,7 +405,7 @@ def uploads_per_month(count, oldest, newest):
     """
     if not oldest or not newest or count < 2:
         return None
-    from datetime import datetime
+    from datetime import datetime, timezone
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     try:
         a = datetime.strptime(oldest, fmt)
@@ -492,6 +538,19 @@ def main():
 
     quota = {"units": 0}
     found = []
+    edges_out = {"n": 0}
+
+    mode = ("drain" if args.drain else
+            "channels" if args.channels else
+            "queries" if args.queries else "other")
+    if args.graph:
+        mode += "+graph"
+    elif args.expand:
+        mode += "+expand"
+    run_id = None
+    if not args.dry_run:
+        run_id = start_run(mode, " ".join(sys.argv[1:])[:500], sb_url, sb_key)
+        CURRENT_RUN.update({"id": run_id, "url": sb_url, "key": sb_key})
 
     if args.queries:
         for q in [q.strip() for q in args.queries.split(",") if q.strip()]:
@@ -563,6 +622,7 @@ def main():
             stored_edges = 0
             if sb_url and sb_key:
                 stored_edges = store_edges(ch.get("id") or "", tally, sb_url, sb_key)
+                edges_out["n"] += stored_edges
             print(f"  graph {handle}: {len(tally)} co-recommended, {len(ranked)} new, "
                   f"{stored_edges} edges")
             extra.extend(ranked)
@@ -616,8 +676,18 @@ def main():
         mark_fetched([cid for cid, _ in drained if cid in stored], sb_url, sb_key)
     print(f"\nstored {len(rows)} channels")
     print(f"quota used: {quota['units']} units of 10,000/day")
+    finish_run(run_id, sb_url, sb_key, ok=True,
+               channels_in=len(channels), channels_out=len(rows),
+               edges_out=edges_out["n"], quota_units=quota["units"])
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException as exc:                     # KeyboardInterrupt included
+        finish_run(CURRENT_RUN["id"], CURRENT_RUN["url"], CURRENT_RUN["key"],
+                   ok=False, error=("%s: %s" % (type(exc).__name__, exc))[:500])
+        raise
