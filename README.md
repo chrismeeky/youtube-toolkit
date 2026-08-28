@@ -241,9 +241,21 @@ it:
 
 ### Filling the index
 
-It fills itself as you browse: opening a channel page reports it, and the service indexes
-it. That is enough to accumulate channels but not to make any one niche dense, so the
-crawler exists for deliberate expansion:
+Two things happen on their own as you browse, both free:
+
+| While you | The index gains |
+| --- | --- |
+| Open a channel page | That channel, indexed |
+| Watch a video | The edges between that video's channel and everything recommended beside it |
+
+The second is the cheap one. The crawler spends five page fetches per channel to read the
+list of recommended channels; a viewer already has that list in the sidebar, so reading it
+costs no fetch at all. Only edges between channels already indexed are stored — unknown ones
+are dropped rather than looked up, which keeps it free and stops heavy browsing running up a
+bill.
+
+That accumulates channels but does not make any one niche dense, so the crawler exists for
+deliberate expansion:
 
 ```bash
 # Walk YouTube's recommendations out from a channel — the highest-yield mode.
@@ -263,6 +275,13 @@ returned a documentary director and a YouTube-coaching channel; the graph return
 
 Discovery is free scraping; only enrichment costs quota, at roughly one unit per new
 channel against a 10,000/day limit.
+
+To top up without thinking about it, a nightly cron over the channels people looked at but
+nobody indexed:
+
+```
+0 3 * * *  cd /path/to/yt-copy-extension && python3 channel_index/seed.py --drain --graph --limit 100
+```
 
 **Run the crawler from your own machine, not from the server.** A datacenter IP gets
 YouTube's bot interstitial — measured 1 success in 4 from Render against 4 in 4 locally.
