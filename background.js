@@ -782,6 +782,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           source: msg.source,
+          sourceId: msg.sourceId || '',
           targets: (msg.targets || []).slice(0, 30),
           videos: (msg.videos || []).slice(0, 30)
         })

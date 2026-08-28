@@ -655,7 +655,7 @@ def channels_for_videos(video_ids):
     return out
 
 
-def record_edges(source_handle, target_handles, video_ids=None):
+def record_edges(source_handle, target_handles, video_ids=None, source_id=None):
     """Store co-recommendation edges the extension observed on a watch page.
 
     Only channels already in the index are stored. Targets are matched by handle in a single
@@ -691,9 +691,27 @@ def record_edges(source_handle, target_handles, video_ids=None):
 
     by_handle = {(r.get("handle") or "").lower(): r["id"] for r in rows}
     src = by_handle.get((source_handle or "").lower())
+    if not src and source_id:
+        # Index the source first rather than discarding the edges. A channel is usually met
+        # through one of its videos, not its channel page, so refusing to record until it had
+        # been indexed some other way threw away the commonest case entirely.
+        ingest_channels([{"id": source_id, "handle": source_handle}])
+        try:
+            req3 = urllib.request.Request(
+                SUPABASE_URL + "/rest/v1/channels?select=id&id=eq." +
+                urllib.parse.quote(source_id),
+                headers={"apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY})
+            with urllib.request.urlopen(req3, timeout=20) as res3:
+                found = json.loads(res3.read().decode("utf-8", "replace"))
+            if found:
+                src = found[0]["id"]
+        except Exception as e:
+            print("  source re-lookup failed: %s: %s" % (type(e).__name__, e), flush=True)
+
     if not src:
-        # The channel being watched is not indexed yet, so there is nothing to hang edges on.
-        return {"ok": True, "edges": 0, "reason": "source not indexed"}
+        # Still nothing to hang the edges on — the channel is below the index's size floor, or
+        # has no usable text. Reported rather than silently dropped.
+        return {"ok": True, "edges": 0, "reason": "source could not be indexed"}
     targets = [i for h, i in by_handle.items() if i != src]
 
     if video_ids:
@@ -1194,7 +1212,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, record_edges(str(body.get("source") or ""),
                                          body.get("targets") or [],
-                                         body.get("videos") or []))
+                                         body.get("videos") or [],
+                                         str(body.get("sourceId") or "") or None))
             return
 
         if path == "/ingest":

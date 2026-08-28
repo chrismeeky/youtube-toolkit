@@ -1677,7 +1677,7 @@
      loaded with, and after a soft navigation it still describes the previous video. */
   const edgesReported = new Set();
 
-  function reportWatchEdges(sourceHandle, videoId) {
+  function reportWatchEdges(sourceHandle, videoId, sourceId) {
     if (!settings.showSimilar) return;   // the same promise the toggle makes elsewhere
     if (!sourceHandle || !videoId || edgesReported.has(videoId)) return;
     const column = document.querySelector('#secondary, #related, ytd-watch-next-secondary-results-renderer');
@@ -1712,6 +1712,7 @@
     sendMessage({
       type: 'ytc-edges',
       source: sourceHandle,
+      sourceId: sourceId || '',
       targets: targets.slice(0, 30),
       videos: videos.slice(0, 30)
     }, () => { /* nothing to do */ });
@@ -1723,16 +1724,21 @@
      to click. Once per channel per page session; the server ignores ids it already holds. */
   const seenChannels = new Set();
 
-  function noteChannelSeen() {
+  function noteChannelSeen(handle, id) {
     // Switching the feature off has to stop the reporting, not just hide the tab. Anything
     // else makes the toggle a lie: the user believes it is off while their browsing still
     // leaves the machine.
     if (!settings.showSimilar) return;
-    const key = channelKeyFromLocation();
+    /* A watch page's URL names the video, never the channel, so channelKeyFromLocation finds
+       nothing there and watching a video used to index nothing at all. The player knows whose
+       video it is, so on a watch page that answer is passed in. */
+    const key = handle || channelKeyFromLocation();
     if (!key || !key.startsWith('@') || seenChannels.has(key)) return;
     seenChannels.add(key);
-    let channelId = '';
-    try { channelId = (channelOwnStats() || {}).channelId || ''; } catch (e) { channelId = ''; }
+    let channelId = id || '';
+    if (!channelId) {
+      try { channelId = (channelOwnStats() || {}).channelId || ''; } catch (e) { channelId = ''; }
+    }
     sendMessage({ type: 'ytc-seen', key, channelId }, () => { /* fire and forget */ });
   }
 
@@ -2004,8 +2010,13 @@
       const st = page && page.stats;
       const key = (st && (st.channelHandle || (st.channelId && 'channel/' + st.channelId))) ||
         findChannelKey(card);
-      // The player's own answer, so it is right immediately after a soft navigation.
-      if (st && st.channelHandle) reportWatchEdges(st.channelHandle, videoId);
+      /* The player's own answer, so it is right immediately after a soft navigation.
+         Watching a video is as good a signal as opening the channel, and it is the commoner
+         one — most people arrive at a channel through its videos, not its page. */
+      if (st && st.channelHandle) {
+        noteChannelSeen(st.channelHandle, st.channelId || '');
+        reportWatchEdges(st.channelHandle, videoId, st.channelId || '');
+      }
       if (!key) {
         paintMoney(el, null, false, note);
       } else {
