@@ -21,6 +21,9 @@ clipboard output is laid out.
 2. Turn on **Developer mode** (top right)
 3. Click **Load unpacked** and select this `yt-copy-extension` folder
 4. Open any YouTube page — search results, a channel's Videos tab, home, or a watch page
+5. *Optional* — `cp config.example.js config.js` and set `INDEX_API` to power Similar
+   Channels from a channel index rather than live search. See
+   [Similar channels & the channel index](#similar-channels--the-channel-index).
 
 ## Using it
 
@@ -194,6 +197,78 @@ Markdown with URLs:
 - [TokTok Users Just Got PAYBACK! RIP NOLAN WELLS](https://www.youtube.com/watch?v=6KCPs3Umu5w) — 271K views · 23 hours ago
 ```
 
+## Similar channels & the channel index
+
+The **Similar Channels** tab on a channel page lists channels like the one you are looking
+at, with subscribers, average views, upload rate, age, last upload, and a monetization
+estimate — sortable, and filterable by preset ("Overperforming", "Low subs, high views",
+"New channels").
+
+Without a backend it falls back to live YouTube search, which finds established channels but
+never small ones. With the index it can surface a 20K-subscriber channel that no search
+result would ever have shown you.
+
+### Pointing it at an index
+
+The endpoint lives in `config.js`, not in the popup — it is a deployment detail, not a user
+preference. Copy the example and fill it in:
+
+```bash
+cp config.example.js config.js
+# then edit config.js:
+#   INDEX_API: 'https://<service>.onrender.com/k/<ACCESS_TOKEN>'
+```
+
+`config.js` is gitignored. This repository is public, and the URL carries an access token
+that spends YouTube quota and OpenAI credits. Note the token is only a speed bump either
+way — anyone who installs the extension can read it out of the package, so rate limiting on
+the server is the real protection.
+
+Leave it empty and everything else still works; only Similar Channels degrades to search.
+
+### How a match is decided
+
+Each channel is reduced to one 512-dimension vector from its title, description and recent
+video titles, and ranked by cosine similarity in Postgres (pgvector). Two things then adjust
+it:
+
+- **Subscriber filters** are applied in the same query, so "smaller than this channel" is a
+  real question the index answers rather than a filter over an already-truncated list.
+- **Co-recommendation** adds up to +0.15 for a channel YouTube itself recommends beside the
+  source's videos. Text similarity answers "describes itself like this channel"; the
+  recommendation graph answers "watched by the same people", which is usually the question
+  being asked.
+
+### Filling the index
+
+It fills itself as you browse: opening a channel page reports it, and the service indexes
+it. That is enough to accumulate channels but not to make any one niche dense, so the
+crawler exists for deliberate expansion:
+
+```bash
+# Walk YouTube's recommendations out from a channel — the highest-yield mode.
+python3 channel_index/seed.py --channels "@somechannel" --graph --limit 60
+
+# Index the channels users have looked at but nobody has indexed yet.
+python3 channel_index/seed.py --drain --graph --limit 100
+
+# See what a run would do without spending anything.
+python3 channel_index/seed.py --channels "@somechannel" --graph --dry-run
+```
+
+`--graph` samples a channel's recent videos and reads the channels recommended beside them,
+counting how often each appears. Measured on a horror-shorts channel, search-based expansion
+returned a documentary director and a YouTube-coaching channel; the graph returned
+`@thehauntinghourseries`, `@WarnerBrosUKHorror` and `@HorrorShortsParty`.
+
+Discovery is free scraping; only enrichment costs quota, at roughly one unit per new
+channel against a 10,000/day limit.
+
+**Run the crawler from your own machine, not from the server.** A datacenter IP gets
+YouTube's bot interstitial — measured 1 success in 4 from Render against 4 in 4 locally.
+The split is deliberate: the extension and crawler scrape from residential connections, the
+server holds the API keys and does the enrichment.
+
 ## Files
 
 | File | Role |
@@ -205,7 +280,10 @@ Markdown with URLs:
 | `popup.html` / `popup.css` / `popup.js` | Settings UI with live preview |
 | `page.js` | Tiny `world: "MAIN"` script; reads live-page values the isolated world can't see |
 | `transcript-helper.py` | Local yt-dlp wrapper on `127.0.0.1:8731`; the reliable transcript path |
-| `background.js` | Keyboard shortcuts, plus the subscriber-count fetch queue and cache |
+| `background.js` | Keyboard shortcuts, the subscriber-count fetch queue and cache, and the index client |
+| `config.js` | Index endpoint incl. its token. Gitignored — copy from `config.example.js` |
+| `channel_index/seed.py` | Crawler: discovers channels, enriches, embeds, stores |
+| `transcript_service/app.py` | The index service — `/similar`, `/ingest`, `/healthz` |
 
 ## Notes
 
