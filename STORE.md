@@ -17,7 +17,13 @@ earnings, monetization status, and similar channels — without leaving YouTube.
 
 ## Detailed description
 
-Everything you need to research a YouTube channel or video, without leaving the page.
+Free YouTube channel and video research, right on the page. No account, no
+subscription, no trial, no limits.
+
+The tools that do this normally cost $30-100 a month. This one is free, and
+free in the way that matters: no sign-up wall, no credit card, no locked
+features, no "upgrade to see the rest", no usage cap that stops you mid-task.
+Install it and everything below works immediately.
 
 WHAT IT DOES
 
@@ -81,7 +87,9 @@ one.
 WHAT LEAVES YOUR BROWSER
 
 No accounts, no sign-in, no tracking, no analytics, and nothing is ever sold
-or shared. Your settings live in your browser.
+or shared. Your settings live in your browser. Free does not mean you are the
+product here — there is nothing to monetise, because there is no account to
+attach anything to.
 
 To show its figures the extension reads the page you are on and requests
 YouTube pages in the background — channel pages and watch pages for
