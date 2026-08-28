@@ -51,5 +51,5 @@ cd "$(dirname "$0")/../transcript_service"
 # here makes the whole extension fail to load with "Could not load manifest". The profile then
 # keeps running whatever it loaded last, so the symptom is a stale extension, not an error.
 HOST=127.0.0.1 PORT="$PORT" ACCESS_TOKEN="$TOKEN" MAX_CONCURRENCY=2 \
-  YOUTUBE_API_KEY="$YT_KEY" PYTHONDONTWRITEBYTECODE=1 \
+  YOUTUBE_API_KEY="$YT_KEY" PYTHONDONTWRITEBYTECODE=1 CRAWLER_ENABLED=1 \
   exec python3 app.py

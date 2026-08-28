@@ -538,13 +538,16 @@ def index_stats():
             out["runs"] = json.loads(res.read().decode("utf-8", "replace"))
     except Exception as e:
         return {"ok": False, "reason": "%s: %s" % (type(e).__name__, e)}
-    out["crawler_available"] = os.path.exists(SEED_SCRIPT)
+    out["crawler_available"] = CRAWLER_ENABLED and os.path.exists(SEED_SCRIPT)
     return out
 
 
-# The crawler is a sibling of this file in the repo and absent from the deployed image, which
-# is the honest test for "can this host crawl": scraping from a datacenter IP gets the bot
-# interstitial anyway, so the button is offered only where it would actually work.
+# Whether this host may crawl is declared, not inferred. The first attempt tested for the
+# crawler script on disk, on the assumption the deployed image held only app.py — but Render
+# runs from a repo checkout, so the file is there and the button appeared on a host whose
+# datacenter IP gets the bot interstitial. An explicit opt-in, set by run_local.sh and by
+# nothing else, cannot be wrong about this the way a guess can.
+CRAWLER_ENABLED = os.environ.get("CRAWLER_ENABLED") == "1"
 SEED_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "channel_index", "seed.py")
 CRAWL_LOCK = threading.Lock()
@@ -558,8 +561,9 @@ def start_crawl(mode_args):
     HTTP request, so the dashboard polls /stats for the run row rather than holding a socket
     open for it.
     """
-    if not os.path.exists(SEED_SCRIPT):
-        return {"ok": False, "reason": "crawler not present on this host"}
+    if not (CRAWLER_ENABLED and os.path.exists(SEED_SCRIPT)):
+        return {"ok": False,
+                "reason": "this host cannot crawl — run it from a residential connection"}
     with CRAWL_LOCK:
         if CRAWL_STATE["running"]:
             return {"ok": False, "reason": "a crawl is already running"}
