@@ -801,14 +801,22 @@
     return { text: v + '×', value: v };
   }
 
-  /* Green = the video outperformed the channel, red = it underperformed. The scale runs
-     good → bad, so a 224× breakout reads as a win at a glance. */
+  /* Green = it outperformed the denominator, red = it underperformed. The scale runs
+     good → bad, so a 224× breakout reads as a win at a glance.
+
+     Every ratio in the extension is coloured from this one ladder — the video badges, the
+     channel header pill and the Outlier column all call it — so the same multiple is never
+     two different colours in two places. */
+  function ratioTier(r) {
+    if (r >= 10) return 'great';   // breakout
+    if (r >= 3) return 'good';     // strong
+    if (r >= 1) return 'ok';       // beat the denominator
+    if (r >= 0.5) return 'low';    // soft
+    return 'poor';                 // flopped
+  }
+
   function ratioClass(r) {
-    if (r >= 10) return 'ytc-ratio--great';   // breakout
-    if (r >= 3) return 'ytc-ratio--good';     // strong
-    if (r >= 1) return 'ytc-ratio--ok';       // beat the channel's normal
-    if (r >= 0.5) return 'ytc-ratio--low';    // soft
-    return 'ytc-ratio--poor';                 // flopped
+    return 'ytc-ratio--' + ratioTier(r);
   }
 
   /* Two different denominators can end up here, and they do not mean the same thing, so the
@@ -1031,7 +1039,16 @@
 
   function channelOwnStats() {
     const header = document.querySelector('yt-page-header-view-model, #channel-header');
-    const title = header ? text(header.querySelector('h1, .yt-core-attributed-string')) : '';
+    /* Read the title from a copy with our own badge stripped out. The badge lives inside the
+       h1 so it sits on the title line, and without this the name sent to the index would be
+       "Uche Okafor 2.4×". */
+    const h1 = header && header.querySelector('h1, .yt-core-attributed-string');
+    let title = '';
+    if (h1) {
+      const clone = h1.cloneNode(true);
+      clone.querySelectorAll('.ytc-out').forEach((n) => n.remove());
+      title = text(clone);
+    }
     let subscribers = null;
     if (header) {
       const el = Array.from(header.querySelectorAll('span, div'))
@@ -1098,6 +1115,53 @@
     unknown: { label: 'Unknown', cls: 'ytc-mon--off',
       tip: 'Could not read enough videos to judge' }
   };
+
+  /* Average views against subscriber count: how far a channel reaches past the audience it
+     has already earned. This is NOT the outlier score the rest of the extension computes for
+     videos — that one divides by the channel's own lifetime average, and the index holds no
+     per-video data for other channels. Same word, different denominator, so every tooltip
+     here names the two numbers it divided. */
+  /* Wording only. The thresholds are ratioTier's, so this can never drift from the colour. */
+  const OUT_WORDS = {
+    great: 'far past its subscriber base',
+    good: 'well past its subscriber base',
+    ok: 'past its subscriber base',
+    low: 'below its subscriber count',
+    poor: 'well below its subscriber count'
+  };
+
+  function outlierRatio(c) {
+    if (!c || !c.subscribers || !c.avgViews) return 0;
+    return c.avgViews / c.subscribers;
+  }
+
+  function outlierTitle(c, tier) {
+    return 'Avg views (' + F.compact(c.avgViews) + ') \u00f7 subscribers (' +
+      F.compact(c.subscribers) + ') \u2014 reaching ' + OUT_WORDS[tier];
+  }
+
+  /* The pill beside the channel's own name in the page header. Tiered on the rounded label
+     rather than the raw ratio — otherwise two badges both reading "1.0×" can land in
+     different colours, which reads as a rendering fault. */
+  function outlierPill(c) {
+    const r = outlierRatio(c);
+    if (!r) return '';
+    const shown = ratioLabel(r);
+    const tier = ratioTier(shown.value);
+    return '<span class="ytc-out ytc-out--' + tier + '" title="' +
+      escapeHtml(outlierTitle(c, tier)) + '">' + shown.text + '</span>';
+  }
+
+  /* The same number as a table cell, on the same ladder, so a column scanned top to bottom
+     sorts itself by eye before it is sorted by click. */
+  function outlierCell(c) {
+    const r = outlierRatio(c);
+    if (!r) return '\u2014';
+    const shown = ratioLabel(r);
+    const tier = ratioTier(shown.value);
+    return '<span class="ytc-onum ytc-onum--' + tier + '" title="' +
+      escapeHtml(outlierTitle(c, tier)) + '">' + shown.text + '</span>';
+  }
 
   /* Subscriber count settles the cheap half of the question: below the threshold nothing needs
      fetching, which is the same gate the channel badge uses. Above it the verdict costs watch
@@ -1205,6 +1269,11 @@
     { key: 'views', label: 'Avg views',
       get: (c) => c.avgViews || 0,
       cell: (c) => (c.avgViews ? F.compact(c.avgViews) : '\u2014') },
+    /* Sits beside Avg views because it is that column divided by Subscribers — the two it
+       is read against are its immediate neighbours. */
+    { key: 'outlier', label: 'Outlier', cls: 'ytc-t__out',
+      get: outlierRatio,
+      cell: outlierCell },
     { key: 'uploads', label: 'Uploads/mo',
       get: (c) => c.uploadsPerMo || 0,
       cell: (c) => (c.uploadsPerMo ? Number(c.uploadsPerMo).toFixed(1) : '\u2014') },
@@ -2101,11 +2170,67 @@
     }
   }
 
+  /* On the title line rather than in the button row beside Subscribe: this describes the
+     channel the way the subscriber count does, and the button row already carries the
+     monetization pill.
+
+     The average comes from the channel's lifetime totals (views ÷ videos), which is the same
+     denominator the index stores for every other channel — so the number here and the numbers
+     in the Similar Channels table are the same measure and can be compared. */
+  function channelTitleHost() {
+    const header = document.querySelector('yt-page-header-view-model, #channel-header');
+    const h1 = header && header.querySelector('h1');
+    return visible(h1) ? h1 : null;
+  }
+
+  /* Every match, not the first: YouTube leaves stale headers in the document after a soft
+     navigation, so a badge can survive on an element that is no longer on screen — and a
+     forgotten one is exactly what "the badge appears twice" looks like. */
+  function clearOutlierBadges(keep) {
+    document.querySelectorAll('.ytc-out').forEach((n) => {
+      if (n !== keep) n.remove();
+    });
+  }
+
+  function decorateChannelOutlier(key) {
+    if (!key || !settings.showRatio) { clearOutlierBadges(null); return; }
+
+    const host = channelTitleHost();
+    if (!host) { clearOutlierBadges(null); return; }
+
+    /* The claim is this flag, set synchronously before the lookup — not the badge, which does
+       not exist until the lookup returns. Testing for the badge let a second scan through
+       while the first request was still in flight, and both callbacks then appended one.
+
+       A header rebuild takes the flag with the element it was set on, which is what makes the
+       badge come back after a soft navigation. */
+    if (host.dataset.ytcOut === key) return;
+    clearOutlierBadges(null);
+    host.dataset.ytcOut = key;
+
+    sendMessage({ type: 'ytc-subs', key }, (res) => {
+      if (chrome.runtime.lastError) return;
+      if (!host.isConnected || host.dataset.ytcOut !== key) return;
+      const avgViews = res && res.stats && res.stats.avgViews > 0 ? res.stats.avgViews : 0;
+      // The header count is already on screen and needs no fetch; the lookup is the fallback.
+      const subs = channelOwnStats().subscribers || F.viewsToNumber((res && res.text) || '') || 0;
+      const html = outlierPill({ avgViews: avgViews, subscribers: subs });
+      if (!html) return;
+      host.insertAdjacentHTML('beforeend', html);
+      // Belt and braces: whatever we just added is the only one that stays. (:last-of-type
+      // would match on the span tag, not the class, and the h1 holds other spans.)
+      const added = host.querySelectorAll(':scope > .ytc-out');
+      clearOutlierBadges(added[added.length - 1] || null);
+    });
+  }
+
   function decorateChannelHeader() {
     const key = channelKeyFromLocation();
     const stray = document.querySelector('.ytc-money--lg');
 
     // Left a channel page (or the badge was switched off): clean up after ourselves.
+    decorateChannelOutlier(key);
+
     if (!key) {
       if (stray) stray.remove();
       // Restore YouTube's own content before dropping our view, or it stays display:none.

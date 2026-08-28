@@ -449,11 +449,12 @@ html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
 /* Grid rather than a table element: the header and every row share one column definition,
    so a column can never drift out of alignment with its heading. */
 .ytc-t { display: flex; flex-direction: column; }
-/* The repeat() count below must equal SIM_COLS.length in content.js. They are coupled:
-   add a column there and the grid silently misaligns until this changes too. */
+/* The repeat() count below must equal SIM_COLS.length in content.js (currently 7:
+   similarity, subs, views, outlier, uploads, age, last upload). They are coupled: add a
+   column there and the grid silently misaligns until this changes too. */
 .ytc-t__row {
   display: grid;
-  grid-template-columns: minmax(200px, 2.2fr) repeat(6, minmax(78px, 1fr));
+  grid-template-columns: minmax(190px, 2.2fr) repeat(7, minmax(72px, 1fr));
   align-items: center; gap: 8px;
   padding: 10px 12px; border-radius: 10px; text-decoration: none;
 }
@@ -518,7 +519,7 @@ html[dark] .ytc-t__row--head { border-bottom-color: rgba(255,255,255,.12); }
 html[dark] .ytc-t__pic--none { background: rgba(255,255,255,.12); }
 
 @media (max-width: 1100px) {
-  .ytc-t__row { grid-template-columns: minmax(150px, 2fr) repeat(6, minmax(60px, 1fr)); }
+  .ytc-t__row { grid-template-columns: minmax(140px, 2fr) repeat(7, minmax(54px, 1fr)); }
   .ytc-t__pic { width: 30px; height: 30px; }
 }
 
@@ -606,6 +607,50 @@ html[dark] .ytc-chip--on { background: #f1f1f1; color: #0f0f0f; border-color: #f
 .ytc-mon--wait { color: #b0b0b0; border-color: transparent; min-width: 18px; text-align: center; }
 html[dark] .ytc-mon--yes { color: #4ecb71; border-color: rgba(78,203,113,.5); }
 html[dark] .ytc-mon--no { color: #ff8a80; border-color: rgba(255,138,128,.45); }
+
+/* ---- avg views vs subscribers ---- */
+/* On the channel's own title line. Outlined rather than filled like the solid badge on video
+   cards: it sits inside an h1 next to a name set in 24px, where a saturated block would read
+   as the loudest thing in the header. */
+.ytc-out {
+  display: inline-flex; align-items: center; vertical-align: middle;
+  flex: 0 0 auto; padding: 2px 9px; margin-left: 10px;
+  border-radius: 12px; border: 1px solid;
+  font: 600 13px/1.4 Roboto, Arial, sans-serif;
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+  /* The h1 sets letter-spacing and weight for a title; neither belongs on a number. */
+  letter-spacing: normal;
+}
+/* The five hues are the ones .ytc-ratio already uses on video cards, carried onto an
+   outlined pill: same ladder, same colour, so a 0.6× here and a 0.6× on a thumbnail agree. */
+.ytc-out--great { color: #0f9d58; border-color: #0f9d58; background: rgba(15,157,88,.12); }
+.ytc-out--good  { color: #4c8409; border-color: #5c9e14; background: rgba(92,158,20,.1); }
+.ytc-out--ok    { color: #b26a15; border-color: #d9822b; background: rgba(217,130,43,.1); }
+.ytc-out--low   { color: #e2551f; border-color: #e2551f; background: rgba(226,85,31,.1); }
+.ytc-out--poor  { color: #c62828; border-color: #c62828; background: rgba(198,40,40,.1); }
+html[dark] .ytc-out--great { color: #4ecb71; border-color: rgba(78,203,113,.6); }
+html[dark] .ytc-out--good  { color: #94d13d; border-color: rgba(148,209,61,.6); }
+html[dark] .ytc-out--ok    { color: #e8a44c; border-color: rgba(232,164,76,.6); }
+html[dark] .ytc-out--low   { color: #ff8a5c; border-color: rgba(255,138,92,.6); }
+html[dark] .ytc-out--poor  { color: #ff8a80; border-color: rgba(255,138,128,.6); }
+
+/* The same ratio as a table cell. Colour only — a row of outlined pills down a column would
+   compete with the monetization pills already in it, and the column heading names the
+   measure, so the number can carry the meaning on its own. */
+.ytc-t__out { font-variant-numeric: tabular-nums; }
+.ytc-onum { font-weight: 700; }
+/* Darkened from the badge hues where the light theme needs it: these are 13px figures on
+   white, not white text on a filled block. */
+.ytc-onum--great { color: #0b8043; }
+.ytc-onum--good  { color: #4c8409; }
+.ytc-onum--ok    { color: #b26a15; }
+.ytc-onum--low   { color: #d1441a; }
+.ytc-onum--poor  { color: #c62828; }
+html[dark] .ytc-onum--great { color: #4ecb71; }
+html[dark] .ytc-onum--good  { color: #94d13d; }
+html[dark] .ytc-onum--ok    { color: #e8a44c; }
+html[dark] .ytc-onum--low   { color: #ff8a5c; }
+html[dark] .ytc-onum--poor  { color: #ff8a80; }
 
 /* Extension icon inside the channel-page monetization pill. */
 .ytc-money__icon { width: 16px; height: 16px; border-radius: 3px; flex: 0 0 auto; }
