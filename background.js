@@ -7,6 +7,15 @@
 /* config.js is gitignored and may be absent in a fresh clone; the index is optional, so a
    missing file must degrade to live search rather than killing the service worker. */
 try { importScripts('config.js'); } catch (e) { self.YTCopyConfig = { INDEX_API: '' }; }
+
+/* Said once, at startup, in the service worker console. Whether the index is reachable is
+   the single most common thing to be wrong, and until now the only way to find out was to
+   read the panel's footnote and infer backwards. */
+{
+  const cfg = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+  console.log('[YouTube Toolkit] index endpoint: ' +
+    (cfg ? cfg.split('/k/')[0] + '/k/…' : 'NOT SET — falling back to YouTube search'));
+}
 importScripts('format.js');
 const F = self.YTCopyFormat;
 
