@@ -689,6 +689,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
+  /* Free graph growth: the extension saw these side by side on a page the viewer opened
+     anyway, so there is nothing to fetch and nothing to rate limit. */
+  if (msg.type === 'ytc-edges' && msg.source) {
+    const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+    if (base) {
+      fetch(base.replace(/\/$/, '') + '/edges', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: msg.source, targets: (msg.targets || []).slice(0, 30) })
+      }).catch(() => { /* the page is unaffected either way */ });
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
   if (msg.type === 'ytc-similar' && msg.key) {
     getSimilarChannels(msg.key, msg.titles, msg.about, msg.force, msg.opts)
       .then(sendResponse)

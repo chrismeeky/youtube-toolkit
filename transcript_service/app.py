@@ -344,6 +344,52 @@ def uploads_per_month(count, oldest, newest):
     return round(count / months, 2)
 
 
+def record_edges(source_handle, target_handles):
+    """Store co-recommendation edges the extension observed on a watch page.
+
+    Only channels already in the index are stored. Targets are matched by handle in a single
+    query — free — and anything unknown is dropped rather than resolved, because resolving
+    costs a quota unit each and an edge to a channel the ranker can never return is worth
+    nothing anyway. That also bounds the work: a heavily browsed session cannot run up a bill.
+    """
+    if not INDEX_READY:
+        return {"ok": False, "reason": "channel index not configured"}
+
+    wanted = {h.strip().lower() for h in ([source_handle] + list(target_handles or []))
+              if h and h.strip()}
+    wanted = {h if h.startswith("@") else "@" + h for h in wanted}
+    if len(wanted) < 2:
+        return {"ok": True, "edges": 0, "reason": "nothing to record"}
+
+    # customUrl comes back lowercased from the API, so that is how handles are stored; the
+    # DOM preserves display case (@BellatorMMA), which would match nothing without folding.
+    quoted = ",".join('"%s"' % h.replace('"', "") for h in list(wanted)[:64])
+    query = ("/rest/v1/channels?select=id,handle&handle=in.(" +
+             urllib.parse.quote(quoted) + ")")
+    req = urllib.request.Request(
+        SUPABASE_URL + query,
+        headers={"apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as res:
+            rows = json.loads(res.read().decode("utf-8", "replace"))
+    except Exception as e:
+        print("  record_edges lookup failed: %s: %s" % (type(e).__name__, e), flush=True)
+        return {"ok": False, "reason": "lookup failed"}
+
+    by_handle = {(r.get("handle") or "").lower(): r["id"] for r in rows}
+    src = by_handle.get((source_handle or "").lower())
+    if not src:
+        # The channel being watched is not indexed yet, so there is nothing to hang edges on.
+        return {"ok": True, "edges": 0, "reason": "source not indexed"}
+    targets = [i for h, i in by_handle.items() if i != src]
+    if not targets:
+        return {"ok": True, "edges": 0, "reason": "no indexed targets"}
+
+    out = _supabase("/rest/v1/rpc/record_edges",
+                    {"p_source": src, "p_targets": targets}, timeout=30)
+    return {"ok": True, "edges": out if isinstance(out, int) else len(targets)}
+
+
 def ingest_channels(pairs):
     """Index channels the extension discovered, so a niche fills itself in from use.
 
@@ -774,6 +820,14 @@ class Handler(BaseHTTPRequestHandler):
             # Growing the corpus is a side effect of being asked, never a precondition.
             record_sighting(body.get("channelId"), handle)
             self._send(200, result)
+            return
+
+        if path == "/edges":
+            if not INDEX_READY:
+                self._send(200, {"ok": False, "reason": "channel index not configured"})
+                return
+            self._send(200, record_edges(str(body.get("source") or ""),
+                                         body.get("targets") or []))
             return
 
         if path == "/ingest":

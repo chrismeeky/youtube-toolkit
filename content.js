@@ -1472,6 +1472,42 @@
      inserted, measured, and kept only if it actually came out visible. A container that is
      present but not on screen no longer swallows the tab silently — the next candidate is
      tried instead. */
+  /* Edges, harvested from a page the viewer is already on.
+
+     The crawler spends five page fetches per channel to read the very list that sits in the
+     sidebar of any watch page. Reading it here costs nothing at all — no fetch, no rate
+     limit, nothing to block — so the graph grows whenever anyone watches anything, rather
+     than only when someone remembers to run the crawler.
+
+     Read from the rendered DOM rather than ytInitialData: that blob is the one the page
+     loaded with, and after a soft navigation it still describes the previous video. */
+  const edgesReported = new Set();
+
+  function reportWatchEdges(sourceHandle, videoId) {
+    if (!sourceHandle || !videoId || edgesReported.has(videoId)) return;
+    const nodes = document.querySelectorAll(
+      '#secondary a[href^="/@"], #related a[href^="/@"], ' +
+      'ytd-compact-video-renderer a[href^="/@"], yt-lockup-view-model a[href^="/@"]');
+    const targets = [];
+    const seen = new Set();
+    const me = sourceHandle.toLowerCase();
+    for (const a of nodes) {
+      const m = (a.getAttribute('href') || '').match(/^\/(@[\w.-]+)/);
+      if (!m) continue;
+      const handle = m[1];
+      const low = handle.toLowerCase();
+      if (low === me || seen.has(low)) continue;
+      seen.add(low);
+      targets.push(handle);
+      if (targets.length >= 30) break;
+    }
+    /* Too few means the sidebar has not rendered yet, not that the video has no neighbours.
+       Left unrecorded so a later scan picks it up once the column fills. */
+    if (targets.length < 3) return;
+    edgesReported.add(videoId);
+    sendMessage({ type: 'ytc-edges', source: sourceHandle, targets }, () => { /* nothing to do */ });
+  }
+
   /* Tell the index about a channel simply because it was opened. This used to happen only as
      a side effect of asking for similar channels, so a channel visited without opening the
      tab left no trace — and a niche only filled for the channels whose panel someone happened
@@ -1753,6 +1789,8 @@
       const st = page && page.stats;
       const key = (st && (st.channelHandle || (st.channelId && 'channel/' + st.channelId))) ||
         findChannelKey(card);
+      // The player's own answer, so it is right immediately after a soft navigation.
+      if (st && st.channelHandle) reportWatchEdges(st.channelHandle, videoId);
       if (!key) {
         paintMoney(el, null, false, note);
       } else {
