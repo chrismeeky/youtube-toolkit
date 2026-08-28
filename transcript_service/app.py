@@ -757,20 +757,36 @@ class Handler(BaseHTTPRequestHandler):
         """
         route = urlparse(self.path)
         query = parse_qs(route.query)
-        ok, path = self.authorised(route.path, query)
-        if not ok:
-            self._send(404, {"ok": False, "reason": "not found"})
-            return
 
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
+        # Read the body before deciding anything, so every path below leaves the socket clean.
+        # Returning early without reading it left those bytes in the buffer, where the next
+        # request on the same keep-alive connection parsed them as its request line and got a
+        # 501. It alternated 404, 501, 404 down a reused connection, and only showed up
+        # through a proxy that pools connections — one curl per request hides it entirely.
+        raw = self.rfile.read(length) if 0 < length <= 64000 else b""
+        if 0 < length and length > 64000:
+            # Oversized: drain it anyway rather than leaving a partial body behind.
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+
+        ok, path = self.authorised(route.path, query)
+        if not ok:
+            self._send(404, {"ok": False, "reason": "not found"})
+            return
+
         if length <= 0 or length > 64000:
             self._send(400, {"ok": False, "reason": "bad body"})
             return
         try:
-            body = json.loads(self.rfile.read(length).decode("utf-8", "replace"))
+            body = json.loads(raw.decode("utf-8", "replace"))
         except ValueError:
             self._send(400, {"ok": False, "reason": "bad json"})
             return
