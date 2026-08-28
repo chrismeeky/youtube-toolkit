@@ -30,7 +30,7 @@ sys.dont_write_bytecode = True
 import base64
 import importlib.util
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import re
 import shutil
@@ -299,6 +299,51 @@ def already_indexed(ids):
             return {r["id"] for r in json.loads(res.read().decode("utf-8", "replace"))}
     except Exception:
         return set()
+
+
+# Boilerplate every channel carries: business emails, socials, support pleas, copyright
+# notices. It is noise they all share, so leaving it in pulls unrelated channels together,
+# and it crowds out the description proper. Air Crash Investigation's embedded text opened
+# with a business email, an X link and a support plea; what the channel actually does
+# appeared 300 characters in, competing for the same 800-character budget.
+_DESC_URL    = re.compile(r"https?://\S+|www\.\S+", re.I)
+_DESC_EMAIL  = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+_DESC_HANDLE = re.compile(r"(?<!\w)@[\w.]+")
+_DESC_HASH   = re.compile(r"#\w+")
+_DESC_STAMP  = re.compile(r"\b\d{1,2}:\d{2}(:\d{2})?\b")
+_DESC_EMOJI  = re.compile("[\U0001F000-\U0001FAFF\u2190-\u27BF\uFE0F]")
+# Never topic signal, at any length.
+_DESC_HARD = re.compile(
+    r"\b(business (inquiries|enquiries)|for (business|collaborations?|sponsorships?)|"
+    r"contact (me|us)|support(ing)? (the|my|this) channel|buy me a|use code|"
+    r"affiliate|merch(andise)?|patreon|paypal|donat(e|ion)|"
+    r"copyright disclaimer|fair use|all rights reserved)\b", re.I)
+# These can carry signal — "Subscribe for weekly aviation documentaries" says what the
+# channel is about — so they go only when the line is nothing but the ask.
+_DESC_SOFT = re.compile(
+    r"\b(subscribe|like and share|smash that|turn on notifications?|hit the bell)\b", re.I)
+
+
+def clean_description(desc):
+    """Drop the promotional furniture, keep the sentences that say what the channel covers."""
+    out = []
+    for line in (desc or "").split("\n"):
+        t = _DESC_URL.sub(" ", line)
+        t = _DESC_EMAIL.sub(" ", t)
+        t = _DESC_HANDLE.sub(" ", t)
+        t = _DESC_HASH.sub(" ", t)
+        t = _DESC_STAMP.sub(" ", t)
+        t = _DESC_EMOJI.sub(" ", t)
+        t = re.sub(r"\s+", " ", t).strip(" -\u2022|\u00b7:,")
+        # Whatever is left of a line that was only a link, a handle, or a fragment.
+        if len(t) < 25 or len(t.split()) < 4:
+            continue
+        if _DESC_HARD.search(t):
+            continue
+        if _DESC_SOFT.search(t) and len(t.split()) < 12:
+            continue
+        out.append(t)
+    return "\n".join(out)
 
 
 def recent_uploads(playlist_id, want=15):
@@ -712,7 +757,7 @@ def ingest_channels(pairs):
         # Titles as well as the description: a channel whose description is a business email
         # has nothing else saying what it is about. seed.py embeds both; this now matches.
         text = "\n".join(x for x in [snip.get("title") or "",
-                                      (snip.get("description") or "")[:800],
+                                      clean_description(snip.get("description"))[:800],
                                       " \u00b7 ".join(titles[:10])] if x)[:2000]
         if not text.strip():
             continue
@@ -745,6 +790,7 @@ def ingest_channels(pairs):
             "country": snip.get("country"),
             "published_at": snip.get("publishedAt"),
             "avg_views": (views // count) if count else None,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
             "last_upload_at": newest,
             "uploads_per_mo": uploads_per_month(len(titles), oldest, newest),
             "embedding": vec,

@@ -233,6 +233,23 @@ def store_edges(source_id, tally, url, service_key):
         return 0
 
 
+def stalest_channels(url, service_key, limit):
+    """Channels already indexed, least recently fetched first.
+
+    Two uses. Statistics go stale — subscriber counts, upload cadence and averages all move —
+    and until now nothing ever revisited a row once written. And when the way text is
+    prepared for embedding changes, every existing vector was built by the old rule and has
+    to be rebuilt or the corpus holds two incompatible generations of the same measure.
+    """
+    query = (url.rstrip("/") + "/rest/v1/channels"
+             "?select=id,handle&order=fetched_at.asc.nullsfirst&limit=" + str(limit))
+    req = urllib.request.Request(query, headers={
+        "apikey": service_key, "Authorization": "Bearer " + service_key})
+    with urllib.request.urlopen(req, timeout=30) as res:
+        rows = json.loads(res.read().decode("utf-8", "replace"))
+    return [(r["id"], r.get("handle") or "") for r in rows]
+
+
 def pending_sightings(url, service_key, limit):
     """Channels users have looked at that nobody has indexed yet.
 
@@ -280,6 +297,51 @@ FILLER_START = re.compile(r"^(at|our|we|you|your|it|this|that|these|those|every|
                           r"or|so|then|here|there|i|my|from|with|for)\b", re.I)
 
 
+# Boilerplate every channel carries: business emails, socials, support pleas, copyright
+# notices. It is noise they all share, so leaving it in pulls unrelated channels together,
+# and it crowds out the description proper. Air Crash Investigation's embedded text opened
+# with a business email, an X link and a support plea; what the channel actually does
+# appeared 300 characters in, competing for the same 800-character budget.
+_DESC_URL    = re.compile(r"https?://\S+|www\.\S+", re.I)
+_DESC_EMAIL  = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+_DESC_HANDLE = re.compile(r"(?<!\w)@[\w.]+")
+_DESC_HASH   = re.compile(r"#\w+")
+_DESC_STAMP  = re.compile(r"\b\d{1,2}:\d{2}(:\d{2})?\b")
+_DESC_EMOJI  = re.compile("[\U0001F000-\U0001FAFF\u2190-\u27BF\uFE0F]")
+# Never topic signal, at any length.
+_DESC_HARD = re.compile(
+    r"\b(business (inquiries|enquiries)|for (business|collaborations?|sponsorships?)|"
+    r"contact (me|us)|support(ing)? (the|my|this) channel|buy me a|use code|"
+    r"affiliate|merch(andise)?|patreon|paypal|donat(e|ion)|"
+    r"copyright disclaimer|fair use|all rights reserved)\b", re.I)
+# These can carry signal — "Subscribe for weekly aviation documentaries" says what the
+# channel is about — so they go only when the line is nothing but the ask.
+_DESC_SOFT = re.compile(
+    r"\b(subscribe|like and share|smash that|turn on notifications?|hit the bell)\b", re.I)
+
+
+def clean_description(desc):
+    """Drop the promotional furniture, keep the sentences that say what the channel covers."""
+    out = []
+    for line in (desc or "").split("\n"):
+        t = _DESC_URL.sub(" ", line)
+        t = _DESC_EMAIL.sub(" ", t)
+        t = _DESC_HANDLE.sub(" ", t)
+        t = _DESC_HASH.sub(" ", t)
+        t = _DESC_STAMP.sub(" ", t)
+        t = _DESC_EMOJI.sub(" ", t)
+        t = re.sub(r"\s+", " ", t).strip(" -\u2022|\u00b7:,")
+        # Whatever is left of a line that was only a link, a handle, or a fragment.
+        if len(t) < 25 or len(t.split()) < 4:
+            continue
+        if _DESC_HARD.search(t):
+            continue
+        if _DESC_SOFT.search(t) and len(t.split()) < 12:
+            continue
+        out.append(t)
+    return "\n".join(out)
+
+
 def expand_from(channel):
     """A search query describing a channel, so its neighbours can be discovered.
 
@@ -295,7 +357,7 @@ def expand_from(channel):
     """
     snip = channel.get("snippet") or {}
     title = (snip.get("title") or "").strip()
-    desc = (snip.get("description") or "").strip()
+    desc = clean_description(snip.get("description")).strip()
 
     title_words = {w.lower() for w in re.sub(r"[^\w\s]", " ", title).split()}
 
@@ -427,7 +489,7 @@ def embed_text(channel, video_titles):
     """
     snip = channel.get("snippet") or {}
     parts = [snip.get("title") or ""]
-    desc = (snip.get("description") or "").strip()
+    desc = clean_description(snip.get("description")).strip()
     if desc:
         parts.append(desc[:800])
     if video_titles:
@@ -478,6 +540,10 @@ def to_row(cid, channel, video_titles, newest, oldest, vector):
         "avg_views": (views // count) if count else None,
         "last_upload_at": newest,
         "uploads_per_mo": uploads_per_month(len(video_titles), oldest, newest),
+        # Written explicitly, not left to the column default: the default only applies on
+        # insert, so an upsert of an existing row would leave the old timestamp and
+        # --refresh would hand back the same channels every run, forever.
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
         "embedding": vector,
         "embed_source": embed_text(channel, video_titles)[:500],
     }
@@ -491,6 +557,9 @@ def main():
     ap.add_argument("--channels", help="comma-separated @handles to seed directly")
     ap.add_argument("--drain", action="store_true",
                     help="index the channels users have actually looked at, most-seen first")
+    ap.add_argument("--refresh", action="store_true",
+                    help="re-fetch and re-embed channels already indexed, stalest first — for "
+                         "refreshing statistics, or after the embedding text changes")
     ap.add_argument("--expand", action="store_true",
                     help="after indexing a channel, discover and index its neighbours too — "
                          "a lone channel has nothing to be similar to")
@@ -541,6 +610,7 @@ def main():
     edges_out = {"n": 0}
 
     mode = ("drain" if args.drain else
+            "refresh" if args.refresh else
             "channels" if args.channels else
             "queries" if args.queries else "other")
     if args.graph:
@@ -566,6 +636,14 @@ def main():
     if args.channels:
         handles = [h.strip() for h in args.channels.split(",") if h.strip()]
         found.extend(resolve_handles(handles, yt_key, quota))
+
+    if args.refresh:
+        if not (sb_url and sb_key):
+            print("--refresh needs SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY", file=sys.stderr)
+            return 1
+        stale = stalest_channels(sb_url, sb_key, args.limit)
+        print(f"  refreshing {len(stale)} already-indexed channels, stalest first")
+        found.extend(stale)
 
     drained = []
     if args.drain:
