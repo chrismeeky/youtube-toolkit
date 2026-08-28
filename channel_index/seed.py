@@ -31,6 +31,7 @@ sys.dont_write_bytecode = True
 import argparse
 import json
 import os
+import collections
 import re
 import sys
 import time
@@ -64,7 +65,9 @@ def load_env(path):
 
 def http(url, data=None, headers=None, method=None, timeout=60):
     body = json.dumps(data).encode() if data is not None else None
-    hdrs = {"User-Agent": UA, "Accept-Language": "en"}
+    # CONSENT: without it an EU or NG address is redirected to consent.youtube.com and the
+    # body comes back empty — which reads as a block rather than as a missing cookie.
+    hdrs = {"User-Agent": UA, "Accept-Language": "en", "Cookie": "CONSENT=YES+1"}
     if body:
         hdrs["Content-Type"] = "application/json"
     hdrs.update(headers or {})
@@ -109,6 +112,53 @@ def discover(query):
         seen.add(cid)
         out.append((cid, handle))
     return out
+
+
+CHANNEL_PAIR = re.compile(r'"browseId":"(UC[\w-]{20,24})","canonicalBaseUrl":"/(@[\w.-]+)"')
+
+
+def channel_video_ids(handle, want=5):
+    """Recent video ids for a channel, scraped rather than queried — the API charges for this
+    and the page gives it away."""
+    html = http("https://www.youtube.com/%s/videos?hl=en&gl=US" % handle)
+    out, seen = [], set()
+    for vid in re.findall(r'"videoId":"([\w-]{11})"', html):
+        if vid not in seen:
+            seen.add(vid)
+            out.append(vid)
+        if len(out) >= want:
+            break
+    return out
+
+
+def graph_neighbours(handle, videos=5):
+    """Channels YouTube itself recommends alongside this one, with a count of how often.
+
+    Search discovery asks "who else writes about this topic". This asks "who else do these
+    viewers watch", which is the question the panel is really answering. Measured on
+    @jiyakapurfilms, search-derived expansion returned documentary and YouTube-coaching
+    channels while this returned @thehauntinghourseries, @WarnerBrosUKHorror and
+    @HorrorShortsParty — actual horror creators, none of them in the index.
+
+    The count matters as much as the names: a channel co-recommended across several of a
+    channel's videos is a neighbour, while one appearing beside a single video may just be
+    whatever was trending.
+    """
+    tally = collections.Counter()
+    me = handle.lstrip("@").lower()
+    for vid in channel_video_ids(handle, videos):
+        try:
+            html = http("https://www.youtube.com/watch?v=%s&hl=en&gl=US" % vid)
+        except Exception as e:
+            print(f"  ! watch {vid}: {e}", file=sys.stderr)
+            continue
+        # Count each channel once per video, or one page listing a channel repeatedly
+        # outweighs a channel genuinely recommended across several videos.
+        for pair in {(cid, h) for cid, h in CHANNEL_PAIR.findall(html)
+                     if h.lstrip("@").lower() != me}:
+            tally[pair] += 1
+        time.sleep(SCRAPE_GAP)
+    return tally
 
 
 def pending_sightings(url, service_key, limit):
@@ -372,6 +422,13 @@ def main():
     ap.add_argument("--expand", action="store_true",
                     help="after indexing a channel, discover and index its neighbours too — "
                          "a lone channel has nothing to be similar to")
+    ap.add_argument("--graph", action="store_true",
+                    help="expand using YouTube's own recommendations rather than a search "
+                         "query built from the description — finds who shares an audience "
+                         "instead of who uses the same words. Free, but scrapes a few pages "
+                         "per channel, so it is slower than --expand")
+    ap.add_argument("--graph-videos", type=int, default=4,
+                    help="videos sampled per channel by --graph (default 4)")
     ap.add_argument("--limit", type=int, default=100, help="max channels this run")
     ap.add_argument("--cadence", action="store_true",
                     help="also fetch recent uploads (1 unit/channel) for upload rate and "
@@ -453,6 +510,29 @@ def main():
 
     channels = fetch_channels(ids, yt_key, quota)
     print(f"fetched {len(channels)} channel records  ({quota['units']} quota units so far)")
+
+    if args.graph:
+        extra, room = [], max(0, args.limit - len(channels))
+        for ch in list(channels.values()):
+            handle = ((ch.get("snippet") or {}).get("customUrl") or "").strip()
+            if not handle:
+                continue
+            if not handle.startswith("@"):
+                handle = "@" + handle
+            try:
+                tally = graph_neighbours(handle, args.graph_videos)
+            except Exception as e:
+                print(f"  ! graph {handle}: {e}", file=sys.stderr)
+                continue
+            # Most co-recommended first: the ones appearing beside several of this channel's
+            # videos are neighbours, the single sightings are usually just trending.
+            ranked = [cid for (cid, _), n in tally.most_common() if cid not in channels]
+            print(f"  graph {handle}: {len(tally)} co-recommended, {len(ranked)} new")
+            extra.extend(ranked)
+        extra = [c for c in dict.fromkeys(extra)][:room]
+        if extra:
+            channels.update(fetch_channels(extra, yt_key, quota))
+            print(f"expanded to {len(channels)} channels  ({quota['units']} units)")
 
     if args.expand:
         extra = []
