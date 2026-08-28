@@ -161,6 +161,32 @@ def graph_neighbours(handle, videos=5):
     return tally
 
 
+def store_edges(source_id, tally, url, service_key):
+    """Persist the co-recommendation counts a graph walk produced.
+
+    The walk computes these anyway; throwing them away meant every run rediscovered the same
+    relationships. Stored, they let match_channels lift a channel that shares an audience
+    above one that merely shares vocabulary.
+    """
+    rows = [{"source_id": source_id, "target_id": cid, "weight": n}
+            for (cid, _), n in tally.items()]
+    if not rows:
+        return 0
+    body = json.dumps(rows).encode()
+    req = urllib.request.Request(
+        url.rstrip("/") + "/rest/v1/channel_edges?on_conflict=source_id,target_id",
+        data=body, method="POST",
+        headers={"apikey": service_key, "Authorization": "Bearer " + service_key,
+                 "Content-Type": "application/json",
+                 "Prefer": "resolution=merge-duplicates,return=minimal"})
+    try:
+        with urllib.request.urlopen(req, timeout=60):
+            return len(rows)
+    except Exception as e:
+        print(f"  ! edges for {source_id}: {e}", file=sys.stderr)
+        return 0
+
+
 def pending_sightings(url, service_key, limit):
     """Channels users have looked at that nobody has indexed yet.
 
@@ -430,9 +456,16 @@ def main():
     ap.add_argument("--graph-videos", type=int, default=4,
                     help="videos sampled per channel by --graph (default 4)")
     ap.add_argument("--limit", type=int, default=100, help="max channels this run")
-    ap.add_argument("--cadence", action="store_true",
-                    help="also fetch recent uploads (1 unit/channel) for upload rate and "
-                         "richer embeddings — recommended")
+    # On by default. It was opt-in, and a later run that omitted it silently rewrote an
+    # existing row's embedding without video titles — @hannafilms-96 fell from 0.730 to 0.629
+    # against the same channel purely because a re-seed dropped the titles. A second pass
+    # over a channel should never leave it described worse than the first did.
+    ap.add_argument("--cadence", action="store_true", default=True,
+                    help="fetch recent uploads (1 unit/channel) for upload rate and richer "
+                         "embeddings (default: on)")
+    ap.add_argument("--no-cadence", dest="cadence", action="store_false",
+                    help="skip the uploads fetch — saves a quota unit per channel, at the "
+                         "cost of no upload rate and a weaker embedding")
     ap.add_argument("--dry-run", action="store_true", help="discover and report, store nothing")
     ap.add_argument("--env", default=os.path.expanduser("~/Desktop/youtube automation/.env"))
     args = ap.parse_args()
@@ -527,7 +560,11 @@ def main():
             # Most co-recommended first: the ones appearing beside several of this channel's
             # videos are neighbours, the single sightings are usually just trending.
             ranked = [cid for (cid, _), n in tally.most_common() if cid not in channels]
-            print(f"  graph {handle}: {len(tally)} co-recommended, {len(ranked)} new")
+            stored_edges = 0
+            if sb_url and sb_key:
+                stored_edges = store_edges(ch.get("id") or "", tally, sb_url, sb_key)
+            print(f"  graph {handle}: {len(tally)} co-recommended, {len(ranked)} new, "
+                  f"{stored_edges} edges")
             extra.extend(ranked)
         extra = [c for c in dict.fromkeys(extra)][:room]
         if extra:

@@ -184,6 +184,9 @@ def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity, ch
         "min_subscribers": min_subs,
         "max_subscribers": max_subs,
         "min_similarity": min_similarity,
+        # Only meaningful for a channel we can identify; without it the RPC ranks on text
+        # alone, which is exactly the previous behaviour.
+        "graph_source": exclude,
     }, timeout=30)
     # Last line of defence: the id may be absent or stale, but the handle came from the URL.
     want = (handle or "").lstrip("@").lower()
