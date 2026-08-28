@@ -1500,6 +1500,7 @@
   }
 
   function maybeExpandNiche(res) {
+    if (!settings.showSimilar) return;
     const key = channelKeyFromLocation();
     if (!key || expandedNiches.has(key)) return;
     if (!res) return;
@@ -1535,6 +1536,7 @@
   const edgesReported = new Set();
 
   function reportWatchEdges(sourceHandle, videoId) {
+    if (!settings.showSimilar) return;   // the same promise the toggle makes elsewhere
     if (!sourceHandle || !videoId || edgesReported.has(videoId)) return;
     const nodes = document.querySelectorAll(
       '#secondary a[href^="/@"], #related a[href^="/@"], ' +
@@ -1566,6 +1568,10 @@
   const seenChannels = new Set();
 
   function noteChannelSeen() {
+    // Switching the feature off has to stop the reporting, not just hide the tab. Anything
+    // else makes the toggle a lie: the user believes it is off while their browsing still
+    // leaves the machine.
+    if (!settings.showSimilar) return;
     const key = channelKeyFromLocation();
     if (!key || !key.startsWith('@') || seenChannels.has(key)) return;
     seenChannels.add(key);
