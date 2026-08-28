@@ -17,30 +17,85 @@ earnings, monetization status, and similar channels — without leaving YouTube.
 
 ## Detailed description
 
-**YouTube Toolkit adds the numbers you actually research with, directly on YouTube.**
+Everything you need to research a YouTube channel or video, without leaving the page.
 
-**Copy clean text.** Select any videos on a page and copy their titles, view counts, dates,
-channels and URLs — as plain lines, bullets, Markdown, CSV, JSON, or your own template.
+WHAT IT DOES
 
-**See performance in context.** Every thumbnail carries an outlier score (a video's views
-against its own channel's lifetime average) and views per hour. Watch pages add engagement
-rate and an earnings estimate based on the video's category and length.
+• Copy video details as clean text — title, views, upload date, channel, URL.
+  Pick which fields you want and how they're laid out.
 
-**Check monetization.** A badge reads recent videos for ad slots and reports Monetized, Not
-monetized, Not eligible, or Unknown. Channels under YouTube's 1,000-subscriber requirement
-are settled without guessing.
+• Outlier score — how a video's views compare to its channel's own average.
+  A 1.4M-view video on a channel that averages 1.5M isn't a hit; it's typical.
+  This tells you which videos actually broke out.
 
-**Find similar channels.** A Similar Channels tab lists channels like the one you are
-viewing, with subscribers, average views, uploads per month, age and last upload — sortable,
-with presets for outliers, low-subscriber/high-view channels, and new channels. Small
-channels appear beside large ones, which is the point: a 1,000-subscriber channel in your
-niche is invisible to search but visible here.
+• Channel reach — on a channel page, how its average views compare to its
+  subscriber count. A channel pulling three times its subscriber count is
+  reaching well past the audience it has already earned.
 
-**Grab transcripts and thumbnails.** One click for a video's transcript, and thumbnail
-downloads at the best resolution available.
+• Views per hour, engagement rate, and an earnings estimate — shown together
+  in a card beside the video.
 
-Nothing is overlaid on thumbnails, nothing autoplays, and every feature can be switched off
-in the popup.
+• Monetization status — Monetized, Not monetized, Not eligible, or Unknown,
+  on channels and on every video card.
+
+• Similar channels — a tab on any channel page listing channels like it, with
+  subscribers, average views, reach, uploads per month, age, last upload and
+  monetization. Sort by any column, or filter to the ones worth finding:
+  overperforming, low subscribers with high views, new channels doing big
+  numbers, or channels smaller than the one you're looking at.
+
+• One-click transcripts — copy or save the full transcript as a .txt file,
+  with or without timestamps.
+
+• Subscriber counts on thumbnails throughout the feed, search and sidebar.
+
+• Download thumbnails at the highest resolution available.
+
+• Multi-select mode — tick several videos and copy them all at once.
+  Alt+Shift+S to toggle, Alt+Shift+C to copy.
+
+FORMATS
+
+Plain text, bullets, numbered lists, Markdown, CSV, JSON, or a custom template
+you define. View counts can be copied as displayed (271K) or as full numbers
+(271,000), and dates as relative ("23 hours ago") or absolute (2026-08-22).
+
+HONEST ABOUT ESTIMATES
+
+The earnings figure is your view count multiplied by an assumed RPM, adjusted
+for video length. Real RPM is private to each channel and no extension can
+read it, so treat that number as a rough sense of scale, not revenue. Shorts
+show no estimate at all, because they're paid from a different pool entirely.
+
+Monetization is inferred from whether recent videos carry ad slots. YouTube
+also runs ads on channels that are not monetized and keeps that revenue, so
+the badge is an estimate, not a status — hover it to see how many videos were
+checked. "Not eligible" is the one exception: below 1,000 subscribers a
+channel cannot run its own ads, and that is a fact rather than a guess.
+
+Similar channels are ranked by how a channel describes itself and titles its
+videos, and by which channels YouTube recommends alongside it. The panel says
+so when the matches are weak rather than presenting a thin result as a strong
+one.
+
+WHAT LEAVES YOUR BROWSER
+
+No accounts, no sign-in, no tracking, no analytics, and nothing is ever sold
+or shared. Your settings live in your browser.
+
+To show its figures the extension reads the page you are on and requests
+YouTube pages in the background — channel pages and watch pages for
+subscriber counts and ad slots, and search results when looking for related
+channels. Those go to youtube.com only and carry no account credentials.
+
+The Similar Channels feature uses a shared channel index. While it is on, the
+handle of a channel page you open, and the channels YouTube recommends beside
+a video you watch, are sent to that index so it can learn which channels
+resemble one another. No account identifiers, no viewing history and no
+personal information are sent, and the index stores relationships between
+channels rather than anything about people.
+
+Turning "Similar Channels" off in the popup stops all of that completely.
 
 ## Permission justifications
 
