@@ -18,11 +18,6 @@
     showMoney: true,              // monetization badge (inferred from ad placements)
     showStats: true,              // views/hour, engagement and an earnings estimate
     showSimilar: true,            // "Similar channels" button on channel pages
-    /* Base URL of the channel-index service, token included:
-         https://<service>.onrender.com/k/<ACCESS_TOKEN>
-       Empty means no backend, and the panel falls back to searching YouTube live — which
-       finds established channels but never small ones. */
-    apiUrl: '',
     showThumb: true,              // thumbnail download button
     /* Reads YouTube's own transcript panel in the page — no helper, no server, nothing to
        block. The InnerTube and yt-dlp routes it replaced are dead; see transcriptViaPanel. */

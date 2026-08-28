@@ -4,6 +4,9 @@
    fetched once from its channel page and cached. Fetching here rather than in the content
    script keeps one shared queue and one shared cache across every open YouTube tab. */
 
+/* config.js is gitignored and may be absent in a fresh clone; the index is optional, so a
+   missing file must degrade to live search rather than killing the service worker. */
+try { importScripts('config.js'); } catch (e) { self.YTCopyConfig = { INDEX_API: '' }; }
 importScripts('format.js');
 const F = self.YTCopyFormat;
 
@@ -516,8 +519,9 @@ function pushToIndex(base, pairs) {
 }
 
 async function getSimilarChannels(key, titles, about, force, opts) {
-  const settings = await chrome.storage.sync.get('apiUrl');
-  const base = (settings.apiUrl || '').trim();
+  // Baked in at build time. Users were never in a position to know this value, and asking
+  // them for it in the popup made an internal detail look like a setting.
+  const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
   let indexProblem = '';
 
   /* The index answers differently depending on the filters, so its results are not cached

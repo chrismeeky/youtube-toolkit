@@ -36,7 +36,6 @@
       const box = document.querySelector(`[data-field="${key}"]`);
       if (box) box.checked = !!settings.fields[key];
     }
-    $('apiUrl').value = settings.apiUrl || '';
     $('layout').value = settings.layout;
     $('separator').value = encodeURIComponent(settings.separator);
     $('customTemplate').value = settings.customTemplate;
@@ -63,7 +62,6 @@
       const box = document.querySelector(`[data-field="${key}"]`);
       if (box) settings.fields[key] = box.checked;
     }
-    settings.apiUrl = $('apiUrl').value.trim();
     settings.layout = $('layout').value;
     settings.separator = decodeURIComponent($('separator').value);
     settings.customTemplate = $('customTemplate').value;

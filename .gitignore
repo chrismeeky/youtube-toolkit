@@ -3,3 +3,6 @@ node_modules/
 __pycache__/
 *.pyc
 cookies.txt
+
+# Holds the index endpoint incl. its access token. Never commit — this repo is public.
+config.js
