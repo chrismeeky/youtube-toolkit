@@ -699,6 +699,7 @@
     /* Kept out of decorateChannelHeader deliberately: that function returns early when the
        monetization badge is switched off, which would silently take the tab with it. */
     ensureSimilarTab();
+    noteChannelSeen();
     renderStatsCard();
     const watch = watchCard();
     if (watch) {
@@ -1471,6 +1472,21 @@
      inserted, measured, and kept only if it actually came out visible. A container that is
      present but not on screen no longer swallows the tab silently — the next candidate is
      tried instead. */
+  /* Tell the index about a channel simply because it was opened. This used to happen only as
+     a side effect of asking for similar channels, so a channel visited without opening the
+     tab left no trace — and a niche only filled for the channels whose panel someone happened
+     to click. Once per channel per page session; the server ignores ids it already holds. */
+  const seenChannels = new Set();
+
+  function noteChannelSeen() {
+    const key = channelKeyFromLocation();
+    if (!key || !key.startsWith('@') || seenChannels.has(key)) return;
+    seenChannels.add(key);
+    let channelId = '';
+    try { channelId = (channelOwnStats() || {}).channelId || ''; } catch (e) { channelId = ''; }
+    sendMessage({ type: 'ytc-seen', key, channelId }, () => { /* fire and forget */ });
+  }
+
   function ensureSimilarTab() {
     try {
       if (!settings.showSimilar || !channelKeyFromLocation()) {

@@ -225,7 +225,7 @@ MIN_INDEX_SUBS = 100
 # best neighbour scored 50% — the panel then read as though nothing had been indexed at all,
 # when the truth was "indexed, but not close". A scored 50% match the reader can judge beats
 # silence they cannot.
-DEFAULT_FLOOR = 0.45
+DEFAULT_FLOOR = 0.35   # see background.js: 0.45 hid genuine neighbours scoring 0.449
 INGEST_READY = bool(INDEX_READY and OPENAI_KEY and YT_KEY)
 
 

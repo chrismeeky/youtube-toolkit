@@ -476,7 +476,11 @@ async function similarFromIndex(base, key, titles, about, opts) {
     limit: 50,
     minSubs: (opts && opts.minSubs) || null,
     maxSubs: (opts && opts.maxSubs) || null,
-    minSimilarity: 0.45
+    /* 0.35, not 0.45. Two horror-film channels scored 0.449 against each other and were
+       hidden from both lists — a cliff edge deciding between "closely related" and "does not
+       exist". The panel already prints each score and warns when the best is weak, so a
+       borderline neighbour is better shown with its number than silently dropped. */
+    minSimilarity: 0.35
   };
   /* Two attempts, because a free-tier instance sleeps when idle. Waking it takes upwards of
      50 seconds, and while it wakes the CORS preflight itself fails — the browser blocks the
@@ -669,6 +673,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     getMonetization(msg.key, msg.force)
       .then((entry) => sendResponse(entry))
       .catch((e) => sendResponse({ state: 'unknown', checked: 0, reason: String(e) }));
+    return true;
+  }
+  /* Visiting a channel is the signal; opening the panel is not. Ingest used to ride along
+     with the similarity request, so a channel only entered the index if someone happened to
+     click the tab there — three horror channels were opened and only the two whose tab was
+     used got indexed. */
+  if (msg.type === 'ytc-seen' && msg.key) {
+    (async () => {
+      const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+      if (base && msg.key.startsWith('@')) {
+        pushToIndex(base, [{ id: msg.channelId || '', handle: msg.key }]);
+      }
+      sendResponse({ ok: true });
+    })();
     return true;
   }
   if (msg.type === 'ytc-similar' && msg.key) {
