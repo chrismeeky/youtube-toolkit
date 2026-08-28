@@ -1077,6 +1077,16 @@
 
   const simFilter = { smallOnly: false, sort: 'similarity', desc: true, open: false, chip: 'all' };
 
+  /* Below this, the list is treated as a failure: the note says so, and the extension goes
+     looking for more channels in the niche.
+
+     0.65 rather than 0.55, which was set before there was anything to calibrate against.
+     Measured on a filled index, a niche that is genuinely covered lands well above it —
+     aviation 0.91, tech 0.81, MMA 0.77, horror 0.73, YouTube-growth 0.69 — while a niche
+     with nothing in it sits below: aviation before it was walked returned true-crime
+     channels at 0.59, and the old threshold called that a good answer and stayed quiet. */
+  const WEAK_BELOW = 0.65;
+
   /* Ad monetization needs 1,000 subscribers. Below that the question "is it monetized" has no
      answer worth giving, which is the same gate the channel badge uses. */
   const YPP_MIN_SUBS = 1000;
@@ -1452,7 +1462,7 @@
       note = 'Ranked by topic similarity against the channel index' +
         (res.indexed ? '' : ' \u2014 this channel is not indexed yet, so its own page text was used');
       const best = list.reduce((m, c) => Math.max(m, c.similarity || 0), 0);
-      if (best < 0.55) {
+      if (best < WEAK_BELOW) {
         note = '<b>Weak matches (best ' + Math.round(best * 100) + '%).</b> ' +
           'This niche is thinly indexed \u2014 the closest channels found are only loosely ' +
           'related. ' + note;
@@ -1629,12 +1639,31 @@
     const list = res.channels || [];
     const best = list.reduce((m, c) => Math.max(m, c.similarity || 0), 0);
     // The same threshold the note uses to call the matches weak, plus a thin-list case.
-    if (answered && best >= 0.55 && list.length >= 5) return;
+    if (answered && best >= WEAK_BELOW && list.length >= 5) return;
 
     const videos = channelVideoIds(3);
     if (!videos.length) return;
     expandedNiches.add(key);
-    sendMessage({ type: 'ytc-expand', key, videos }, () => { /* nothing to show */ });
+
+    const host = similarHost();
+    const note = host && host.querySelector('.ytc-t__note');
+    if (note) {
+      note.innerHTML = '<span class="ytc-spin"></span> Thin results \u2014 looking for more ' +
+        'channels in this niche\u2026';
+    }
+
+    /* Redraw when it lands. Without this the repair only ever helped the next person: the one
+       who hit the empty niche saw the bad list, and had no reason to think a refresh would
+       change anything. */
+    sendMessage({ type: 'ytc-expand', key, videos }, (out) => {
+      if (chrome.runtime.lastError) return;
+      if (channelKeyFromLocation() !== key) return;      // navigated away meanwhile
+      if (out && out.ok && out.found) {
+        askSimilar(true);
+      } else if (note && note.isConnected) {
+        note.textContent = 'No further channels found for this niche yet.';
+      }
+    });
   }
 
   /* Edges, harvested from a page the viewer is already on.
