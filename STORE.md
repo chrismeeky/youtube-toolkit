@@ -6,9 +6,15 @@ fail review, and the slowest to explain afterwards.
 
 ## Single purpose
 
-Research YouTube channels and videos from the pages themselves: copy video details as clean
-text, and show performance context — outlier score, views per hour, engagement, estimated
-earnings, monetization status, and similar channels — without leaving YouTube.
+YouTube Toolkit helps you research YouTube channels and videos while you browse YouTube. On
+the page you are viewing it shows how a video's views compare with its channel's average,
+views per hour, engagement, an earnings estimate and monetization status; it lists channels
+similar to the one you are on; and it copies video details or transcripts as text.
+
+To produce those figures it also reads other YouTube pages in the background — channel
+pages, watch pages and search results — and uses a shared index of public channel
+information to find similar channels. Every feature serves the one purpose of researching
+YouTube channels and videos.
 
 ## Short description (132 char limit)
 
