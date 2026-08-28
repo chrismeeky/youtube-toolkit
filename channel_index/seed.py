@@ -441,7 +441,15 @@ def fetch_uploads(playlist_id, api_key, quota, want=15):
     try:
         data = http_json(url)
     except urllib.error.HTTPError:
-        return [], None
+        # Three values, not two. Callers unpack titles, newest and oldest, so a short return
+        # here raised ValueError and took the whole run down — and because the run died, the
+        # 149 channels already fetched alongside the failing one were never stored either.
+        return [], None, None
+    except Exception as e:
+        # A dropped connection is not a reason to lose a batch; the channel simply goes
+        # without cadence this time and is picked up by a later refresh.
+        print(f"  ! uploads {playlist_id}: {type(e).__name__}: {e}", file=sys.stderr)
+        return [], None, None
     quota["units"] += 1
     titles, newest, oldest = [], None, None
     for item in data.get("items") or []:
