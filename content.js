@@ -1261,6 +1261,7 @@
       host.innerHTML = controls + '<p class="ytc-t__note">' +
         (res && res.reason ? escapeHtml(res.reason) : 'Nothing found for this channel') + '</p>';
       wireSimilarControls(host, res);
+      maybeExpandNiche(res);   // nothing found is the strongest case for going to look
       return;
     }
 
@@ -1359,6 +1360,7 @@
 
     host.innerHTML = controls + body + '<p class="ytc-t__note">' + note + '</p>';
     wireSimilarControls(host, res);
+    maybeExpandNiche(res);
     /* Re-rendering (a chip, a sort) drops the old placeholders, so anything still queued
        against them is stale. */
     moneyQueue = [];
@@ -1472,6 +1474,55 @@
      inserted, measured, and kept only if it actually came out visible. A container that is
      present but not on screen no longer swallows the tab silently — the next candidate is
      tried instead. */
+  /* When the panel admits the results are weak, go and fix it.
+
+     A thin niche is not a permanent condition, it is a gap in the index — and the person
+     staring at the weak list is standing on the one channel that would fill it. Three of its
+     videos are handed to the service worker, which reads who YouTube recommends beside them
+     and feeds both the channels and the edges back.
+
+     Once per channel per session, and only when the result was actually poor: a niche that
+     answered well costs nothing. The viewer who triggers it sees the benefit on Refresh;
+     everyone after them sees it straight away. */
+  const expandedNiches = new Set();
+
+  function channelVideoIds(limit) {
+    const out = [];
+    const seen = new Set();
+    document.querySelectorAll('a[href*="/watch?v="]').forEach((a) => {
+      if (out.length >= limit) return;
+      const m = (a.getAttribute('href') || '').match(/[?&]v=([\w-]{11})/);
+      if (!m || seen.has(m[1])) return;
+      seen.add(m[1]);
+      out.push(m[1]);
+    });
+    return out;
+  }
+
+  function maybeExpandNiche(res) {
+    const key = channelKeyFromLocation();
+    if (!key || expandedNiches.has(key)) return;
+    if (!res) return;
+    /* Two ways a niche shows itself to be thin, and the second is the more urgent one: an
+       index that returns nothing falls through to live search, so source reads 'search'
+       precisely when the index most needs filling. Only a genuinely absent index is left
+       alone — there would be nothing to write to. */
+    const answered = res.source === 'index';
+    const thin = res.source === 'search' &&
+      /not been seeded|no match/i.test(res.indexProblem || '');
+    if (!answered && !thin) return;
+
+    const list = res.channels || [];
+    const best = list.reduce((m, c) => Math.max(m, c.similarity || 0), 0);
+    // The same threshold the note uses to call the matches weak, plus a thin-list case.
+    if (answered && best >= 0.55 && list.length >= 5) return;
+
+    const videos = channelVideoIds(3);
+    if (!videos.length) return;
+    expandedNiches.add(key);
+    sendMessage({ type: 'ytc-expand', key, videos }, () => { /* nothing to show */ });
+  }
+
   /* Edges, harvested from a page the viewer is already on.
 
      The crawler spends five page fetches per channel to read the very list that sits in the

@@ -453,6 +453,80 @@ async function searchPage(query) {
   return buf;
 }
 
+/* A watch page, read only as far as its recommendation data.
+
+   Shares searchPage's shape and its byte cap: the interesting part is near the top and the
+   rest is player configuration, so there is no reason to pull megabytes of it. */
+async function watchPage(videoId) {
+  const url = 'https://www.youtube.com/watch?v=' + encodeURIComponent(videoId) + '&hl=en';
+  let res;
+  try {
+    res = await fetch(url, { credentials: 'omit', headers: { 'Accept-Language': 'en' } });
+  } catch (e) {
+    return null;
+  }
+  if (!res.ok || !res.body) return null;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let read = 0;
+  try {
+    while (read < SIM_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      read += value.length;
+      buf += decoder.decode(value, { stream: true });
+      if (buf.indexOf('var ytInitialData') >= 0 && read > 900000) break;
+    }
+  } catch (e) {
+    return null;
+  } finally {
+    try { await reader.cancel(); } catch (e) { /* already closed */ }
+  }
+  return buf;
+}
+
+/* Repair a thin niche at the moment it shows itself to be thin.
+
+   The crawler does this from a command line, on a schedule, for channels nobody is currently
+   looking at. This does it for the one channel someone is looking at right now, and only when
+   the panel has just admitted the results are weak — so the effort lands exactly where the
+   index is short, and a well-covered niche costs nothing at all.
+
+   Three watch pages, once per channel per session, behind the same limiter and breaker as
+   every other scrape. The viewer whose visit triggers it sees the benefit on a refresh; the
+   next person sees it immediately. */
+async function expandNiche(key, videos) {
+  const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+  if (!base || !key || !videos || !videos.length) return { ok: false };
+  if (breakerOpen()) return { ok: false, reason: 'rate limited' };
+
+  const pairs = [];
+  const seen = new Set();
+  for (const id of videos.slice(0, 3)) {
+    const html = await schedule(() => watchPage(id));
+    if (!html) continue;
+    for (const p of F.channelPairsFromSearch(html, 40)) {
+      if (seen.has(p.id)) continue;
+      seen.add(p.id);
+      pairs.push(p);
+    }
+  }
+  noteResult(pairs.length > 0);
+  if (!pairs.length) return { ok: false, reason: 'nothing found' };
+
+  // Both halves: the channels themselves, and the fact that they sit beside this one.
+  pushToIndex(base, pairs);
+  fetch(base.replace(/\/$/, '') + '/edges', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: key, targets: pairs.map((p) => p.handle).slice(0, 40) })
+  }).catch(() => { /* the panel is unaffected */ });
+
+  return { ok: true, found: pairs.length };
+}
+
 /* The index, when one is configured.
 
    Scored by topic rather than by who ranks, which is the whole difference: a channel with
@@ -701,6 +775,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }).catch(() => { /* the page is unaffected either way */ });
     }
     sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.type === 'ytc-expand' && msg.key) {
+    expandNiche(msg.key, msg.videos || [])
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false }));
     return true;
   }
   if (msg.type === 'ytc-similar' && msg.key) {
