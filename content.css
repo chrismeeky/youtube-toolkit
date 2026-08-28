@@ -262,14 +262,18 @@ html[dark] .ytc-spin { border-color: rgba(255, 255, 255, .25); border-top-color:
   vertical-align: middle;
 }
 .ytc-money--yes     { background: #0f9d58; }                    /* ad placements present */
-.ytc-money--no      { background: #5f6368; opacity: .75;
-                      text-decoration: line-through; }          /* none found — not proof */
+/* Red, and struck through: colour alone is not a signal everyone can read. */
+.ytc-money--no      { background: #c5221f; text-decoration: line-through; }
+/* Below the subscriber threshold — a different claim from "not monetized", so it is muted
+   rather than red. Nothing has been judged here, only ruled out. */
+.ytc-money--off     { background: #5f6368; opacity: .7; }
 .ytc-money--unknown { background: #5f6368; opacity: .45; }
 .ytc-money--loading { background: #5f6368; opacity: .35; }
 
 /* Channel-page variant: a pill sitting in the header action row beside Subscribe, sized to
    match YouTube's own buttons there rather than the compact card badge. */
 .ytc-money--lg {
+  gap: 7px;
   min-width: 0;
   height: 36px;
   padding: 0 16px;
@@ -283,7 +287,8 @@ html[dark] .ytc-spin { border-color: rgba(255, 255, 255, .25); border-top-color:
   opacity: 1;
 }
 .ytc-money--lg.ytc-money--yes     { color: #0f9d58; border-color: #0f9d58; }
-.ytc-money--lg.ytc-money--no      { color: #909090; border-color: #606060; text-decoration: none; }
+.ytc-money--lg.ytc-money--no      { color: #c5221f; border-color: #c5221f; text-decoration: none; }
+.ytc-money--lg.ytc-money--off     { color: #909090; border-color: #606060; text-decoration: none; opacity: 1; }
 .ytc-money--lg.ytc-money--unknown { color: #909090; border-color: #606060; opacity: .8; }
 .ytc-money--lg.ytc-money--loading { color: #909090; border-color: #444; opacity: .6; }
 
@@ -550,3 +555,8 @@ html[dark] .ytc-chip--on { background: #f1f1f1; color: #0f0f0f; border-color: #f
 .ytc-mon--wait { color: #b0b0b0; border-color: transparent; min-width: 18px; text-align: center; }
 html[dark] .ytc-mon--yes { color: #4ecb71; border-color: rgba(78,203,113,.5); }
 html[dark] .ytc-mon--no { color: #ff8a80; border-color: rgba(255,138,128,.45); }
+
+/* Extension icon inside the channel-page monetization pill. */
+.ytc-money__icon { width: 16px; height: 16px; border-radius: 3px; flex: 0 0 auto; }
+/* The compact card badge has no icon, so nothing to size there. */
+html[dark] .ytc-money--lg.ytc-money--no { color: #ff8a80; border-color: #ff8a80; }

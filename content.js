@@ -1575,17 +1575,22 @@
 
   /* ------------------------------------------------------------- monetization */
 
-  /* "Likely", not a verdict. Ad placements do not prove Partner Program membership — a
+  /* An estimate, not a verdict. Ad placements do not prove Partner Program membership — a
      demonetized channel emits the same forecasting slots as a monetized one — so this reads
-     the proportion of recent videos carrying slots and says how it got there. The tooltip
-     carries the count so the estimate can be judged rather than taken on faith. */
+     the proportion of recent videos carrying slots.
+
+     The hedging lives in the tooltip rather than the label. "Likely not monetized" is
+     accurate and unreadable at a glance; moneyTitle still states outright that this is
+     inferred from ad slots, and carries the sample count so it can be judged rather than
+     taken on faith. Not eligible keeps a muted colour instead of red: it is a different
+     claim from not monetized, and the only one of the four that is a fact. */
   const MONEY_LABEL = {
-    'not-eligible': { text: '$', big: 'Not eligible', cls: 'ytc-money--no',
+    'not-eligible': { text: '$', big: 'Not eligible', cls: 'ytc-money--off',
       lead: 'Not eligible for ad monetization' },
-    'likely-monetized': { text: '$', big: 'Likely monetized', cls: 'ytc-money--yes',
-      lead: 'Likely monetized' },
-    'likely-not': { text: '$', big: 'Likely not monetized', cls: 'ytc-money--no',
-      lead: 'Likely not monetized' },
+    'likely-monetized': { text: '$', big: 'Monetized', cls: 'ytc-money--yes',
+      lead: 'Monetized' },
+    'likely-not': { text: '$', big: 'Not monetized', cls: 'ytc-money--no',
+      lead: 'Not monetized' },
     unknown: { text: '$', big: 'Unknown', cls: 'ytc-money--unknown',
       lead: 'Not enough samples to judge' }
   };
@@ -1640,7 +1645,17 @@
     const retryable = safe.state === 'unknown';   // 'not-eligible' is settled, never retried
     el.className = 'ytc-money ' + label.cls + (big ? ' ytc-money--lg' : '') +
       (retryable ? ' ytc-money--retry' : '');
-    el.textContent = big ? label.big : label.text;   // also clears the spinner
+    /* The channel-page pill carries the extension icon, so it reads as ours among YouTube's
+       own buttons. The card badge stays a bare glyph — it is 18px, with no room for one.
+       Either way this replaces the contents, which is what clears the spinner. */
+    if (big) {
+      let icon = '';
+      try { icon = chrome.runtime.getURL('icons/icon32.png'); } catch (e) { icon = ''; }
+      el.innerHTML = (icon ? '<img class="ytc-money__icon" src="' + icon + '" alt="">' : '') +
+        '<span>' + escapeHtml(label.big) + '</span>';
+    } else {
+      el.textContent = label.text;
+    }
     el.title = moneyTitle(safe, videoNote) + (retryable ? '. Click to try again' : '');
   }
 
