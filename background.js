@@ -780,7 +780,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       fetch(base.replace(/\/$/, '') + '/edges', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: msg.source, targets: (msg.targets || []).slice(0, 30) })
+        body: JSON.stringify({
+          source: msg.source,
+          targets: (msg.targets || []).slice(0, 30),
+          videos: (msg.videos || []).slice(0, 30)
+        })
       }).catch(() => { /* the page is unaffected either way */ });
     }
     sendResponse({ ok: true });

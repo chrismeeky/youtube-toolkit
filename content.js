@@ -1582,27 +1582,41 @@
   function reportWatchEdges(sourceHandle, videoId) {
     if (!settings.showSimilar) return;   // the same promise the toggle makes elsewhere
     if (!sourceHandle || !videoId || edgesReported.has(videoId)) return;
-    const nodes = document.querySelectorAll(
-      '#secondary a[href^="/@"], #related a[href^="/@"], ' +
-      'ytd-compact-video-renderer a[href^="/@"], yt-lockup-view-model a[href^="/@"]');
+    const column = document.querySelector('#secondary, #related, ytd-watch-next-secondary-results-renderer');
+    if (!column) return;
+
+    /* Two ways of naming the same neighbours, because the sidebar does not always offer the
+       first. Some layouts link the channel directly; in others the channel is plain text and
+       only the video is a link, so the video id is the only identifier available. Collect
+       whichever is there and let the server work out the rest. */
     const targets = [];
-    const seen = new Set();
+    const videos = [];
+    const seenH = new Set();
+    const seenV = new Set();
     const me = sourceHandle.toLowerCase();
-    for (const a of nodes) {
-      const m = (a.getAttribute('href') || '').match(/^\/(@[\w.-]+)/);
-      if (!m) continue;
-      const handle = m[1];
-      const low = handle.toLowerCase();
-      if (low === me || seen.has(low)) continue;
-      seen.add(low);
-      targets.push(handle);
-      if (targets.length >= 30) break;
+
+    for (const a of column.querySelectorAll('a[href]')) {
+      const href = a.getAttribute('href') || '';
+      const h = href.match(/^\/(@[\w.-]+)/);
+      if (h) {
+        const low = h[1].toLowerCase();
+        if (low !== me && !seenH.has(low)) { seenH.add(low); targets.push(h[1]); }
+        continue;
+      }
+      const v = href.match(/^\/watch\?v=([\w-]{11})/);
+      if (v && v[1] !== videoId && !seenV.has(v[1])) { seenV.add(v[1]); videos.push(v[1]); }
     }
-    /* Too few means the sidebar has not rendered yet, not that the video has no neighbours.
-       Left unrecorded so a later scan picks it up once the column fills. */
-    if (targets.length < 3) return;
+
+    /* Too few of either means the column has not rendered yet, not that the video has no
+       neighbours. Left unrecorded so a later scan picks it up once it fills. */
+    if (targets.length < 3 && videos.length < 3) return;
     edgesReported.add(videoId);
-    sendMessage({ type: 'ytc-edges', source: sourceHandle, targets }, () => { /* nothing to do */ });
+    sendMessage({
+      type: 'ytc-edges',
+      source: sourceHandle,
+      targets: targets.slice(0, 30),
+      videos: videos.slice(0, 30)
+    }, () => { /* nothing to do */ });
   }
 
   /* Tell the index about a channel simply because it was opened. This used to happen only as

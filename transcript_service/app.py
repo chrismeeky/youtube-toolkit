@@ -581,7 +581,32 @@ def start_crawl(mode_args):
     return {"ok": True, "started": True}
 
 
-def record_edges(source_handle, target_handles):
+def channels_for_videos(video_ids):
+    """Video id -> channel id, 50 per quota unit.
+
+    The sidebar does not always name the channel: in some layouts only the video is a link.
+    One videos.list call turns thirty of those into channel ids for a single unit, which is
+    cheaper than giving up on the edges or asking the browser to fetch each page.
+    """
+    out = set()
+    ids = [v for v in video_ids if re.match(r"^[\w-]{11}$", v or "")][:50]
+    if not ids or not YT_KEY:
+        return out
+    url = ("%s/videos?part=snippet&id=%s&maxResults=50&key=%s"
+           % (YT_API, ",".join(ids), YT_KEY))
+    try:
+        data = _get_json(url)
+    except Exception as e:
+        print("  channels_for_videos failed: %s: %s" % (type(e).__name__, e), flush=True)
+        return out
+    for item in data.get("items") or []:
+        cid = ((item.get("snippet") or {}).get("channelId") or "").strip()
+        if cid:
+            out.add(cid)
+    return out
+
+
+def record_edges(source_handle, target_handles, video_ids=None):
     """Store co-recommendation edges the extension observed on a watch page.
 
     Only channels already in the index are stored. Targets are matched by handle in a single
@@ -595,7 +620,9 @@ def record_edges(source_handle, target_handles):
     wanted = {h.strip().lower() for h in ([source_handle] + list(target_handles or []))
               if h and h.strip()}
     wanted = {h if h.startswith("@") else "@" + h for h in wanted}
-    if len(wanted) < 2:
+    # Video ids are a second source of targets, resolved further down, so their presence is
+    # reason enough to continue even when no handle was readable from the page.
+    if len(wanted) < 2 and not video_ids:
         return {"ok": True, "edges": 0, "reason": "nothing to record"}
 
     # customUrl comes back lowercased from the API, so that is how handles are stored; the
@@ -619,6 +646,27 @@ def record_edges(source_handle, target_handles):
         # The channel being watched is not indexed yet, so there is nothing to hang edges on.
         return {"ok": True, "edges": 0, "reason": "source not indexed"}
     targets = [i for h, i in by_handle.items() if i != src]
+
+    if video_ids:
+        from_videos = channels_for_videos(video_ids)
+        from_videos.discard(src)
+        if from_videos:
+            # Only those already indexed: an edge to a channel the ranker can never return is
+            # worth nothing, and resolving the rest would cost a unit each.
+            known = set()
+            quoted = ",".join('"%s"' % c.replace('"', "") for c in list(from_videos)[:50])
+            try:
+                req2 = urllib.request.Request(
+                    SUPABASE_URL + "/rest/v1/channels?select=id&id=in.(" +
+                    urllib.parse.quote(quoted) + ")",
+                    headers={"apikey": SUPABASE_KEY,
+                             "Authorization": "Bearer " + SUPABASE_KEY})
+                with urllib.request.urlopen(req2, timeout=20) as res2:
+                    known = {r["id"] for r in json.loads(res2.read().decode("utf-8", "replace"))}
+            except Exception as e:
+                print("  edge target lookup failed: %s: %s" % (type(e).__name__, e), flush=True)
+            targets = list(set(targets) | (known - {src}))
+
     if not targets:
         return {"ok": True, "edges": 0, "reason": "no indexed targets"}
 
@@ -1095,7 +1143,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"ok": False, "reason": "channel index not configured"})
                 return
             self._send(200, record_edges(str(body.get("source") or ""),
-                                         body.get("targets") or []))
+                                         body.get("targets") or [],
+                                         body.get("videos") or []))
             return
 
         if path == "/ingest":
