@@ -30,6 +30,7 @@ sys.dont_write_bytecode = True
 import base64
 import importlib.util
 import json
+import math
 from datetime import datetime, timezone
 import os
 import re
@@ -135,6 +136,108 @@ def indexed_channel(handle):
             print("  indexed_channel(%s) attempt %d failed: %s: %s"
                   % (handle, attempt, type(e).__name__, e), flush=True)
     return None
+
+
+# ─── niche RPM ───────────────────────────────────────────────────────────────
+
+# Reference RPMs by niche, in US dollars per thousand monetised views on long-form video.
+#
+# These are the midpoints of ranges reported publicly by creators, not measured figures, and
+# they are the weakest part of any earnings estimate. Audience geography moves RPM further
+# than niche does — a US-heavy finance channel and an India-heavy one sit several times apart
+# inside this same row — so the number is a scale, not a prediction. The extension already
+# says so where it shows it.
+#
+# The description is what gets embedded. It is written as the channel would describe itself,
+# because that is what it is matched against.
+NICHES = [
+    ("Personal finance", 16.0, "investing, stocks, saving money, personal finance, budgeting, retirement, credit"),
+    ("Business and entrepreneurship", 14.0, "starting a business, entrepreneurship, startups, ecommerce, dropshipping, making money online"),
+    ("Real estate", 15.0, "real estate investing, property, mortgages, landlords, house buying"),
+    ("Insurance and legal", 20.0, "insurance, lawyers, legal advice, claims, attorneys, court"),
+    ("Digital marketing", 13.0, "digital marketing, SEO, advertising, agency, social media growth, email marketing"),
+    ("Software and tech reviews", 9.0, "software tutorials, tech reviews, gadgets, computers, phones, programming, AI tools"),
+    ("Home improvement and DIY", 8.5, "home improvement, DIY projects, woodworking, renovation, tools, construction"),
+    ("Automotive", 8.0, "cars, car reviews, automotive repair, motorcycles, driving, vehicles"),
+    ("Beauty and fashion", 7.5, "beauty, makeup, skincare, fashion, style, hair, outfits"),
+    ("Health and fitness", 7.5, "fitness, workouts, nutrition, weight loss, health, medical, wellness"),
+    ("Education and how-to", 7.0, "education, tutorials, teaching, courses, study, language learning, science explained"),
+    ("Self-improvement", 6.5, "motivation, self improvement, productivity, discipline, mindset, psychology"),
+    ("Documentary and history", 6.0, "documentary, history, investigations, deep dives, analysis, explained"),
+    ("True crime", 6.0, "true crime, murder cases, criminal investigations, court cases, mysteries, disappearances"),
+    ("Food and cooking", 6.0, "cooking, recipes, food, baking, restaurants, kitchen"),
+    ("Travel", 5.5, "travel, destinations, hotels, flights, backpacking, tourism"),
+    ("Relationships and dating", 5.0, "relationships, dating, marriage, advice, family life"),
+    ("News and politics", 5.0, "news, politics, current affairs, commentary, debate, elections"),
+    ("Sports", 4.5, "sports, football, basketball, MMA, highlights, athletes, matches"),
+    ("Aviation and transport", 5.0, "aviation, aircraft, air crash investigation, trains, ships, transport"),
+    ("Science and space", 5.0, "science, space, astronomy, physics, engineering, nature documentaries"),
+    ("Pets and animals", 4.0, "pets, dogs, cats, animals, wildlife, aquariums"),
+    ("Comedy and entertainment", 3.5, "comedy, sketches, entertainment, reactions, pranks, challenges, vlogs"),
+    ("Gaming", 3.0, "gaming, gameplay, walkthrough, minecraft, fortnite, esports, streamers"),
+    ("Anime and animation", 2.5, "anime, manga, animation, cartoons, recaps, storytelling"),
+    ("Music", 2.5, "music, songs, covers, instrumentals, playlists, artists"),
+    ("Kids and family", 2.5, "kids, children, nursery rhymes, family friendly, toys, cartoons for children"),
+    ("Relaxation and ASMR", 2.0, "asmr, relaxing sounds, sleep, meditation, ambient, white noise"),
+]
+
+NICHE_TEMP = 0.02          # see niche_for: the useful gaps between niches are hundredths
+_niche_vectors = None
+
+
+def niche_vectors():
+    """Embedded once per process. Twenty-eight short strings is a single batch, so a restart
+    costs one API call and nothing thereafter."""
+    global _niche_vectors
+    if _niche_vectors is None:
+        vecs = embed_many([("%s. %s" % (n, d)) for n, _, d in NICHES])
+        if not vecs or len(vecs) != len(NICHES):
+            return None
+        _niche_vectors = vecs
+    return _niche_vectors
+
+
+def _cosine(a, b):
+    dot = num = 0.0
+    den = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        num += x * x
+        den += y * y
+    if num <= 0 or den <= 0:
+        return 0.0
+    return dot / ((num ** 0.5) * (den ** 0.5))
+
+
+def niche_for(vector, top=2):
+    """The closest niches, and an RPM blended between them by how close each one is.
+
+    Two rather than one, because a channel rarely sits inside a single label — an aviation
+    documentary channel is part aviation and part documentary, and averaging the two is
+    closer to the truth than forcing a choice between them.
+    """
+    vecs = niche_vectors()
+    if not vecs or not vector:
+        return None
+    scored = sorted(
+        ((_cosine(vector, v), NICHES[i]) for i, v in enumerate(vecs)),
+        key=lambda pair: pair[0], reverse=True)[:max(1, top)]
+
+    # Softmax rather than raw cosine. Every niche scores between about 0.40 and 0.52 against
+    # any channel, so weighting by the score directly gives a plainly wrong runner-up almost
+    # equal say — UFC came out half Sports and half Anime. The temperature is small because
+    # the gaps that matter here are hundredths: a 0.05 lead leaves the second niche about a
+    # quarter of the weight, and a near-tie still blends, which is the case blending is for.
+    best = scored[0][0]
+    weights = [math.exp((sc - best) / NICHE_TEMP) for sc, _ in scored]
+    total = sum(weights) or 1.0
+    rpm = sum(w * n[1] for w, (_, n) in zip(weights, scored)) / total
+    return {
+        "niche": scored[0][1][0],
+        "also": [n[0] for _, n in scored[1:]],
+        "confidence": round(scored[0][0], 3),
+        "rpm": round(rpm, 2)
+    }
 
 
 def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity, channel_id=None):
@@ -1288,6 +1391,46 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"ok": False, "reason": "unknown preset"})
                 return
             self._send(200, start_crawl(presets[preset]))
+            return
+
+        if path == "/niche":
+            if not INDEX_READY:
+                self._send(200, {"ok": False, "reason": "channel index not configured"})
+                return
+            handle = str(body.get("channel") or "").strip()
+            if handle and not handle.startswith("@"):
+                handle = "@" + handle
+            # The stored vector when the channel is indexed, which is the whole advantage of
+            # having an index: it was built from the title, description and recent video
+            # titles together, where a single video title is thin and often misleading.
+            vector = None
+            known = indexed_channel(handle) if handle else None
+            if known:
+                raw = known.get("embedding")
+                if isinstance(raw, str):
+                    try:
+                        vector = json.loads(raw)
+                    except ValueError:
+                        vector = None
+                elif isinstance(raw, list):
+                    vector = raw
+            if vector is None:
+                text = "\n".join(str(x) for x in [
+                    body.get("title") or "",
+                    clean_description(body.get("about"))[:800],
+                    " \u00b7 ".join([str(t) for t in (body.get("videoTitles") or [])][:10]),
+                ] if x)
+                if not text.strip():
+                    self._send(200, {"ok": False, "reason": "nothing to classify"})
+                    return
+                vector = embed(text)
+            out = niche_for(vector)
+            if not out:
+                self._send(200, {"ok": False, "reason": "could not classify"})
+                return
+            out["ok"] = True
+            out["indexed"] = bool(known)
+            self._send(200, out)
             return
 
         if path == "/edges":

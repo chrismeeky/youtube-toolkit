@@ -905,12 +905,20 @@
             : (m.likes || 0).toLocaleString() + ' likes on ' + m.views.toLocaleString() + ' views. Comments are not counted') +
       '</div>' +
       '<div class="ytc-cs__row">' +
-        cell('RPM (assumed)', !m ? dash : m.rpm == null ? 'n/a' : '$' + (Math.round(m.rpm * 100) / 100),
+        /* Named by niche once the index has classified the channel, because "RPM (assumed)"
+           invites the question "assumed from what". */
+        cell(m && m.nicheLabel ? 'RPM (' + m.nicheLabel.toLowerCase() + ')' : 'RPM (assumed)',
+          !m ? dash : m.rpm == null ? 'n/a' : '$' + (Math.round(m.rpm * 100) / 100),
           !m ? 'Reading video data'
             : m.rpm == null
               ? 'Shorts are paid from a separate ad-share pool, not a long-form RPM'
-              : 'Assumed rate for a video ' + m.length.label + '. Base band $' + F.RPM_LOW +
-                '-$' + F.RPM_HIGH + ', scaled for length. Real RPM is private to the channel' +
+              : (m.nicheLabel
+                  ? 'Reference rate for ' + m.nicheLabel + ', scaled for a video ' +
+                    m.length.label + '. Matched from what the channel publishes'
+                  : 'Assumed rate for a video ' + m.length.label + '. Base band $' + F.RPM_LOW +
+                    '-$' + F.RPM_HIGH + ', scaled for length') +
+                '. Real RPM is private to the channel, and audience country moves it further ' +
+                'than niche does' +
                 (m.category ? '. Category: ' + m.category : '')) +
         cell('Est. earnings',
           !m ? dash : m.earnings == null ? dash : F.formatMoney(m.earnings.mid),
@@ -945,13 +953,45 @@
     cardState.metrics = null;
   }
 
+  /* The channel's niche rate, once the index has classified it. Held for the current channel
+     only, so a soft navigation to a different channel cannot price this video at the last
+     one's rate. */
+  const nicheState = { key: '', rpm: 0, label: '' };
+
   function renderMetrics(card, stats, videoId) {
     trackCardVideo(videoId);
-    const m = F.videoMetrics(stats, Date.now());
+    const m = F.videoMetrics(stats, Date.now(), nicheState.rpm);
     // Only overwrite on success: a read that came back empty should leave a card that is
     // already showing this video's numbers alone rather than removing it.
-    if (m) cardState.metrics = m;
+    if (m) {
+      m.nicheLabel = nicheState.rpm > 0 ? nicheState.label : '';
+      cardState.metrics = m;
+    }
     renderStatsCard();
+
+    /* Asked once per channel and cached for a month in the service worker. When it lands the
+       card is drawn again, because the first draw used the flat rate. */
+    const key = (stats && stats.channelHandle) || '';
+    if (!key || !settings.showStats || nicheState.key === key) return;
+    nicheState.key = key;
+    nicheState.rpm = 0;
+    nicheState.label = '';
+    /* The video's title, only as a fallback for a channel the index has not classified yet.
+       One title is a thin signal — the point of asking the index is that its vector was built
+       from the channel's description and many titles together — but it beats no answer, and
+       visiting the page indexes the channel for next time anyway. */
+    const opts = { videoTitles: [findTitle(card) || ''].filter(Boolean) };
+    sendMessage({ type: 'ytc-niche', key, opts }, (res) => {
+      if (chrome.runtime.lastError || !res || !res.ok || nicheState.key !== key) return;
+      nicheState.rpm = Number(res.rpm) || 0;
+      nicheState.label = res.niche || '';
+      const again = F.videoMetrics(stats, Date.now(), nicheState.rpm);
+      if (again) {
+        again.nicheLabel = nicheState.label;
+        cardState.metrics = again;
+        renderStatsCard();
+      }
+    });
   }
 
   /* Likes as rendered on the page. Abbreviated ("32K") and localised, so this is a fallback

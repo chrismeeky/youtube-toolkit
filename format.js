@@ -558,13 +558,20 @@
     return { band: 'midroll', factor: 1, label: '8 min or longer, mid-rolls' };
   }
 
-  function videoMetrics(stats, now) {
+  /* nicheRpm, when the index has classified the channel, replaces the flat mid rate. The
+     band around it is kept proportional to the default one — the uncertainty does not shrink
+     because the niche is known, since audience geography moves RPM further than niche does.
+     Without it the old flat rate applies and nothing changes. */
+  function videoMetrics(stats, now, nicheRpm) {
     if (!stats || !stats.views) return null;
     const views = stats.views;
     const at = stats.publishDate ? new Date(stats.publishDate).getTime() : NaN;
     const hours = isNaN(at) ? null : Math.max(1, (asMillis(now) - at) / 3600000);
     const len = lengthBand(stats);
     const per = (rpm) => (views / 1000) * rpm * len.factor;
+    const mid = nicheRpm > 0 ? nicheRpm : RPM_MID;
+    const low = mid * (RPM_LOW / RPM_MID);
+    const high = mid * (RPM_HIGH / RPM_MID);
     return {
       views,
       approx: stats.approx === true,
@@ -575,8 +582,9 @@
       // Below 1/hr the number is noise, and NextLev blanks it too.
       vph: hours ? views / hours : null,
       engagement: stats.likes != null && views > 0 ? (stats.likes / views) * 100 : null,
-      rpm: len.factor === 0 ? null : RPM_MID * len.factor,
-      earnings: len.factor === 0 ? null : { low: per(RPM_LOW), mid: per(RPM_MID), high: per(RPM_HIGH) }
+      rpm: len.factor === 0 ? null : mid * len.factor,
+      rpmSource: nicheRpm > 0 ? 'niche' : 'default',
+      earnings: len.factor === 0 ? null : { low: per(low), mid: per(mid), high: per(high) }
     };
   }
 

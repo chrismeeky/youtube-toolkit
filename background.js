@@ -618,6 +618,46 @@ function pushToIndex(base, pairs) {
   }).catch(() => { /* the answer above is unaffected */ });
 }
 
+const TTL_NICHE = 30 * 24 * 60 * 60 * 1000;   // a channel's subject does not drift weekly
+
+async function getNiche(key, opts) {
+  const id = 'niche:' + key;
+  const store = await chrome.storage.local.get(id);
+  const hit = store[id];
+  if (hit && hit.v === CACHE_VERSION && Date.now() - hit.t <= TTL_NICHE) return hit;
+
+  const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+  if (!base) return { ok: false, reason: 'no index' };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90000);
+  try {
+    const res = await fetch(base.replace(/\/$/, '') + '/niche', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel: key,
+        title: opts.title || '',
+        about: opts.about || '',
+        videoTitles: (opts.videoTitles || opts.titles || []).slice(0, 10)
+      }),
+      signal: controller.signal
+    });
+    if (!res.ok) return { ok: false, reason: 'niche ' + res.status };
+    const out = await res.json();
+    if (out && out.ok) {
+      const entry = Object.assign({}, out, { t: Date.now(), v: CACHE_VERSION });
+      await chrome.storage.local.set({ [id]: entry });
+      return entry;
+    }
+    return out || { ok: false };
+  } catch (e) {
+    return { ok: false, reason: 'niche unreachable' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function getSimilarChannels(key, titles, about, force, opts) {
   // Baked in at build time. Users were never in a position to know this value, and asking
   // them for it in the popup made an internal detail look like a setting.
@@ -806,6 +846,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg.type === 'ytc-expand' && msg.key) {
     expandNiche(msg.key, msg.videos || [])
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+  /* Cached hard: a channel's niche does not change between videos, and the classification is
+     the same vector comparison every time. */
+  if (msg.type === 'ytc-niche' && msg.key) {
+    getNiche(msg.key, msg.opts || {})
       .then(sendResponse)
       .catch(() => sendResponse({ ok: false }));
     return true;
