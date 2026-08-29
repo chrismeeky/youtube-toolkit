@@ -18,90 +18,112 @@ YouTube channels and videos.
 
 ## Short description (132 char limit)
 
-> Copy video details as text, plus outlier scores, views/hour, earnings estimates,
-> monetization status and similar channels.
+> Free YouTube niche research. Find similar channels, filter results by size and outlier
+> score, and read any channel's analytics.
 
 ## Detailed description
 
-Free YouTube channel and video research, on the page you are already looking at.
-There is no account to create and no subscription to buy.
+Free YouTube niche research, on the page you are already looking at. There is
+no account to create and no subscription to buy.
 
-Nothing here is held back behind a sign-up or an upgrade prompt. Install it and
+Nothing is held back behind a sign-up or an upgrade prompt. Install it and
 everything described below works straight away, for as long as you use it.
 
-WHAT IT DOES
+FIND THE CHANNELS YOU ARE COMPETING WITH
 
-• Copy the details of any video as clean text. You choose which parts you want
-  and how they are laid out.
+Open any channel and a Similar Channels tab lists the ones like it, ranked by
+how closely they match. Each row shows how large the channel is, how many
+views its videos average, how far it reaches past its own subscriber count,
+how often it posts, how old it is and when it last uploaded.
 
-• See how a video performed against its own channel. A video with 1.4M views on
-  a channel that averages 1.5M is not a hit; it is a normal day. The outlier
-  score tells you which videos actually broke out.
+Sort by any of those, or narrow the list to the channels worth finding:
+the ones overperforming their size, the ones with small followings and large
+view counts, the recent arrivals already doing big numbers, or simply
+everything smaller than the channel you are on.
 
-• See how far a channel reaches beyond its own audience. On a channel page it
-  compares the channel's average views with how many subscribers it has, so a
-  channel punching well above its size is obvious at a glance.
+That last one is the point of the whole thing. A search shows you the biggest
+channels in a subject. This shows you the ones just below them, including
+channels with a few hundred subscribers that no search result would ever
+surface.
 
-• Watch how fast a video is moving. Views per hour sit on the thumbnail, and the
-  watch page adds an engagement rate and a rough earnings estimate.
+TURN A SEARCH INTO A SHORTLIST
 
-• Check whether a channel is earning. Each channel and video card shows whether
-  ads appear to be running on recent videos, whether they do not, or whether the
-  channel is still under the subscriber requirement that allows them.
+Search YouTube for a subject and scroll as far as you care to. The Filter
+button in the header then takes everything the page has loaded and lets you
+narrow it down. Set a range for how many subscribers a channel has or how
+many views a video got, choose how recently it went up, or keep only long
+form or only shorts. Sort by whichever of those matters.
 
-• Find channels like the one you are viewing. A tab on any channel page lists
-  them with the numbers that matter for comparison: how large each one is, how
-  many views its videos average, how often it posts, how old it is and when it
-  last uploaded. Sort by any of those, or narrow the list to channels
-  overperforming their size, channels with small followings and large view
-  counts, recent channels already doing big numbers, or channels smaller than
-  the one you are on.
+YouTube cannot sort its own results by how big a channel is, or by how a video
+did against that channel's average. This can, and it does it instantly,
+because every figure was already on the page.
 
-• Take a transcript in one click. Copy it or save it as a file, with timestamps
-  or without.
+READ A CHANNEL BEFORE YOU COMMIT TO ITS NICHE
 
-• See subscriber counts on thumbnails as you browse the feed, search results and
-  the sidebar.
+An Analytics tab on any channel estimates what it earns and shows what it
+publishes. You get the views its recent uploads have taken and what those
+are worth at the reference rate for its subject. You get how its long-form
+views compare with its shorts. You get how often it posts and how long its
+videos run, how old the channel is, and what an average video does on it.
 
-• Download any thumbnail at the best resolution available.
+JUDGE A VIDEO AT A GLANCE
 
-• Select several videos at once and copy them together. Alt+Shift+S turns
-  selection on and Alt+Shift+C copies what you have picked.
+Every thumbnail carries an outlier score, which compares a video's views with
+its own channel's average. A video with 1.4M views on a channel that averages
+1.5M is not a hit; it is a normal day. Views per hour sits beside it, and on a
+watch page you also get engagement rate and an earnings estimate.
 
-HOW IT COPIES
+A monetization badge reads recent videos for advertising slots and reports
+whether ads appear to be running. Hover it and you get the breakdown: not just
+whether the channel earns, but how. It separates advertising from sponsorship
+deals, from affiliate links, from products it sells and from viewer donations,
+and shows you the line in the description that each one was read from.
 
-Copy as plain text, or as a bulleted or numbered list. There is a Markdown
-option for pasting into documents and a CSV option for spreadsheets, and JSON if
-you are feeding the output into something else. If none of those suit you, write
-your own template and it will follow it.
+MORE FEATURES
+
+Copy the details of any video as clean text. You choose which parts you want
+and how they are laid out. Copy as plain text, or as a bulleted or numbered
+list. There is a Markdown option for pasting into documents and a CSV option
+for spreadsheets, and JSON if you are feeding the output into something else.
+If none of those suit you, write your own template and it will follow it.
 
 View counts can come out the way YouTube shows them (271K) or as whole numbers
-for sorting (271,000). Dates can stay relative the way the page displays them or
-become calendar dates.
+for sorting (271,000), and dates can stay relative or become calendar dates.
+
+Take a transcript in one click, copied or saved as a file, with timestamps or
+without. Download any thumbnail at the best resolution available. See
+subscriber counts on thumbnails as you browse. Select several videos at once
+and copy them together, with Alt+Shift+S to turn selection on and Alt+Shift+C
+to copy what you have picked.
 
 HONEST ABOUT ESTIMATES
 
-The earnings figure is a view count multiplied by an assumed rate, adjusted for
-video length. Real rates are private to each channel and no extension can read
-them, so treat the number as a sense of scale rather than as revenue. Shorts
-show no estimate at all, because they are paid from a different pool.
+The earnings figure is a view count multiplied by a reference rate for the
+channel's subject, adjusted for video length and for the time of year, since
+advertising is dearer in December than in January. Real rates are private to
+each channel and no extension can read them. Audience country moves them
+further than subject does, and that is not something a public page reveals, so
+treat the number as a sense of scale rather than as revenue. Shorts show no
+estimate at all, because they are paid from a different pool.
 
 Monetization is inferred from whether recent videos carry advertising slots.
-YouTube also runs ads on channels that are not monetized and keeps that revenue,
-so the badge is an estimate rather than a status. Hover it to see how many
-videos were checked. The one exception is a channel below 1,000 subscribers,
-which cannot run its own ads at all — that is a fact rather than a guess.
+YouTube also runs ads on channels that are not monetized and keeps that
+revenue, so the badge is an estimate rather than a status. Hover it to see how
+many videos were checked. The one exception is a channel below 1,000
+subscribers, which cannot run its own ads at all, and that is a fact rather
+than a guess.
 
 Similar channels are ranked by how a channel describes itself and titles its
-videos, and by which channels YouTube recommends alongside it. When the matches
-are weak the panel says so, rather than presenting a thin result as a strong one.
+videos, and by which channels YouTube recommends alongside it. When the
+matches are weak the panel says so, rather than presenting a thin result as a
+strong one.
 
 WHAT LEAVES YOUR BROWSER
 
 There are no accounts and no sign-in. Nothing is tracked and no analytics are
 collected. Nothing is ever sold or shared. Your settings stay in your browser,
-and free does not mean you are the product here — there is no account for
-anything to be attached to.
+and free does not mean you are the product here, because there is no account
+for anything to be attached to.
 
 To produce its figures the extension reads the page you are on and requests
 YouTube pages in the background. It reads channel pages and watch pages for
@@ -109,12 +131,12 @@ subscriber counts and advertising slots, and search results when it is looking
 for related channels. Those requests go to YouTube and nowhere else, and carry
 no account credentials.
 
-Finding similar channels relies on a shared index of public channel information.
-While that feature is switched on, the extension tells the index which channel
-page you have opened and which channels YouTube recommended beside a video you
-watched, so it can learn which channels resemble one another. No account
-identifier and no viewing history is sent, and the index holds relationships
-between channels rather than anything about people.
+Finding similar channels relies on a shared index of public channel
+information. While that feature is switched on, the extension tells the index
+which channel page you have opened and which channels YouTube recommended
+beside a video you watched, so it can learn which channels resemble one
+another. No account identifier and no viewing history is sent, and the index
+holds relationships between channels rather than anything about people.
 
 Switching "Similar Channels" off in the popup stops all of that.
 
