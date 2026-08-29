@@ -969,6 +969,86 @@ def channels_for_videos(video_ids):
     return out
 
 
+def channel_videos(handle, channel_id=None, want=50):
+    """A channel's recent uploads with durations and view counts, through the API.
+
+    The first version of this scraped the channel's videos grid from the browser. That was
+    wrong twice over: the markup moved from videoId renderers to lockupViewModel and the
+    parser silently returned nothing, and YouTube rate-limits the fetch anyway. The API costs
+    two quota units for fifty videos, cannot be rate-limited by IP, and returns the durations
+    the grid only renders as text.
+    """
+    if not YT_KEY:
+        return {"ok": False, "reason": "no youtube key"}
+
+    cid = channel_id
+    if not cid:
+        row = indexed_channel(handle)
+        cid = row.get("id") if row else None
+    if not cid:
+        found = resolve_handles([handle])
+        cid = found.get(handle if handle.startswith("@") else "@" + handle)
+    if not cid:
+        return {"ok": False, "reason": "unknown channel"}
+
+    records = fetch_channel_records([cid])
+    ch = records.get(cid)
+    uploads = (((ch or {}).get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads")
+    if not uploads:
+        return {"ok": False, "reason": "no uploads playlist"}
+
+    url = ("%s/playlistItems?part=snippet&playlistId=%s&maxResults=%d&key=%s"
+           % (YT_API, uploads, min(50, want), YT_KEY))
+    try:
+        listing = _get_json(url)
+    except Exception as e:
+        return {"ok": False, "reason": "%s: %s" % (type(e).__name__, e)}
+
+    order, meta = [], {}
+    for item in listing.get("items") or []:
+        snip = item.get("snippet") or {}
+        vid = ((snip.get("resourceId") or {}).get("videoId") or "").strip()
+        if not vid:
+            continue
+        order.append(vid)
+        meta[vid] = {"id": vid, "title": snip.get("title") or "",
+                     "publishedAt": snip.get("publishedAt") or ""}
+    if not order:
+        return {"ok": True, "videos": []}
+
+    # Durations and view counts, fifty per unit.
+    url2 = ("%s/videos?part=contentDetails,statistics&id=%s&maxResults=50&key=%s"
+            % (YT_API, ",".join(order[:50]), YT_KEY))
+    try:
+        detail = _get_json(url2)
+    except Exception as e:
+        print("  channel_videos detail failed: %s: %s" % (type(e).__name__, e), flush=True)
+        detail = {}
+    for item in detail.get("items") or []:
+        row = meta.get(item.get("id"))
+        if not row:
+            continue
+        row["seconds"] = _iso_duration_seconds(
+            ((item.get("contentDetails") or {}).get("duration") or ""))
+        stats = item.get("statistics") or {}
+        try:
+            row["views"] = int(stats.get("viewCount"))
+        except (TypeError, ValueError):
+            row["views"] = None
+
+    return {"ok": True, "videos": [meta[v] for v in order if v in meta]}
+
+
+def _iso_duration_seconds(iso):
+    """PT20M36S -> 1236. The API reports duration only in this form."""
+    m = re.match(r"^P(?:\d+D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$", iso or "")
+    if not m:
+        return None
+    h, mi, se = (int(g) if g else 0 for g in m.groups())
+    total = h * 3600 + mi * 60 + se
+    return total or None
+
+
 def record_edges(source_handle, target_handles, video_ids=None, source_id=None):
     """Store co-recommendation edges the extension observed on a watch page.
 
@@ -1518,6 +1598,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"ok": False, "reason": "unknown preset"})
                 return
             self._send(200, start_crawl(presets[preset]))
+            return
+
+        if path == "/videos":
+            handle = str(body.get("channel") or "").strip()
+            if handle and not handle.startswith("@"):
+                handle = "@" + handle
+            self._send(200, channel_videos(handle, str(body.get("channelId") or "") or None))
             return
 
         if path == "/niche":

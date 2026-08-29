@@ -66,7 +66,7 @@ const GAP_MS = 150;
 /* Bump whenever a cached value's MEANING changes, not just its shape. Similar-channel
    results are cached for a week, so six rounds of query fixes were invisible to anyone who
    had already opened the panel once — they kept seeing results built by the old logic. */
-const CACHE_VERSION = 13; // analytics cached under 12 hold an empty video list
+const CACHE_VERSION = 14; // analytics now sourced from the API, not the videos grid
 
 const MAX_BYTES = 3000000;      // some channel pages bury the count deep in ytInitialData
 /* The /about cap is its own number because the lifetime totals sit at the very END of the
@@ -634,11 +634,37 @@ async function getAnalytics(key, force) {
 
   const [subs, niche] = await Promise.all([getSubscribers(key), getNiche(key, {})]);
 
-  // The channel's own videos tab: durations, recent view counts and whether it posts shorts.
+  /* The channel's uploads through the index service, which holds the API key. Scraping the
+     videos grid was tried first and failed twice: the markup moved to a renderer the parser
+     did not know, and the fetch is rate-limited by IP in any case. Two quota units returns
+     durations the grid only renders as text. */
   let videos = [];
-  const html = await schedule(() => channelVideosPage(key));
-  if (html) videos = F.channelVideosFromHtml(html);
-  noteResult(!!html);
+  let videosOk = false;
+  const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+  if (base) {
+    try {
+      const res = await fetch(base.replace(/\/$/, '') + '/videos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel: key })
+      });
+      if (res.ok) {
+        const out = await res.json();
+        if (out && out.ok) {
+          videosOk = true;
+          videos = (out.videos || []).map((v) => ({
+            id: v.id,
+            title: v.title || '',
+            seconds: v.seconds || null,
+            views: v.views == null ? null : v.views,
+            publishedAt: v.publishedAt || '',
+            // The API has no shorts flag. Under a minute is the practical test.
+            shorts: !!v.seconds && v.seconds <= 60
+          }));
+        }
+      }
+    } catch (e) { /* leave videosOk false; the panel says so */ }
+  }
 
   const entry = {
     ok: true,
@@ -646,41 +672,12 @@ async function getAnalytics(key, force) {
     stats: (subs && subs.stats) || null,
     niche: niche && niche.ok ? { label: niche.niche, rpm: niche.rpm, z: niche.z } : null,
     videos: videos.slice(0, 60),
+    videosOk: videosOk,
     t: Date.now(),
     v: CACHE_VERSION
   };
   await chrome.storage.local.set({ [id]: entry });
   return entry;
-}
-
-/* The videos tab, read only as far as the listing. */
-async function channelVideosPage(key) {
-  const url = 'https://www.youtube.com/' + channelPath(key) + '/videos?hl=en';
-  let res;
-  try {
-    res = await fetch(url, { credentials: 'include', headers: { 'Accept-Language': 'en' } });
-  } catch (e) {
-    return null;
-  }
-  if (!res.ok || !res.body) return null;
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  let read = 0;
-  try {
-    while (read < SIM_BYTES) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      read += value.length;
-      buf += decoder.decode(value, { stream: true });
-      if (buf.indexOf('ytInitialData') >= 0 && read > 900000) break;
-    }
-  } catch (e) {
-    return null;
-  } finally {
-    try { await reader.cancel(); } catch (e) { /* already closed */ }
-  }
-  return buf;
 }
 
 const TTL_NICHE = 30 * 24 * 60 * 60 * 1000;   // a channel's subject does not drift weekly

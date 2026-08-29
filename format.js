@@ -993,64 +993,6 @@
      YouTube API takes. Discovery has to happen here rather than on the server, because a
      server scraping YouTube search gets the bot interstitial — the extension is on a
      residential connection, which is the only reason this works at all. */
-  /* Videos listed on a channel's own page, read out of the payload rather than the rendered
-     DOM so one background fetch answers instead of asking the user to scroll.
-
-     Two shapes, because YouTube is midway through replacing one with the other. The classic
-     renderers carry videoId with lengthText, viewCountText and publishedTimeText; the newer
-     lockupViewModel carries contentId with the same three facts under content and text keys
-     nested differently. Both are matched by anchoring on the id and reading a bounded
-     distance forward — the fields belong to that renderer, and scanning further would pick up
-     the next video's. */
-  function channelVideosFromHtml(html) {
-    if (!html) return [];
-    const out = [];
-    const seen = new Set();
-    const re = /"(?:videoId|contentId)":"([\w-]{11})"([\s\S]{0,1500}?)(?="(?:videoId|contentId)":"|$)/g;
-    let m;
-    while ((m = re.exec(html)) && out.length < 200) {
-      const id = m[1];
-      if (seen.has(id)) continue;
-      const chunk = m[2];
-      const grab = (rx) => { const g = rx.exec(chunk); return g ? g[1] : ''; };
-
-      /* Matched on the value's own shape rather than on the key that happens to hold it:
-         "12:04" is a duration wherever it appears in this window, "457K views" is a view
-         count, and "6 months ago" is a date. That survives the key being renamed again. */
-      const lengthText = grab(/"(?:simpleText|text|content)":"(\d{1,3}:\d{2}(?::\d{2})?)"/);
-      const views = grab(/"(?:simpleText|text|content)":"([\d.,]+[KMB]? views?)"/i) ||
-                    grab(/"(?:simpleText|text|content)":"(No views)"/i);
-      const ago = grab(/"(?:simpleText|text|content)":"((?:\d+|a|an)\s+\w+\s+ago)"/i) ||
-                  grab(/"(?:simpleText|text|content)":"(Streamed[^"]{0,30}ago)"/i);
-      const title = grab(/"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"/) ||
-                    grab(/"title":\{"(?:simpleText|content)":"((?:[^"\\]|\\.)*)"/);
-
-      // Nothing measurable in the window: a thumbnail reference, not a listed video.
-      if (!lengthText && !views && !ago) continue;
-      seen.add(id);
-      out.push({
-        id: id,
-        title: title ? title.replace(/\\"/g, '"') : '',
-        seconds: durationToSeconds(lengthText),
-        views: viewsToNumber(views),
-        ago: ago || '',
-        /* A short has no duration badge in either shape, and its own reel endpoint in both.
-           Length is the surer test: the badge is present on every long-form entry. */
-        shorts: /reelWatchEndpoint|\/shorts\//.test(chunk) || (!lengthText && !!views)
-      });
-    }
-    return out;
-  }
-
-  function durationToSeconds(text) {
-    if (!text) return null;
-    const parts = String(text).split(':').map((p) => parseInt(p, 10));
-    if (parts.some(isNaN)) return null;
-    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-    if (parts.length === 2) return parts[0] * 60 + parts[1];
-    return null;
-  }
-
   function channelPairsFromSearch(html, depth) {
     if (!html) return [];
     const cut = depth || SEARCH_DEPTH;
@@ -1358,7 +1300,6 @@
     isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken,
     parseChannelStats, adSignalFromHtml, monetizationVerdict, channelPairsFromSearch,
     revenueSignals, revenueSummary, descriptionFromHtml,
-    channelVideosFromHtml, durationToSeconds,
     videoMetrics, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH,
     relativeToDate, vphFromRelative,
     topicQueries, channelsFromSearch, rankSimilar,

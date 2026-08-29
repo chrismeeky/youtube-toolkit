@@ -1664,7 +1664,7 @@
        the last 28 days, which no public page reports — an old video keeps earning and is not
        counted here. Labelled for what it is rather than passed off as the other. */
     const recent = videos.filter((v) => {
-      const d = daysSince(F.relativeToISO(v.ago, Date.now()));
+      const d = daysSince(v.publishedAt);
       return d != null && d <= 28;
     });
     const recentViews = recent.reduce((a, v) => a + (v.views || 0), 0);
@@ -1685,8 +1685,8 @@
       revenue: rpm && recentViews ? (recentViews / 1000) * rpm : null,
       hasShorts: shorts.length > 0,
       longViews, shortViews,
-      lastUpload: videos.length ? videos[0].ago : '',
-      sampled: videos.length
+      lastUpload: videos.length ? agoLabel(videos[0].publishedAt) : '',
+      sampled: res && res.videosOk ? videos.length : 0
     };
   }
 
