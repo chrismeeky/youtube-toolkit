@@ -565,6 +565,90 @@ def _rest_get(path, timeout=20):
     return total, (json.loads(body) if body.strip() else [])
 
 
+# PRIVACY.md is the single source of truth for the policy; this renders it rather than
+# holding a second copy that would drift from it. The file sits at the repository root, which
+# is what a Render checkout deploys — a Docker image built from transcript_service/ alone
+# would not carry it, so a missing file is reported rather than silently served as a blank
+# page. A privacy URL that 404s during review is a rejection.
+PRIVACY_PATHS = [
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "PRIVACY.md"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "PRIVACY.md"),
+]
+
+
+def _md_inline(text):
+    text = (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"<em>\1</em>", text)
+    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
+    return text
+
+
+def privacy_html():
+    """The policy as a page. A deliberately small Markdown subset — headings, lists,
+    paragraphs, tables are not used in it — because pulling in a renderer for one document
+    would be a dependency to keep updated forever."""
+    body = None
+    for path in PRIVACY_PATHS:
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as fh:
+                body = fh.read()
+            break
+    if body is None:
+        return None
+
+    out, in_list = [], False
+    for line in body.split("\n"):
+        line = line.rstrip()
+        if line.startswith("- "):
+            if not in_list:
+                out.append("<ul>")
+                in_list = True
+            out.append("<li>%s</li>" % _md_inline(line[2:]))
+            continue
+        if in_list:
+            out.append("</ul>")
+            in_list = False
+        if not line.strip():
+            continue
+        m = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if m:
+            lvl = len(m.group(1))
+            out.append("<h%d>%s</h%d>" % (lvl, _md_inline(m.group(2)), lvl))
+        else:
+            out.append("<p>%s</p>" % _md_inline(line))
+    if in_list:
+        out.append("</ul>")
+
+    # Concatenated, not %-formatted: the stylesheet contains "90%", which % formatting reads
+    # as a broken conversion and raises.
+    return """<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube Toolkit \u2014 Privacy Policy</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { max-width: 720px; margin: 0 auto; padding: 48px 20px 80px;
+         font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+         color: #1a1a1a; background: #fff; }
+  h1 { font-size: 28px; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 34px 0 10px; }
+  p, li { margin: 10px 0; }
+  ul { padding-left: 22px; }
+  code { background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 4px; font-size: 90%; }
+  a { color: #0b57d0; }
+  em { color: #555; font-style: normal; font-size: 14px; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e8e8e8; background: #121212; }
+    code { background: rgba(255,255,255,.1); }
+    a { color: #8ab4f8; }
+    em { color: #aaa; }
+  }
+</style>
+""" + "\n".join(out) + "\n"
+
+
 def index_stats():
     """Numbers for the dashboard: how big the index is, how much of it has been walked, and
     whether the crawler has run recently."""
@@ -1237,6 +1321,22 @@ class Handler(BaseHTTPRequestHandler):
         # which reads as a failed deploy. This reveals nothing beyond "a server is here".
         if route.path == "/healthz":
             self._send(200, {"ok": True})
+            return
+
+        # Outside the token check, like the health probe. A policy that needs a secret to
+        # read is not a published policy, and the store requires a URL anyone can open.
+        if route.path in ("/privacy", "/privacy.html"):
+            page = privacy_html()
+            if page is None:
+                print("  PRIVACY.md not found at any of %s" % PRIVACY_PATHS, flush=True)
+                self._send(500, {"ok": False, "reason": "policy unavailable"})
+                return
+            raw = page.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
             return
 
         ok, path = self.authorised(route.path, query)
