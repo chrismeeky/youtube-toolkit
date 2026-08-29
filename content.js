@@ -1729,7 +1729,8 @@
       '</div>';
     let facts = '';
     for (let i = 0; i < 10; i++) facts += fact();
-    return '<div class="ytc-an__head"><b>Channel analytics</b></div>' +
+    return '<div class="ytc-an__head"><b>Channel analytics</b>' +
+        '<span class="ytc-an__skel ytc-an__skel--btn"></span></div>' +
       '<div class="ytc-an__top">' + card() + card() + card() + '</div>' +
       '<div class="ytc-an__panel">' +
         '<span class="ytc-an__skel ytc-an__skel--label"></span>' +

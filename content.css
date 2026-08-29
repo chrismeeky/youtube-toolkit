@@ -426,6 +426,7 @@ html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
    out as a centred flex row, so a child sizes to its own content: the loaded table only
    filled the page because names and numbers made it wide, and the skeleton — whose bars are
    percentages, contributing no intrinsic width — collapsed to a narrow centred block. */
+/* Same reason as .ytc-an: fill the column rather than the width of the contents. */
 .ytc-simview {
   padding: 16px 0 32px; font-family: Roboto, Arial, sans-serif;
   width: 100%; box-sizing: border-box;
@@ -884,7 +885,18 @@ html[dark] .ytc-fm__row:hover { background: rgba(255,255,255,.08); }
 .ytc-fm__row .ytc-tools .ytc-btn, .ytc-fm__row .ytc-tools .ytc-thumb { cursor: pointer; }
 
 /* ---- analytics panel ---- */
-.ytc-an { padding: 18px 0 40px; font-family: Roboto, Arial, sans-serif; }
+/* width:100% because this container is shrink-to-fit in YouTube's layout. With figures in it
+   the cards stretch it to full width, but the skeleton has no text — so auto-fit collapsed to
+   a single 220px column and the placeholder looked nothing like what replaced it. */
+/* The same stretch rules Similar Channels needed. This container is shrink-to-fit in
+   YouTube's layout: with figures in it the cards pull it to full width, but the skeleton has
+   no text, so auto-fit collapsed to one 220px column and the placeholder looked nothing like
+   what replaced it. */
+.ytc-an {
+  padding: 18px 0 40px; font-family: Roboto, Arial, sans-serif;
+  width: 100%; box-sizing: border-box;
+  flex: 1 1 auto; align-self: stretch; justify-self: stretch;
+}
 .ytc-an__head {
   display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
   font: 700 18px/1 Roboto, Arial, sans-serif;
@@ -981,6 +993,8 @@ html[dark] .ytc-an__label i, html[dark] .ytc-an__meter { background: rgba(255,25
 .ytc-an__skel--sub   { width: 80%; height: 11px; }
 .ytc-an__skel--fact  { width: 55%; height: 20px; margin-top: 8px; }
 .ytc-an__skel--bar   { width: 100%; height: 8px; margin: 12px 0 10px; border-radius: 4px; }
+/* Stands where the Refresh button will, so the header does not shift when it appears. */
+.ytc-an__skel--btn   { width: 86px; height: 34px; border-radius: 18px; margin-left: auto; }
 @keyframes ytc-an-sweep {
   0%   { background-position: 100% 50%; }
   100% { background-position: 0 50%; }
