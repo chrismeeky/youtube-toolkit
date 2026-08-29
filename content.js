@@ -917,6 +917,13 @@
                     m.length.label + '. Matched from what the channel publishes'
                   : 'Assumed rate for a video ' + m.length.label + '. Base band $' + F.RPM_LOW +
                     '-$' + F.RPM_HIGH + ', scaled for length') +
+                /* Only mentioned when it actually moved the number. A line explaining a
+                   1.02x adjustment is noise; one explaining 1.45x is the difference between
+                   this figure and the one the reader saw last month. */
+                (m.season && Math.abs(m.season - 1) >= 0.05
+                  ? '. Adjusted ' + (Math.round(m.season * 100) / 100) + 'x for the time of ' +
+                    'year: ad rates peak in December and bottom out in January'
+                  : '') +
                 '. Real RPM is private to the channel, and audience country moves it further ' +
                 'than niche does' +
                 (m.category ? '. Category: ' + m.category : '')) +

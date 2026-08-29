@@ -562,13 +562,40 @@
      band around it is kept proportional to the default one — the uncertainty does not shrink
      because the niche is known, since audience geography moves RPM further than niche does.
      Without it the old flat rate applies and nothing changes. */
+  /* Advertising rates swing hard across the year: budgets are spent by December and
+     replenished slowly, so January is the cheapest month to be shown an ad in and December
+     the dearest. The spread between them is wider than the gap between many of the niches
+     above, and unlike geography it is something we can actually see, because the publish
+     date is on the page.
+
+     Normalised so the twelve months average one. The reference rates are annual figures, so
+     a curve averaging anything else would quietly rescale every estimate. */
+  const SEASON = [0.74, 0.79, 0.84, 0.89, 0.95, 1.00,
+                  0.95, 0.95, 1.00, 1.11, 1.32, 1.47];
+
+  /* Faded out as the video ages. A video published last week earns nearly all of it at this
+     month's rates; one published two years ago has collected its views across every month
+     there has been, so the month it happened to go up says nothing. Six months is roughly
+     where the tail stops being dominated by the launch window. */
+  const SEASON_FADE_DAYS = 180;
+
+  function seasonFactor(publishedMs, nowMs) {
+    if (!publishedMs || isNaN(publishedMs)) return 1;
+    const ageDays = Math.max(0, (nowMs - publishedMs) / 86400000);
+    const weight = Math.max(0, Math.min(1, 1 - ageDays / SEASON_FADE_DAYS));
+    if (weight <= 0) return 1;
+    const month = new Date(publishedMs).getMonth();
+    return 1 + (SEASON[month] - 1) * weight;
+  }
+
   function videoMetrics(stats, now, nicheRpm) {
     if (!stats || !stats.views) return null;
     const views = stats.views;
     const at = stats.publishDate ? new Date(stats.publishDate).getTime() : NaN;
     const hours = isNaN(at) ? null : Math.max(1, (asMillis(now) - at) / 3600000);
     const len = lengthBand(stats);
-    const per = (rpm) => (views / 1000) * rpm * len.factor;
+    const season = seasonFactor(at, asMillis(now));
+    const per = (rpm) => (views / 1000) * rpm * len.factor * season;
     const mid = nicheRpm > 0 ? nicheRpm : RPM_MID;
     const low = mid * (RPM_LOW / RPM_MID);
     const high = mid * (RPM_HIGH / RPM_MID);
@@ -582,8 +609,9 @@
       // Below 1/hr the number is noise, and NextLev blanks it too.
       vph: hours ? views / hours : null,
       engagement: stats.likes != null && views > 0 ? (stats.likes / views) * 100 : null,
-      rpm: len.factor === 0 ? null : mid * len.factor,
+      rpm: len.factor === 0 ? null : mid * len.factor * season,
       rpmSource: nicheRpm > 0 ? 'niche' : 'default',
+      season: season,
       earnings: len.factor === 0 ? null : { low: per(low), mid: per(mid), high: per(high) }
     };
   }
