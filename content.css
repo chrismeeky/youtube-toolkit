@@ -841,6 +841,13 @@ html[dark] .ytc-fm__chip.on { background: #f1f1f1; color: #0f0f0f; border-color:
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   font-size: 13px; color: var(--yt-spec-text-secondary, #606060);
 }
+/* Channel age, beside the channel name. Muted: it qualifies the name rather than competing
+   with the badges the card already carries. */
+.ytc-fm__age {
+  padding: 1px 8px; border-radius: 9px; font-size: 12px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.16));
+}
+html[dark] .ytc-fm__age { border-color: rgba(255,255,255,.2); }
 .ytc-fm__subs {
   padding: 1px 8px; border-radius: 9px; font-size: 12px;
   border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.16));
@@ -863,3 +870,8 @@ html[dark] .ytc-fm__row:hover { background: rgba(255,255,255,.08); }
   .ytc-fm__side { flex: 0 0 auto; border-right: 0; border-bottom: 1px solid rgba(0,0,0,.1); }
   .ytc-fm__thumb { width: 120px; height: 68px; }
 }
+
+/* The cloned badge row inside a result. The card lays this out inside a video's text block;
+   here it sits under the channel line, so the card's own margins do not apply. */
+.ytc-fm__row .ytc-tools { margin: 6px 0 0; flex-wrap: wrap; }
+.ytc-fm__row .ytc-tools .ytc-btn, .ytc-fm__row .ytc-tools .ytc-thumb { cursor: pointer; }

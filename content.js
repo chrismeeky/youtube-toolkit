@@ -2500,6 +2500,7 @@
       /* Stamped on the card so the filter can read these back without re-parsing the badges
          it just drew. Every number here was computed to render the badge anyway. */
       card.dataset.ytcSubsN = subsN || '';
+      card.dataset.ytcJoined = (entry.stats && entry.stats.joinedAt) || '';
       card.dataset.ytcViewsN = (viewsN == null ? '' : viewsN);
       card.dataset.ytcDenomN = denom || '';
       if (settings.showRatio && denom > 0 && viewsN != null) {
@@ -2975,7 +2976,22 @@
       };
       const views = num('ytcViewsN');
       const denom = num('ytcDenomN');
+      /* A clone of the row the card already carries, rather than a second implementation of
+         it. Every badge — subscribers, outlier, views per hour — and both buttons come out
+         identical because they are the same markup and the same stylesheet. Ids are stripped
+         so the copy cannot collide with the original still on the page. */
+      let tools = '';
+      const src = card.querySelector('.ytc-tools');
+      if (src) {
+        const clone = src.cloneNode(true);
+        clone.classList.remove('ytc-tools--inline');
+        clone.querySelectorAll('[id]').forEach((n) => n.removeAttribute('id'));
+        clone.querySelectorAll('input').forEach((n) => n.remove());
+        tools = clone.outerHTML;
+      }
       out.push({
+        card: card,
+        tools: tools,
         title: v.title,
         url: v.url,
         channel: v.channel || '',
@@ -2983,6 +2999,10 @@
         subs: num('ytcSubsN'),
         ratio: (views != null && denom) ? views / denom : null,
         ageDays: daysSince(F.relativeToISO(v.date, Date.now())),
+        /* How long the channel has existed, from its about page — already fetched for the
+           subscriber count, so this costs nothing. Absent when the page did not yield it. */
+        chanAge: card.dataset.ytcJoined
+          ? ageLabel(new Date(Number(card.dataset.ytcJoined)).toISOString()) : '',
         /* From the card's own markup. findUrl deliberately rewrites /shorts/ID to
            /watch?v=ID so the two forms of one video compare equal, which meant testing the
            url for "/shorts/" could never match and every short read as long form. */
@@ -3050,12 +3070,8 @@
     document.documentElement.style.overflow = '';
   }
 
-  function filterRow(r) {
-    const shown = r.ratio == null ? null : ratioLabel(r.ratio);
-    const ratio = shown == null ? '' :
-      '<span class="ytc-fm__ratio ytc-ratio--' + ratioTier(shown.value) + '">' +
-      shown.text + '</span>';
-    return '<a class="ytc-fm__row" href="' + escapeHtml(r.url) +
+  function filterRow(r, i) {
+    return '<a class="ytc-fm__row" data-i="' + i + '" href="' + escapeHtml(r.url) +
       '" target="_blank" rel="noopener noreferrer">' +
       (r.thumb ? '<img class="ytc-fm__thumb" src="' + escapeHtml(r.thumb) + '" alt="" loading="lazy">'
                : '<span class="ytc-fm__thumb ytc-fm__thumb--none"></span>') +
@@ -3063,12 +3079,15 @@
         '<span class="ytc-fm__title">' + escapeHtml(r.title) + '</span>' +
         '<span class="ytc-fm__nums">' +
           (r.views == null ? '' : F.compact(r.views) + ' views') +
-          (r.date ? ' \u00b7 ' + escapeHtml(r.date) : '') + ratio +
+          (r.date ? ' \u00b7 ' + escapeHtml(r.date) : '') +
         '</span>' +
         '<span class="ytc-fm__chan">' + escapeHtml(r.channel || '') +
-          (r.subs == null ? '' :
-            '<span class="ytc-fm__subs">' + F.compact(r.subs) + ' subscribers</span>') +
+          (r.chanAge ? '<span class="ytc-fm__age">channel ' + escapeHtml(r.chanAge) +
+            ' old</span>' : '') +
         '</span>' +
+        /* The card's own badge row: subscribers, outlier and views per hour, exactly as they
+           appear on the page, plus Copy and Thumb. */
+        r.tools +
       '</span>' +
     '</a>';
   }
@@ -3082,6 +3101,8 @@
       count.textContent = rows.length + ' of ' + all.length +
         (all.length === 1 ? ' video' : ' videos');
     }
+    // Held so a click on a cloned button can find the card the clone came from.
+    box._rows = rows;
     box.innerHTML = rows.length
       ? rows.map(filterRow).join('')
       : '<p class="ytc-fm__none">Nothing on this page matches. Widen a range, or scroll ' +
@@ -3178,6 +3199,24 @@
     document.body.appendChild(veil);
     document.body.appendChild(modal);
     document.documentElement.style.overflow = 'hidden';
+
+    /* The badge row in each result is a clone, so its buttons carry no handlers — those were
+       bound to the card they were built for. Rather than reimplement copying and thumbnail
+       downloading here, a click is forwarded to the real button on the source card, which
+       already knows how to do both. */
+    modal.querySelector('.ytc-fm__results').addEventListener('click', (e) => {
+      const btn = e.target.closest && e.target.closest('.ytc-btn, .ytc-thumb');
+      if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const row = btn.closest('.ytc-fm__row');
+      const box = modal.querySelector('.ytc-fm__results');
+      const rec = row && box._rows && box._rows[Number(row.dataset.i)];
+      if (!rec || !rec.card || !rec.card.isConnected) return;
+      const cls = btn.classList.contains('ytc-thumb') ? '.ytc-thumb' : '.ytc-btn';
+      const real = rec.card.querySelector('.ytc-tools ' + cls);
+      if (real) real.click();
+    });
     modal.querySelectorAll('.ytc-fm__range').forEach(paintRange);
     paintFilterResults(all);
 

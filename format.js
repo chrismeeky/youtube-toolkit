@@ -1038,7 +1038,18 @@
     const views = viewsToNumber(grab('viewCountText'));
     const videos = viewsToNumber(grab('videoCountText'));
     if (!views || !videos) return null;
-    return { totalViews: views, videoCount: videos, avgViews: Math.round(views / videos) };
+    /* When the channel opened. YouTube has moved this between shapes over the years, so
+       several are tried and a miss simply means the age is not shown — an omitted figure is
+       honest, a guessed one is not. */
+    const joinedRaw = grab('joinedDateText') ||
+      (/Joined\s+([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})/.exec(html) || [])[1] || '';
+    const joinedAt = Date.parse(String(joinedRaw).replace(/^Joined\s+/i, ''));
+    return {
+      totalViews: views,
+      videoCount: videos,
+      avgViews: Math.round(views / videos),
+      joinedAt: isNaN(joinedAt) ? null : joinedAt
+    };
   }
 
   /* An anchored match with no header block around it: good enough to fall back on if the
