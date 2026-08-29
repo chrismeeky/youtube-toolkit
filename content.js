@@ -1931,8 +1931,12 @@
       '<p class="ytc-rev__sub">Based on ' + (res && res.checked ? res.checked : 0) +
         ' sampled ' + ((res && res.checked) === 1 ? 'video' : 'videos') + '.</p>' +
       ads + rows +
-      '<p class="ytc-rev__foot">Read from what the videos disclose. Evidence of a stream, ' +
-        'not a measure of income.</p>';
+      /* The ad-slot caveat used to live in the native tooltip, which the panel now replaces.
+         It is the one thing here a reader can most easily get wrong, so it moves rather than
+         disappearing: a demonetized channel emits the same slots as a monetized one. */
+      '<p class="ytc-rev__foot">Read from what the videos disclose \u2014 evidence of a ' +
+        'stream, not a measure of income. YouTube also runs ads on channels that are not ' +
+        'monetized and keeps that revenue, so ad slots are a signal rather than a status.</p>';
 
     document.body.appendChild(panel);
     const r = anchorEl.getBoundingClientRect();
@@ -2009,11 +2013,16 @@
     } else {
       el.textContent = label.text;
     }
-    el.title = moneyTitle(safe, videoNote) + (retryable ? '. Click to try again' : '');
-
     /* Only the channel-page pill opens the breakdown. The card badge is 18px and already has
        a click meaning when a verdict needs retrying. */
-    if (big && !retryable) {
+    const hasPanel = big && !retryable;
+    /* No native tooltip where the panel exists: the browser draws it over the panel the same
+       hover opened, saying the same thing in a greyer box. Everywhere else it is the only
+       explanation there is. */
+    if (hasPanel) el.removeAttribute('title');
+    else el.title = moneyTitle(safe, videoNote) + (retryable ? '. Click to try again' : '');
+
+    if (hasPanel) {
       el.classList.add('ytc-money--more');
       /* A short delay so passing over the pill on the way somewhere else does not flash the
          panel open. */
