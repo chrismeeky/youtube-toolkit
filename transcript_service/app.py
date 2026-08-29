@@ -151,36 +151,136 @@ def indexed_channel(handle):
 # The description is what gets embedded. It is written as the channel would describe itself,
 # because that is what it is matched against.
 NICHES = [
-    ("Personal finance", 16.0, "investing, stocks, saving money, personal finance, budgeting, retirement, credit"),
-    ("Business and entrepreneurship", 14.0, "starting a business, entrepreneurship, startups, ecommerce, dropshipping, making money online"),
-    ("Real estate", 15.0, "real estate investing, property, mortgages, landlords, house buying"),
-    ("Insurance and legal", 20.0, "insurance, lawyers, legal advice, claims, attorneys, court"),
-    ("Digital marketing", 13.0, "digital marketing, SEO, advertising, agency, social media growth, email marketing"),
-    ("Software and tech reviews", 9.0, "software tutorials, tech reviews, gadgets, computers, phones, programming, AI tools"),
-    ("Home improvement and DIY", 8.5, "home improvement, DIY projects, woodworking, renovation, tools, construction"),
-    ("Automotive", 8.0, "cars, car reviews, automotive repair, motorcycles, driving, vehicles"),
-    ("Beauty and fashion", 7.5, "beauty, makeup, skincare, fashion, style, hair, outfits"),
-    ("Health and fitness", 7.5, "fitness, workouts, nutrition, weight loss, health, medical, wellness"),
-    ("Education and how-to", 7.0, "education, tutorials, teaching, courses, study, language learning, science explained"),
-    ("Self-improvement", 6.5, "motivation, self improvement, productivity, discipline, mindset, psychology"),
-    ("Documentary and history", 6.0, "documentary, history, investigations, deep dives, analysis, explained"),
-    ("True crime", 6.0, "true crime, murder cases, criminal investigations, court cases, mysteries, disappearances"),
-    ("Food and cooking", 6.0, "cooking, recipes, food, baking, restaurants, kitchen"),
-    ("Travel", 5.5, "travel, destinations, hotels, flights, backpacking, tourism"),
-    ("Relationships and dating", 5.0, "relationships, dating, marriage, advice, family life"),
-    ("News and politics", 5.0, "news, politics, current affairs, commentary, debate, elections"),
-    ("Sports", 4.5, "sports, football, basketball, MMA, highlights, athletes, matches"),
-    ("Aviation and transport", 5.0, "aviation, aircraft, air crash investigation, trains, ships, transport"),
-    ("Science and space", 5.0, "science, space, astronomy, physics, engineering, nature documentaries"),
-    ("Pets and animals", 4.0, "pets, dogs, cats, animals, wildlife, aquariums"),
-    ("Storytelling and drama", 3.5, "narrated stories, folktales, fiction, drama series, audio stories, tales, moral stories"),
+    # ── money, business, professional ──────────────────────────────────────────
+    ("Personal finance", 16.0, "investing, saving money, budgeting, retirement, credit scores, debt, personal finance"),
+    ("Stock trading", 15.0, "stock market, day trading, options, technical analysis, portfolios, dividends"),
+    ("Cryptocurrency", 11.0, "crypto, bitcoin, ethereum, blockchain, altcoins, defi, web3, trading crypto"),
+    ("Business and entrepreneurship", 14.0, "starting a business, entrepreneurship, startups, founders, scaling a company"),
+    ("Ecommerce and dropshipping", 13.0, "ecommerce, dropshipping, amazon fba, shopify, online store, print on demand"),
+    ("Making money online", 12.0, "side hustles, making money online, freelancing, passive income, work from home"),
+    ("Real estate", 15.0, "real estate investing, property, mortgages, landlords, buying a house, rentals"),
+    ("Insurance and legal", 20.0, "insurance, lawyers, legal advice, claims, attorneys, lawsuits, compensation"),
+    ("Taxes and accounting", 14.0, "taxes, accounting, bookkeeping, deductions, payroll, small business finance"),
+    ("Digital marketing", 13.0, "digital marketing, SEO, advertising, agency, social media growth, email marketing, funnels"),
+    ("YouTube and content growth", 11.0, "growing a youtube channel, content creation, thumbnails, algorithm, creator advice"),
+    ("Career and job hunting", 11.0, "careers, job interviews, resumes, salary negotiation, workplace advice, hiring"),
+    ("Productivity and tools", 8.0, "productivity, note taking, workflows, organisation, planners, time management"),
+
+    # ── technology ─────────────────────────────────────────────────────────────
+    ("Software and tech reviews", 9.0, "tech reviews, gadgets, phones, laptops, headphones, consumer electronics"),
+    ("Tech news", 8.0, "technology news, product launches, industry analysis, leaks, rumours"),
+    ("Programming and web development", 10.0, "programming, coding tutorials, web development, javascript, python, software engineering"),
+    ("Data science and AI", 11.0, "artificial intelligence, machine learning, data science, neural networks, AI tools, prompting"),
+    ("Cybersecurity", 12.0, "cybersecurity, hacking, penetration testing, privacy, malware, network security"),
+    ("Cloud and IT", 12.0, "cloud computing, aws, azure, devops, sysadmin, IT certification, networking"),
+    ("PC building and hardware", 7.5, "pc building, graphics cards, processors, overclocking, custom computers, benchmarks"),
+    ("Smart home and gadgets", 8.0, "smart home, home automation, iot devices, cameras, assistants"),
+
+    # ── home, craft, making ────────────────────────────────────────────────────
+    ("Home improvement and DIY", 8.5, "home improvement, DIY projects, renovation, plumbing, electrical, repairs"),
+    ("Woodworking", 8.0, "woodworking, carpentry, furniture making, joinery, workshop, sawmill"),
+    ("Construction and trades", 8.0, "construction, building, contractors, roofing, concrete, trades, site work"),
+    ("Engineering and machining", 7.5, "engineering, machining, metalwork, welding, CNC, fabrication, mechanics"),
+    ("3D printing and making", 7.0, "3d printing, makers, electronics projects, arduino, raspberry pi, prototyping"),
+    ("Interior design", 7.5, "interior design, home decor, styling, furniture, room makeovers"),
+    ("Gardening and plants", 6.0, "gardening, plants, vegetables, landscaping, houseplants, growing food"),
+    ("Farming and agriculture", 6.5, "farming, agriculture, livestock, tractors, homesteading, crops"),
+    ("Art and drawing", 4.5, "drawing, painting, illustration, digital art, sketching, art tutorials"),
+    ("Crafts and sewing", 5.0, "crafts, sewing, knitting, crochet, quilting, handmade, resin"),
+
+    # ── vehicles and machines ──────────────────────────────────────────────────
+    ("Automotive reviews", 8.0, "car reviews, new cars, test drives, buying a car, vehicle comparisons"),
+    ("Car repair and modification", 7.5, "car repair, mechanics, engine rebuild, restoration, tuning, modifications"),
+    ("Motorsport", 5.5, "formula 1, racing, rally, nascar, motorsport, track days, drifting"),
+    ("Motorcycles", 6.5, "motorcycles, riding, bikes, gear reviews, touring"),
+    ("Trucking and heavy machinery", 7.0, "trucking, lorries, excavators, heavy equipment, logistics, haulage"),
+    ("Aviation and transport", 5.0, "aviation, aircraft, pilots, air crash investigation, airlines, flying"),
+    ("Trains and railways", 4.5, "trains, railways, locomotives, rail travel, model railways"),
+    ("Boating and marine", 8.0, "boats, sailing, yachts, marine, fishing boats, liveaboard"),
+
+    # ── health, body, mind ─────────────────────────────────────────────────────
+    ("Health and fitness", 7.5, "fitness, workouts, gym, strength training, exercise, bodybuilding"),
+    ("Nutrition and diet", 7.5, "nutrition, diet, weight loss, meal plans, supplements, healthy eating"),
+    ("Medical and healthcare", 9.0, "medicine, doctors, health conditions, surgery, nursing, medical explained"),
+    ("Mental health", 6.5, "mental health, anxiety, depression, therapy, psychology, wellbeing"),
+    ("Self-improvement", 6.5, "motivation, self improvement, discipline, mindset, habits, confidence"),
+    ("Meditation and sleep", 3.0, "meditation, mindfulness, sleep, breathing, calm, guided relaxation"),
+    ("Relaxation and ASMR", 2.0, "asmr, relaxing sounds, whispering, tingles, ambient, white noise"),
+
+    # ── beauty, style, life ────────────────────────────────────────────────────
+    ("Beauty and skincare", 7.5, "beauty, makeup, skincare, cosmetics, routines, hair care"),
+    ("Fashion and style", 7.0, "fashion, style, outfits, clothing hauls, streetwear, lookbooks"),
+    ("Luxury and watches", 9.0, "luxury goods, watches, designer, high end, collecting, jewellery"),
+    ("Weddings and events", 8.0, "weddings, planning, ceremonies, events, celebrations"),
+    ("Parenting and family", 6.5, "parenting, babies, motherhood, family life, raising children, pregnancy"),
+    ("Relationships and dating", 5.0, "relationships, dating, marriage, breakups, advice, attraction"),
+    ("Shopping and deals", 8.0, "deals, discounts, shopping hauls, product recommendations, buying guides"),
+
+    # ── food ───────────────────────────────────────────────────────────────────
+    ("Cooking and recipes", 6.0, "cooking, recipes, home cooking, meals, kitchen technique, chefs"),
+    ("Baking and desserts", 6.0, "baking, cakes, bread, pastry, desserts, decorating"),
+    ("Food reviews and street food", 5.0, "food reviews, street food, restaurants, tasting, mukbang, eating"),
+
+    # ── travel and place ───────────────────────────────────────────────────────
+    ("Travel", 5.5, "travel, destinations, itineraries, hotels, flights, tourism, backpacking"),
+    ("Travel vlogs and van life", 4.5, "travel vlog, van life, road trip, living abroad, nomad, camping trips"),
+    ("Outdoors and hiking", 6.0, "hiking, camping, backpacking, bushcraft, survival, gear reviews, wilderness"),
+    ("Hunting and fishing", 6.0, "hunting, fishing, angling, outdoors sport, catch and cook"),
+
+    # ── knowledge ──────────────────────────────────────────────────────────────
+    ("Education and tutorials", 7.0, "education, tutorials, how to, teaching, exam revision, study help"),
+    ("Language learning", 6.5, "language learning, english, spanish, grammar, vocabulary, speaking practice"),
+    ("Science and space", 5.0, "science, space, astronomy, physics, chemistry, biology explained"),
+    ("Nature and wildlife", 4.5, "nature, wildlife, animals in the wild, oceans, ecosystems, documentaries"),
+    ("History", 5.5, "history, ancient civilisations, wars, historical figures, archaeology"),
+    ("Documentary and investigation", 6.0, "documentary, investigation, deep dive, long form analysis, exposé"),
+    ("Philosophy and ideas", 4.5, "philosophy, ethics, ideas, thinkers, meaning, essays"),
     ("Religion and spirituality", 4.5, "church, sermons, faith, prayer, bible, gospel, spirituality, pastor"),
-    ("Comedy and entertainment", 3.5, "comedy, sketches, entertainment, reactions, pranks, challenges, vlogs"),
-    ("Gaming", 3.0, "gaming, gameplay, walkthrough, minecraft, fortnite, esports, streamers"),
-    ("Anime and animation", 2.5, "anime, manga, animation, cartoons, recaps, storytelling"),
-    ("Music", 2.5, "music, songs, covers, instrumentals, playlists, artists"),
-    ("Kids and family", 2.5, "kids, children, nursery rhymes, family friendly, toys, cartoons for children"),
-    ("Relaxation and ASMR", 2.0, "asmr, relaxing sounds, sleep, meditation, ambient, white noise"),
+
+    # ── news, crime, culture ───────────────────────────────────────────────────
+    ("News and politics", 5.0, "news, politics, current affairs, commentary, elections, government"),
+    ("Finance and economy news", 12.0, "economy, markets, inflation, recession, business news, economic analysis"),
+    ("Legal commentary", 10.0, "legal analysis, court cases, trials, lawyers reacting, verdicts"),
+    ("True crime", 6.0, "true crime, murder cases, criminal investigations, disappearances, cold cases"),
+    ("Mystery and unexplained", 4.5, "mysteries, unexplained, conspiracy, lost places, strange events"),
+    ("Paranormal and horror", 4.0, "paranormal, ghosts, haunted, horror stories, scary, supernatural"),
+    ("Celebrity and gossip", 3.0, "celebrities, gossip, drama, influencers, scandals, pop culture"),
+
+    # ── entertainment ──────────────────────────────────────────────────────────
+    ("Storytelling and drama", 3.5, "narrated stories, folktales, fiction, drama series, moral stories, tales, audio stories"),
+    ("Reddit and internet stories", 3.0, "reddit stories, aita, text stories, internet drama, narrated posts"),
+    ("Comedy and sketches", 3.5, "comedy, sketches, stand up, parody, funny videos, humour"),
+    ("Reactions and commentary", 2.5, "reaction videos, commentary, watching, first time hearing, reacting"),
+    ("Vlogs and daily life", 3.0, "vlog, daily life, day in the life, lifestyle, routine, personal"),
+    ("Challenges and stunts", 3.0, "challenges, stunts, experiments, extreme, dares, competitions"),
+    ("Movies and TV analysis", 4.0, "film analysis, movie reviews, tv shows, cinema, breakdowns, theories"),
+    ("Anime and manga", 2.5, "anime, manga, otaku, episode reviews, recaps, japanese animation"),
+    ("Animation and cartoons", 3.0, "animation, cartoons, animated shorts, animators, motion graphics"),
+    ("Music", 2.5, "music, songs, covers, instrumentals, playlists, artists, albums"),
+    ("Music production", 6.0, "music production, beats, mixing, mastering, DAW, studio, sound design"),
+    ("Photography and video", 7.5, "photography, cameras, lenses, filmmaking, video editing, cinematography"),
+    ("Design and creative software", 8.0, "graphic design, photoshop, figma, branding, illustration software, UI design"),
+    ("Podcasts and interviews", 6.0, "podcast, interviews, long conversations, guests, discussion"),
+
+    # ── games ──────────────────────────────────────────────────────────────────
+    ("Gaming", 3.0, "gaming, gameplay, lets play, walkthrough, playthrough, video games"),
+    ("Gaming news and reviews", 4.0, "game reviews, gaming news, releases, previews, industry"),
+    ("Esports and competitive", 3.5, "esports, competitive gaming, tournaments, ranked, pro players"),
+    ("Sandbox and survival games", 2.5, "minecraft, roblox, survival games, building, mods, servers"),
+    ("Mobile gaming", 2.5, "mobile games, android games, ios games, gacha, phone gaming"),
+
+    # ── sport ──────────────────────────────────────────────────────────────────
+    ("Sports", 4.5, "sports, highlights, matches, athletes, leagues, commentary"),
+    ("Football and soccer", 4.0, "football, soccer, premier league, transfers, goals, matches"),
+    ("Combat sports", 4.5, "MMA, boxing, UFC, wrestling, fighters, fights, martial arts"),
+    ("Basketball", 4.0, "basketball, NBA, highlights, players, dunks, courts"),
+
+    # ── children ───────────────────────────────────────────────────────────────
+    ("Kids and family content", 2.5, "kids, children, nursery rhymes, family friendly, learning for children"),
+    ("Toys and unboxing", 2.5, "toys, unboxing, play, collectibles, surprise eggs, figures"),
+
+    # ── animals ────────────────────────────────────────────────────────────────
+    ("Pets and animals", 4.0, "pets, dogs, cats, puppies, animal rescue, aquariums, training"),
 ]
 
 NICHE_TEMP = 0.02          # see niche_for: the useful gaps between niches are hundredths
