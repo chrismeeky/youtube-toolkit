@@ -128,6 +128,25 @@ Switching "Similar Channels" off in the popup stops all of that.
 | `https://*.youtube.com/*` | Reads the YouTube pages you are on to find video cards and channel details, and fetches YouTube pages in the background to look up subscriber counts, ad slots, and related channels. |
 | `https://i.ytimg.com/*` | Fetches thumbnail images for the download button, walking down resolutions until one exists. |
 
+### Host permission justification (paste into the dashboard)
+
+> The extension runs only on YouTube. It reads the page you are viewing to draw its
+> statistics onto it, and requests other YouTube pages in the background to produce those
+> figures: channel pages for subscriber counts, lifetime view totals and the date a channel
+> was created; watch pages to check whether recent videos carry advertising slots and to read
+> their descriptions for sponsorships, affiliate links, products and donations; and search
+> results when looking for channels related to the one being viewed. i.ytimg.com is YouTube's
+> thumbnail host, requested only for the thumbnail download button.
+>
+> The extension also sends channel handles to its own service at
+> youtube-toolkit-ox3k.onrender.com, which finds similar channels. No host permission is
+> requested for that, as the service permits cross-origin requests directly. No other host is
+> contacted.
+
+The backend is named deliberately. It takes no host permission, because the service sends
+permissive CORS headers — but a reviewer watching network traffic sees a host the old
+justification implied did not exist, and an unexplained one is worse than a declared one.
+
 **Remote code:** none. All JavaScript is contained in the package. No code is fetched or
 evaluated at runtime.
 
