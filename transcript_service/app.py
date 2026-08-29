@@ -1540,12 +1540,14 @@ class Handler(BaseHTTPRequestHandler):
             if not out:
                 self._send(200, {"ok": False, "reason": "could not classify"})
                 return
+            # Set before the refusal is returned as well: the caller needs to tell a channel
+            # that does not fit any niche from one that simply is not in the index yet.
+            out["indexed"] = bool(known)
             if not out.get("niche"):
                 out["ok"] = False
                 self._send(200, out)
                 return
             out["ok"] = True
-            out["indexed"] = bool(known)
             self._send(200, out)
             return
 
