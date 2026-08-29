@@ -662,6 +662,9 @@ html[dark] .ytc-money--lg.ytc-money--no { color: #ff8a80; border-color: #ff8a80;
    predictably rather than stretching to whatever the longest one happens to be. */
 .ytc-rev {
   position: absolute; z-index: 2600; width: 420px; max-width: calc(100vw - 24px);
+  /* Taller than the window on a short screen with several streams: it scrolls inside itself
+     rather than running off the bottom. */
+  max-height: calc(100vh - 16px); overflow-y: auto;
   background: var(--yt-spec-base-background, #fff);
   color: var(--yt-spec-text-primary, #0f0f0f);
   border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12));
@@ -700,6 +703,10 @@ html[dark] .ytc-money--lg.ytc-money--no { color: #ff8a80; border-color: #ff8a80;
   border-top: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.08));
 }
 .ytc-money--more { cursor: pointer; }
+/* Opened upward: the shadow falls the other way, so it still reads as sitting above the
+   badge rather than under it. */
+.ytc-rev--above { box-shadow: 0 -8px 28px rgba(0,0,0,.18); }
+html[dark] .ytc-rev--above { box-shadow: 0 -8px 28px rgba(0,0,0,.6); }
 html[dark] .ytc-rev {
   background: #212121; color: #f1f1f1; border-color: rgba(255,255,255,.16);
   box-shadow: 0 8px 28px rgba(0,0,0,.6);

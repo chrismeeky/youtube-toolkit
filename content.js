@@ -1891,7 +1891,37 @@
   function closeRevenuePanel() {
     clearTimeout(revOpenTimer);
     clearTimeout(revCloseTimer);
+    // The listeners outlive the element unless they are taken off with it.
+    document.querySelectorAll('.ytc-rev').forEach((n) => {
+      if (!n._reflow) return;
+      window.removeEventListener('scroll', n._reflow);
+      window.removeEventListener('resize', n._reflow);
+    });
     document.querySelectorAll('.ytc-rev').forEach((n) => n.remove());
+  }
+
+  /* Below the badge if it fits, above it if not.
+
+     The watch page's badge sits low in the metadata block, so a panel that always opened
+     downward ran off the bottom of the window and could not be read at all. Measured after
+     the panel is in the document, because its height depends on how many revenue streams
+     were found. */
+  const PANEL_GAP = 8;
+
+  function placeRevenuePanel(panel, anchorEl) {
+    const r = anchorEl.getBoundingClientRect();
+    const h = panel.offsetHeight;
+    const below = window.innerHeight - r.bottom - PANEL_GAP;
+    const above = r.top - PANEL_GAP;
+    const flip = h > below && above > below;
+
+    panel.classList.toggle('ytc-rev--above', flip);
+    // Clamped so neither edge leaves the window, whichever side it ended up on.
+    const top = flip ? Math.max(PANEL_GAP, r.top - h - PANEL_GAP)
+                     : Math.min(r.bottom + PANEL_GAP, window.innerHeight - h - PANEL_GAP);
+    const left = Math.min(r.left, window.innerWidth - panel.offsetWidth - 12);
+    panel.style.top = (Math.max(PANEL_GAP, top) + window.scrollY) + 'px';
+    panel.style.left = (Math.max(12, left) + window.scrollX) + 'px';
   }
 
   function openRevenuePanel(anchorEl, res) {
@@ -1942,17 +1972,21 @@
         'monetized and keeps that revenue, so ad slots are a signal rather than a status.</p>';
 
     document.body.appendChild(panel);
-    const r = anchorEl.getBoundingClientRect();
-    // Kept inside the viewport: the badge sits near the right edge on a channel header.
-    const left = Math.min(r.left, window.innerWidth - panel.offsetWidth - 12);
-    panel.style.top = (r.bottom + window.scrollY + 8) + 'px';
-    panel.style.left = (Math.max(12, left) + window.scrollX) + 'px';
+    placeRevenuePanel(panel, anchorEl);
 
     /* Moving the pointer from the pill to the panel crosses a gap, so leaving either one
        only schedules the close; entering the other cancels it. Without that the panel shuts
        on the way to it and can never be read. */
     panel.addEventListener('mouseenter', holdRevenuePanel);
     panel.addEventListener('mouseleave', scheduleRevenueClose);
+
+    /* Scrolling with the panel open moves the badge, and near the edge of the window the
+       panel that fitted a moment ago no longer does. Re-placed rather than left behind;
+       passive, because this never blocks the scroll itself. */
+    const reflow = () => { if (panel.isConnected) placeRevenuePanel(panel, anchorEl); };
+    window.addEventListener('scroll', reflow, { passive: true });
+    window.addEventListener('resize', reflow);
+    panel._reflow = reflow;
   }
 
   function moneyTitle(res, videoNote) {
