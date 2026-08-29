@@ -1629,10 +1629,7 @@
     const host = analyticsHost();
     if (!host) return;
     host.style.display = '';
-    if (!host.dataset.loaded) {
-      host.innerHTML = '<p class="ytc-an__note"><span class="ytc-spin"></span> Reading the ' +
-        'channel\u2026</p>';
-    }
+    if (!host.dataset.loaded) host.innerHTML = analyticsSkeleton();
     askAnalytics(false);
   }
 
@@ -1715,6 +1712,33 @@
       '<span class="ytc-an__meter"><i style="width:' + Math.round(pos * 100) + '%"></i></span>';
   }
 
+  /* Laid out exactly like the finished panel — same cards, same rows, same heights — so the
+     figures appear in place rather than the page reflowing under the reader. A spinner in an
+     empty box gives no sense of what is coming or how much of it. */
+  function analyticsSkeleton() {
+    const card = (wide) =>
+      '<div class="ytc-an__card">' +
+        '<span class="ytc-an__skel ytc-an__skel--label"></span>' +
+        '<span class="ytc-an__skel ytc-an__skel--value"></span>' +
+        '<span class="ytc-an__skel ytc-an__skel--sub"></span>' +
+      '</div>';
+    const fact = () =>
+      '<div class="ytc-an__fact">' +
+        '<span class="ytc-an__skel ytc-an__skel--label"></span>' +
+        '<span class="ytc-an__skel ytc-an__skel--fact"></span>' +
+      '</div>';
+    let facts = '';
+    for (let i = 0; i < 10; i++) facts += fact();
+    return '<div class="ytc-an__head"><b>Channel analytics</b></div>' +
+      '<div class="ytc-an__top">' + card() + card() + card() + '</div>' +
+      '<div class="ytc-an__panel">' +
+        '<span class="ytc-an__skel ytc-an__skel--label"></span>' +
+        '<span class="ytc-an__skel ytc-an__skel--bar"></span>' +
+        '<span class="ytc-an__skel ytc-an__skel--value"></span>' +
+      '</div>' +
+      '<div class="ytc-an__facts">' + facts + '</div>';
+  }
+
   function renderAnalytics(res) {
     const host = analyticsHost();
     if (!host) return;
@@ -1758,7 +1782,6 @@
           m.rpm ? '$' + m.rpm.toFixed(2) : dash, rpmMeter(m.rpm), '\u25CE') +
       '</div>' +
 
-      '<div class="ytc-an__mid">' +
         '<div class="ytc-an__panel">' +
           '<span class="ytc-an__label">Videos vs Shorts views</span>' +
           (pct == null
@@ -1771,13 +1794,6 @@
               '<span class="ytc-an__sub">' + pct + '% long form, ' + (100 - pct) +
               '% shorts, across ' + m.sampled + ' recent videos</span>') +
         '</div>' +
-        '<div class="ytc-an__panel">' +
-          '<span class="ytc-an__label">Top geographies</span>' +
-          '<p class="ytc-an__none">YouTube does not publish audience country for a channel, ' +
-          'and nothing on the page implies it. Any figure here would be invented, so there ' +
-          'is none.</p>' +
-        '</div>' +
-      '</div>' +
 
       '<div class="ytc-an__facts">' +
         anFact('Subscribers', m.subs == null ? dash : F.compact(m.subs)) +
@@ -1794,12 +1810,6 @@
         anFact('Last upload', m.lastUpload ? escapeHtml(m.lastUpload) : dash) +
       '</div>' +
 
-      '<div class="ytc-an__panel">' +
-        '<span class="ytc-an__label">Age and gender</span>' +
-        '<p class="ytc-an__none">Only the channel owner can see this, in YouTube Studio. It ' +
-        'is not derivable from a public page.</p>' +
-      '</div>' +
-
       (m.sampled ? '' :
         '<p class="ytc-an__none">The figures above that need the channel\u2019s video list ' +
         'are blank because it could not be read. Everything else comes from the channel page ' +
@@ -1809,7 +1819,12 @@
         'niche does, so treat it as a scale rather than a figure.</p>';
 
     const refresh = host.querySelector('.ytc-an__refresh');
-    if (refresh) refresh.addEventListener('click', () => askAnalytics(true));
+    if (refresh) {
+      refresh.addEventListener('click', () => {
+        host.innerHTML = analyticsSkeleton();
+        askAnalytics(true);
+      });
+    }
   }
 
   function tabIsVisible(el) {
