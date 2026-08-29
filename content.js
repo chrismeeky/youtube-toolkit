@@ -1897,6 +1897,7 @@
     closeRevenuePanel();
     const streams = (res && res.streams) || [];
     const label = MONEY_LABEL[res && res.state] || MONEY_LABEL.unknown;
+    const note = (anchorEl.dataset && anchorEl.dataset.ytcNote) || '';
 
     const rows = streams.length
       ? streams.map((st) =>
@@ -1929,7 +1930,8 @@
     panel.innerHTML =
       '<div class="ytc-rev__head"><b>' + escapeHtml(label.big) + '</b></div>' +
       '<p class="ytc-rev__sub">Based on ' + (res && res.checked ? res.checked : 0) +
-        ' sampled ' + ((res && res.checked) === 1 ? 'video' : 'videos') + '.</p>' +
+        ' sampled ' + ((res && res.checked) === 1 ? 'video' : 'videos') +
+        (note ? '. ' + escapeHtml(note) : '') + '.</p>' +
       ads + rows +
       /* The ad-slot caveat used to live in the native tooltip, which the panel now replaces.
          It is the one thing here a reader can most easily get wrong, so it moves rather than
@@ -2015,11 +2017,20 @@
     }
     /* Only the channel-page pill opens the breakdown. The card badge is 18px and already has
        a click meaning when a verdict needs retrying. */
-    const hasPanel = big && !retryable;
+    /* The channel pill always, and the watch page's badge because it was asked for. Not the
+       badges in a feed grid: a panel that opens on hover would fire constantly while the
+       pointer crosses a page of thumbnails. */
+    const hasPanel = !retryable && (big || el.dataset.ytcPanel === '1');
     /* No native tooltip where the panel exists: the browser draws it over the panel the same
        hover opened, saying the same thing in a greyer box. Everywhere else it is the only
        explanation there is. */
-    if (hasPanel) el.removeAttribute('title');
+    if (hasPanel) {
+      el.removeAttribute('title');
+      /* What this particular video shows, which the channel-level rows cannot say. It was in
+         the tooltip the panel replaced, so it moves into the panel rather than being lost. */
+      if (videoNote) el.dataset.ytcNote = videoNote;
+      else delete el.dataset.ytcNote;
+    }
     else el.title = moneyTitle(safe, videoNote) + (retryable ? '. Click to try again' : '');
 
     if (hasPanel) {
@@ -2130,6 +2141,10 @@
         noteChannelSeen(st.channelHandle, st.channelId || '');
         reportWatchEdges(st.channelHandle, videoId, st.channelId || '');
       }
+      /* Marked on the element rather than passed as an argument, so it survives the repaints
+         that go through other call sites — the retry path re-paints without knowing which
+         badge it is looking at. */
+      el.dataset.ytcPanel = '1';
       if (!key) {
         paintMoney(el, null, false, note);
       } else {
