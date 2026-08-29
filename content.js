@@ -2910,14 +2910,56 @@
      matter for research — subscriber count, or views against the channel's size. Scrolling
      loads them; this reads what was loaded and lets it be narrowed. Nothing is fetched: every
      figure here was already on screen. */
-  const FILTER_STATE = {
-    kind: 'all',            // all | shorts | long
-    minSubs: '', maxSubs: '',
-    minViews: '', maxViews: '',
-    age: '',                // '' | 1 | 7 | 30 | 90 | 365, in days
-    sort: 'ratio',          // ratio | subs | views | date
-    desc: true
+  /* Ranges are held as slider positions rather than values. Subscriber counts span eleven
+     orders of magnitude, so a linear track spends nine tenths of its length between ten
+     million and a hundred million, where almost nothing sits. Position maps through a log
+     curve instead, which puts the useful resolution where the channels are. */
+  const RANGE_MAX = 1000;
+  const RANGE_SPECS = {
+    subs:  { top: 100000000, fmt: (v) => F.compact(v) + ' subs' },
+    views: { top: 100000000, fmt: (v) => F.compact(v) + ' views' },
+    age:   { top: 3650,      fmt: (v) => (v <= 0 ? 'today' : ageLabel(
+               new Date(Date.now() - v * 86400000).toISOString())) }
   };
+
+  function posToVal(pos, spec) {
+    const p = Math.max(0, Math.min(RANGE_MAX, Number(pos))) / RANGE_MAX;
+    return Math.round(Math.pow(10, p * Math.log10(spec.top + 1)) - 1);
+  }
+
+  const FILTER_STATE = {
+    kind: 'all',                    // all | shorts | long
+    subs: [0, RANGE_MAX],
+    views: [0, RANGE_MAX],
+    age: [0, RANGE_MAX],
+    sort: 'ratio',                  // ratio | subs | views | date
+    desc: true,
+    preset: 'all'
+  };
+
+  /* The same questions the Similar Channels chips ask, put to videos instead of channels.
+     Each one sets the ranges rather than filtering separately, so what a preset did stays
+     visible on the sliders and can be adjusted from there. */
+  const FILTER_PRESETS = [
+    { key: 'all', label: 'All' },
+    { key: 'outlier', label: 'Overperforming',
+      apply: (f) => { f.ratioMin = 2; } },
+    { key: 'lowsub', label: 'Low subs, high views',
+      apply: (f) => { f.subs = [0, valToPos(25000, RANGE_SPECS.subs)];
+                      f.views = [valToPos(50000, RANGE_SPECS.views), RANGE_MAX]; } },
+    { key: 'big', label: 'Above 50k views',
+      apply: (f) => { f.views = [valToPos(50000, RANGE_SPECS.views), RANGE_MAX]; } },
+    { key: 'fresh', label: 'Uploaded this month',
+      apply: (f) => { f.age = [0, valToPos(30, RANGE_SPECS.age)]; } },
+    { key: 'newbig', label: 'New and big',
+      apply: (f) => { f.views = [valToPos(50000, RANGE_SPECS.views), RANGE_MAX];
+                      f.age = [0, valToPos(90, RANGE_SPECS.age)]; } }
+  ];
+
+  function valToPos(val, spec) {
+    if (val <= 0) return 0;
+    return Math.round(RANGE_MAX * Math.log10(val + 1) / Math.log10(spec.top + 1));
+  }
 
   function collectScrolled() {
     const out = [];
@@ -2941,7 +2983,11 @@
         subs: num('ytcSubsN'),
         ratio: (views != null && denom) ? views / denom : null,
         ageDays: daysSince(F.relativeToISO(v.date, Date.now())),
-        shorts: /\/shorts\//.test(v.url),
+        /* From the card's own markup. findUrl deliberately rewrites /shorts/ID to
+           /watch?v=ID so the two forms of one video compare equal, which meant testing the
+           url for "/shorts/" could never match and every short read as long form. */
+        shorts: !!(card.matches('ytd-reel-item-renderer, ytm-shorts-lockup-view-model') ||
+                   card.querySelector('a[href*="/shorts/"]')),
         thumb: (card.querySelector('img[src*="i.ytimg.com"]') || {}).src || '',
         date: v.date || ''
       });
@@ -2951,24 +2997,24 @@
 
   function applyFilter(rows) {
     const f = FILTER_STATE;
-    const numOr = (v, d) => (v === '' || v == null || isNaN(Number(v)) ? d : Number(v));
-    const minSubs = numOr(f.minSubs, -Infinity), maxSubs = numOr(f.maxSubs, Infinity);
-    const minViews = numOr(f.minViews, -Infinity), maxViews = numOr(f.maxViews, Infinity);
-    const maxAge = numOr(f.age, Infinity);
+    /* A range only filters once it has been moved. Untouched, it must not exclude the cards
+       whose number is still unknown — treating those as zero would park every un-looked-up
+       card at the bottom of a subscriber filter and read as the filter having eaten them. */
+    const band = (key) => {
+      const spec = RANGE_SPECS[key];
+      const [lo, hi] = f[key];
+      return { active: lo > 0 || hi < RANGE_MAX,
+               lo: posToVal(lo, spec), hi: posToVal(hi, spec) };
+    };
+    const bSubs = band('subs'), bViews = band('views'), bAge = band('age');
 
     const kept = rows.filter((r) => {
       if (f.kind === 'shorts' && !r.shorts) return false;
       if (f.kind === 'long' && r.shorts) return false;
-      /* A missing number fails a range the user set, and passes one they did not. Treating
-         unknown as zero would park every un-looked-up card at the bottom of a subscriber
-         filter and look like the filter had eaten them. */
-      if (f.minSubs !== '' || f.maxSubs !== '') {
-        if (r.subs == null || r.subs < minSubs || r.subs > maxSubs) return false;
-      }
-      if (f.minViews !== '' || f.maxViews !== '') {
-        if (r.views == null || r.views < minViews || r.views > maxViews) return false;
-      }
-      if (f.age !== '' && (r.ageDays == null || r.ageDays > maxAge)) return false;
+      if (bSubs.active && (r.subs == null || r.subs < bSubs.lo || r.subs > bSubs.hi)) return false;
+      if (bViews.active && (r.views == null || r.views < bViews.lo || r.views > bViews.hi)) return false;
+      if (bAge.active && (r.ageDays == null || r.ageDays < bAge.lo || r.ageDays > bAge.hi)) return false;
+      if (f.ratioMin && (r.ratio == null || r.ratio < f.ratioMin)) return false;
       return true;
     });
 
@@ -3042,6 +3088,43 @@
         'YouTube further and reopen \u2014 only what has loaded can be filtered.</p>';
   }
 
+  /* Two range inputs on one track. A native <input type=range> gives one handle; the pair is
+     overlaid, and pointer events are routed to whichever handle is nearer the cursor so the
+     lower one is still grabbable when both sit at the same end. */
+  function rangeControl(key, label) {
+    const spec = RANGE_SPECS[key];
+    const [lo, hi] = FILTER_STATE[key];
+    return '<label class="ytc-fm__lbl">' + label +
+        '<span class="ytc-fm__val" data-val="' + key + '">' +
+          rangeText(key) + '</span>' +
+      '</label>' +
+      '<div class="ytc-fm__range" data-range="' + key + '">' +
+        '<span class="ytc-fm__track"></span>' +
+        '<span class="ytc-fm__fill"></span>' +
+        '<input type="range" min="0" max="' + RANGE_MAX + '" value="' + lo + '" data-end="lo">' +
+        '<input type="range" min="0" max="' + RANGE_MAX + '" value="' + hi + '" data-end="hi">' +
+      '</div>';
+  }
+
+  function rangeText(key) {
+    const spec = RANGE_SPECS[key];
+    const [lo, hi] = FILTER_STATE[key];
+    if (lo === 0 && hi === RANGE_MAX) return 'any';
+    const loV = spec.fmt(posToVal(lo, spec));
+    const hiV = hi >= RANGE_MAX ? 'any' : spec.fmt(posToVal(hi, spec));
+    return (lo === 0 ? 'up to ' + hiV : loV + ' \u2013 ' + hiV);
+  }
+
+  function paintRange(box) {
+    const key = box.dataset.range;
+    const [lo, hi] = FILTER_STATE[key];
+    const fill = box.querySelector('.ytc-fm__fill');
+    fill.style.left = (lo / RANGE_MAX * 100) + '%';
+    fill.style.right = (100 - hi / RANGE_MAX * 100) + '%';
+    const out = document.querySelector('[data-val="' + key + '"]');
+    if (out) out.textContent = rangeText(key);
+  }
+
   function openFilterModal() {
     closeFilterModal();
     const all = collectScrolled();
@@ -3051,18 +3134,21 @@
 
     const modal = document.createElement('div');
     modal.className = 'ytc-fm';
-    const num = (id, ph, val) =>
-      '<input class="ytc-fm__num" type="number" min="0" data-f="' + id +
-      '" placeholder="' + ph + '" value="' + (val === '' ? '' : val) + '">';
-
     modal.innerHTML =
       '<div class="ytc-fm__head">' +
-        '<b>Filter what you have scrolled</b>' +
+        '<b>Filter videos</b>' +
         '<span class="ytc-fm__count"></span>' +
         '<button type="button" class="ytc-fm__x" aria-label="Close">\u00d7</button>' +
       '</div>' +
       '<div class="ytc-fm__body">' +
         '<div class="ytc-fm__side">' +
+          '<label class="ytc-fm__lbl">Quick filters</label>' +
+          '<div class="ytc-fm__chips">' +
+            FILTER_PRESETS.map((pz) =>
+              '<button type="button" class="ytc-fm__chip' +
+              (FILTER_STATE.preset === pz.key ? ' on' : '') + '" data-preset="' + pz.key + '">' +
+              escapeHtml(pz.label) + '</button>').join('') +
+          '</div>' +
           '<label class="ytc-fm__lbl">Show</label>' +
           '<div class="ytc-fm__seg">' +
             ['all', 'shorts', 'long'].map((k) =>
@@ -3071,17 +3157,9 @@
               (k === 'all' ? 'All' : k === 'shorts' ? 'Shorts' : 'Long form') +
               '</button>').join('') +
           '</div>' +
-          '<label class="ytc-fm__lbl">Subscribers</label>' +
-          '<div class="ytc-fm__pair">' + num('minSubs', 'min', FILTER_STATE.minSubs) +
-            num('maxSubs', 'max', FILTER_STATE.maxSubs) + '</div>' +
-          '<label class="ytc-fm__lbl">Views</label>' +
-          '<div class="ytc-fm__pair">' + num('minViews', 'min', FILTER_STATE.minViews) +
-            num('maxViews', 'max', FILTER_STATE.maxViews) + '</div>' +
-          '<label class="ytc-fm__lbl">Uploaded</label>' +
-          '<select class="ytc-fm__sel" data-f="age">' +
-            AGE_CHOICES.map((a) => '<option value="' + a.v + '"' +
-              (FILTER_STATE.age === a.v ? ' selected' : '') + '>' + a.label + '</option>').join('') +
-          '</select>' +
+          rangeControl('subs', 'Subscribers') +
+          rangeControl('views', 'Views') +
+          rangeControl('age', 'Uploaded') +
           '<button type="button" class="ytc-fm__reset">Reset</button>' +
         '</div>' +
         '<div class="ytc-fm__main">' +
@@ -3100,11 +3178,51 @@
     document.body.appendChild(veil);
     document.body.appendChild(modal);
     document.documentElement.style.overflow = 'hidden';
+    modal.querySelectorAll('.ytc-fm__range').forEach(paintRange);
     paintFilterResults(all);
 
     const redraw = () => paintFilterResults(all);
     veil.addEventListener('click', closeFilterModal);
     modal.querySelector('.ytc-fm__x').addEventListener('click', closeFilterModal);
+
+    modal.querySelectorAll('.ytc-fm__range input').forEach((inp) => {
+      inp.addEventListener('input', () => {
+        const box = inp.closest('.ytc-fm__range');
+        const key = box.dataset.range;
+        const which = inp.dataset.end === 'lo' ? 0 : 1;
+        const other = which === 0 ? 1 : 0;
+        let v = Number(inp.value);
+        // Handles may meet but never cross, or the range would read inverted.
+        if (which === 0) v = Math.min(v, FILTER_STATE[key][other]);
+        else v = Math.max(v, FILTER_STATE[key][other]);
+        inp.value = v;
+        FILTER_STATE[key][which] = v;
+        FILTER_STATE.preset = 'all';
+        modal.querySelectorAll('.ytc-fm__chip').forEach((c) =>
+          c.classList.toggle('on', c.dataset.preset === 'all'));
+        paintRange(box);
+        redraw();
+      });
+    });
+
+    modal.querySelectorAll('.ytc-fm__chip').forEach((b) => {
+      b.addEventListener('click', () => {
+        const pz = FILTER_PRESETS.find((x) => x.key === b.dataset.preset);
+        Object.assign(FILTER_STATE, { subs: [0, RANGE_MAX], views: [0, RANGE_MAX],
+                                      age: [0, RANGE_MAX], ratioMin: 0, preset: pz.key });
+        if (pz.apply) pz.apply(FILTER_STATE);
+        modal.querySelectorAll('.ytc-fm__chip').forEach((c) =>
+          c.classList.toggle('on', c === b));
+        modal.querySelectorAll('.ytc-fm__range').forEach((box) => {
+          const [lo, hi] = FILTER_STATE[box.dataset.range];
+          box.querySelector('[data-end="lo"]').value = lo;
+          box.querySelector('[data-end="hi"]').value = hi;
+          paintRange(box);
+        });
+        redraw();
+      });
+    });
+
     modal.querySelectorAll('.ytc-fm__seg button').forEach((b) => {
       b.addEventListener('click', () => {
         FILTER_STATE.kind = b.dataset.kind;
@@ -3113,11 +3231,7 @@
         redraw();
       });
     });
-    modal.querySelectorAll('.ytc-fm__num, .ytc-fm__sel').forEach((el) => {
-      /* Redrawn as it is typed. A Go button would make every adjustment feel like a round
-         trip when the whole set is already in memory and the filtering is instant. */
-      el.addEventListener('input', () => { FILTER_STATE[el.dataset.f] = el.value; redraw(); });
-    });
+
     modal.querySelectorAll('.ytc-fm__sort').forEach((b) => {
       b.addEventListener('click', () => {
         const k = b.dataset.sort;
@@ -3132,12 +3246,15 @@
         redraw();
       });
     });
+
     modal.querySelector('.ytc-fm__reset').addEventListener('click', () => {
-      Object.assign(FILTER_STATE, { kind: 'all', minSubs: '', maxSubs: '', minViews: '',
-                                    maxViews: '', age: '', sort: 'ratio', desc: true });
+      Object.assign(FILTER_STATE, { kind: 'all', subs: [0, RANGE_MAX], views: [0, RANGE_MAX],
+                                    age: [0, RANGE_MAX], ratioMin: 0, sort: 'ratio',
+                                    desc: true, preset: 'all' });
       closeFilterModal();
       openFilterModal();
     });
+
     document.addEventListener('keydown', function esc(e) {
       if (e.key !== 'Escape') return;
       closeFilterModal();
@@ -3145,24 +3262,52 @@
     });
   }
 
-  /* The trigger, only where a grid of videos exists to filter. A watch page has nothing to
-     narrow, and a button offering to do so would be a dead end. */
+  /* The trigger, in YouTube's own masthead beside the search box.
+
+     It was floating at the bottom-right, which is where a chat widget lives — not where
+     anyone looks for a control that acts on the results they are reading. The masthead is
+     rebuilt on navigation, so placement is checked rather than assumed: if the button does
+     not come out visible it is removed and tried again on the next scan, and the floating
+     position remains as the last resort so the feature is never simply unreachable. */
+  function filterHosts() {
+    const out = [];
+    for (const sel of ['ytd-masthead #center', 'ytd-masthead #end', '#masthead #center']) {
+      document.querySelectorAll(sel).forEach((el) => { if (out.indexOf(el) < 0) out.push(el); });
+    }
+    return out;
+  }
+
   function ensureFilterButton() {
     const wanted = settings.showFilter !== false &&
       /^\/(results|feed\/|$)|^\/@[^/]+\/?(videos|shorts)?$|^\/channel\//.test(location.pathname);
     const existing = document.querySelector('.ytc-fmbtn');
     if (!wanted) { if (existing) existing.remove(); return; }
-    if (existing) return;
+    if (existing && tabIsVisible(existing)) return;
+    if (existing) existing.remove();
 
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'ytc-fmbtn';
-    let icon = '';
-    try { icon = chrome.runtime.getURL('icons/icon32.png'); } catch (e) { icon = ''; }
-    btn.innerHTML = (icon ? '<img src="' + icon + '" alt="">' : '') + '<span>Filter</span>';
-    btn.title = 'Filter the videos this page has loaded';
-    btn.addEventListener('click', openFilterModal);
-    document.body.appendChild(btn);
+    const build = () => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ytc-fmbtn';
+      let icon = '';
+      try { icon = chrome.runtime.getURL('icons/icon32.png'); } catch (e) { icon = ''; }
+      btn.innerHTML = (icon ? '<img src="' + icon + '" alt="">' : '') + '<span>Filter</span>';
+      btn.title = 'Filter the videos this page has loaded';
+      btn.addEventListener('click', openFilterModal);
+      return btn;
+    };
+
+    for (const host of filterHosts()) {
+      if (!tabIsVisible(host)) continue;
+      const btn = build();
+      // Ahead of the search box, which is the first thing in #center.
+      host.insertBefore(btn, host.firstChild);
+      if (tabIsVisible(btn)) return;
+      btn.remove();
+    }
+    const floating = build();
+    floating.classList.add('ytc-fmbtn--float');
+    document.body.appendChild(floating);
   }
 
   function pageVideos() {
