@@ -3351,8 +3351,11 @@
   }
 
   function ensureFilterButton() {
+    /* Search results and the feeds only. A channel page is already one channel's videos, so
+       filtering by subscriber count there compares a channel against itself, and the Similar
+       Channels tab answers the question that page actually raises. */
     const wanted = settings.showFilter !== false &&
-      /^\/(results|feed\/|$)|^\/@[^/]+\/?(videos|shorts)?$|^\/channel\//.test(location.pathname);
+      /^\/$|^\/results|^\/feed\//.test(location.pathname);
     const existing = document.querySelector('.ytc-fmbtn');
     if (!wanted) { if (existing) existing.remove(); return; }
     if (existing && tabIsVisible(existing)) return;
