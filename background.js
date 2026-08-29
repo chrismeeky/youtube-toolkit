@@ -618,6 +618,71 @@ function pushToIndex(base, pairs) {
   }).catch(() => { /* the answer above is unaffected */ });
 }
 
+const TTL_ANALYTICS = 12 * 60 * 60 * 1000;    // upload counts and view totals move daily-ish
+
+/* Everything the analytics panel shows, from one page fetch plus two lookups it already had.
+   Assembled here rather than in the panel so the numbers are computed once and cached
+   together — a panel that recomputed on every open would refetch the channel each time. */
+async function getAnalytics(key, force) {
+  const id = 'stats:' + key;
+  if (!force) {
+    const store = await chrome.storage.local.get(id);
+    const hit = store[id];
+    if (hit && hit.v === CACHE_VERSION && Date.now() - hit.t <= TTL_ANALYTICS) return hit;
+  }
+  if (breakerOpen()) return { ok: false, reason: 'rate limited' };
+
+  const [subs, niche] = await Promise.all([getSubscribers(key), getNiche(key, {})]);
+
+  // The channel's own videos tab: durations, recent view counts and whether it posts shorts.
+  let videos = [];
+  const html = await schedule(() => channelVideosPage(key));
+  if (html) videos = F.channelVideosFromHtml(html);
+  noteResult(!!html);
+
+  const entry = {
+    ok: true,
+    subs: subs && subs.text ? F.viewsToNumber(subs.text) : null,
+    stats: (subs && subs.stats) || null,
+    niche: niche && niche.ok ? { label: niche.niche, rpm: niche.rpm, z: niche.z } : null,
+    videos: videos.slice(0, 60),
+    t: Date.now(),
+    v: CACHE_VERSION
+  };
+  await chrome.storage.local.set({ [id]: entry });
+  return entry;
+}
+
+/* The videos tab, read only as far as the listing. */
+async function channelVideosPage(key) {
+  const url = 'https://www.youtube.com/' + channelPath(key) + '/videos?hl=en';
+  let res;
+  try {
+    res = await fetch(url, { credentials: 'include', headers: { 'Accept-Language': 'en' } });
+  } catch (e) {
+    return null;
+  }
+  if (!res.ok || !res.body) return null;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let read = 0;
+  try {
+    while (read < SIM_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      read += value.length;
+      buf += decoder.decode(value, { stream: true });
+      if (buf.indexOf('ytInitialData') >= 0 && read > 900000) break;
+    }
+  } catch (e) {
+    return null;
+  } finally {
+    try { await reader.cancel(); } catch (e) { /* already closed */ }
+  }
+  return buf;
+}
+
 const TTL_NICHE = 30 * 24 * 60 * 60 * 1000;   // a channel's subject does not drift weekly
 const TTL_NICHE_MISS = 24 * 60 * 60 * 1000;   // a refusal is worth rechecking sooner than that
 
@@ -864,6 +929,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   /* Cached hard: a channel's niche does not change between videos, and the classification is
      the same vector comparison every time. */
+  if (msg.type === 'ytc-analytics' && msg.key) {
+    getAnalytics(msg.key, msg.force)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String(e) }));
+    return true;
+  }
   if (msg.type === 'ytc-niche' && msg.key) {
     getNiche(msg.key, msg.opts || {})
       .then(sendResponse)

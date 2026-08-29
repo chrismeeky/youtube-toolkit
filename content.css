@@ -882,3 +882,88 @@ html[dark] .ytc-fm__row:hover { background: rgba(255,255,255,.08); }
    here it sits under the channel line, so the card's own margins do not apply. */
 .ytc-fm__row .ytc-tools { margin: 6px 0 0; flex-wrap: wrap; }
 .ytc-fm__row .ytc-tools .ytc-btn, .ytc-fm__row .ytc-tools .ytc-thumb { cursor: pointer; }
+
+/* ---- analytics panel ---- */
+.ytc-an { padding: 18px 0 40px; font-family: Roboto, Arial, sans-serif; }
+.ytc-an__head {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+  font: 700 18px/1 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+.ytc-an__refresh {
+  margin-left: auto; cursor: pointer; padding: 8px 14px; border-radius: 18px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12));
+  background: transparent; color: inherit; font: 500 13px Roboto, Arial, sans-serif;
+}
+/* Three headline cards, then two panels, then the facts — the shape of the design. */
+.ytc-an__top {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px; margin-bottom: 14px;
+}
+.ytc-an__mid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px; margin-bottom: 14px;
+}
+.ytc-an__card, .ytc-an__panel, .ytc-an__fact {
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+  border-radius: 14px; padding: 16px 18px;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.03));
+}
+.ytc-an__panel { margin-bottom: 14px; }
+.ytc-an__label {
+  display: flex; align-items: center; gap: 7px;
+  font: 500 12px/1.4 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-an__label i {
+  font-style: normal; width: 20px; height: 20px; border-radius: 6px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 11px;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.08));
+}
+.ytc-an__value {
+  display: block; margin: 8px 0 2px;
+  font: 700 30px/1.1 Roboto, Arial, sans-serif; letter-spacing: -.5px;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+.ytc-an__sub {
+  display: block; font: 400 12px/1.45 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+/* Where this channel's rate sits across the reference table, so the figure has a scale. */
+.ytc-an__meter {
+  display: block; margin-top: 8px; height: 4px; border-radius: 2px;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.12)); overflow: hidden;
+}
+.ytc-an__meter i { display: block; height: 100%; background: #0f9d58; }
+.ytc-an__bar {
+  display: block; margin: 12px 0 10px; height: 8px; border-radius: 4px;
+  background: #c5221f; overflow: hidden;
+}
+.ytc-an__bar i { display: block; height: 100%; background: #3ea6ff; }
+.ytc-an__facts {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px; margin-bottom: 14px;
+}
+.ytc-an__fact b {
+  display: block; margin-top: 6px;
+  font: 600 17px/1.2 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+/* Said plainly where a number cannot honestly be produced, rather than left blank. */
+.ytc-an__none, .ytc-an__note, .ytc-an__foot {
+  margin: 10px 0 0; font: 400 12px/1.55 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-an__retry {
+  margin-left: 8px; cursor: pointer; border: 0; background: none;
+  color: #3ea6ff; font: inherit; text-decoration: underline;
+}
+html[dark] .ytc-an__head, html[dark] .ytc-an__value,
+html[dark] .ytc-an__fact b { color: #f1f1f1; }
+html[dark] .ytc-an__card, html[dark] .ytc-an__panel, html[dark] .ytc-an__fact {
+  background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.12);
+}
+html[dark] .ytc-an__label, html[dark] .ytc-an__sub, html[dark] .ytc-an__none,
+html[dark] .ytc-an__note, html[dark] .ytc-an__foot { color: #aaa; }
+html[dark] .ytc-an__refresh { border-color: rgba(255,255,255,.2); }
+html[dark] .ytc-an__label i, html[dark] .ytc-an__meter { background: rgba(255,255,255,.14); }

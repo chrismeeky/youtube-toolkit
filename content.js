@@ -1593,6 +1593,213 @@
       'ytd-two-column-browse-results-renderer');
   }
 
+  /* ------------------------------------------------------- analytics panel */
+
+  const ANALYTICS_LABEL = 'Analytics';
+
+  function analyticsHost() {
+    let host = document.querySelector('.ytc-an');
+    if (host) return host;
+    const content = pageContent();
+    if (!content || !content.parentElement) return null;
+    host = document.createElement('div');
+    host.className = 'ytc-an';
+    host.style.display = 'none';
+    content.parentElement.insertBefore(host, content);
+    return host;
+  }
+
+  function closeAnalyticsView() {
+    analyticsOpen = false;
+    const content = pageContent();
+    if (content) content.style.display = '';
+    document.querySelectorAll('.ytc-tab--an').forEach((t) => t.classList.remove('ytc-tab--on'));
+    const host = document.querySelector('.ytc-an');
+    if (host) host.style.display = 'none';
+  }
+
+  let analyticsOpen = false;
+
+  function openAnalyticsView() {
+    closeSimilarView();
+    analyticsOpen = true;
+    const content = pageContent();
+    if (content) content.style.display = 'none';
+    document.querySelectorAll('.ytc-tab--an').forEach((t) => t.classList.add('ytc-tab--on'));
+    const host = analyticsHost();
+    if (!host) return;
+    host.style.display = '';
+    if (!host.dataset.loaded) {
+      host.innerHTML = '<p class="ytc-an__note"><span class="ytc-spin"></span> Reading the ' +
+        'channel\u2026</p>';
+    }
+    askAnalytics(false);
+  }
+
+  function askAnalytics(force) {
+    const key = channelKeyFromLocation();
+    if (!key) return;
+    sendMessage({ type: 'ytc-analytics', key, force }, (res) => {
+      if (chrome.runtime.lastError) {
+        renderAnalytics({ ok: false, reason: 'Extension reloaded \u2014 refresh this tab' });
+        return;
+      }
+      if (channelKeyFromLocation() !== key) return;
+      renderAnalytics(res);
+    });
+  }
+
+  /* Derived once, so the cards read from one place and cannot disagree with each other. */
+  function analyticsModel(res) {
+    const st = (res && res.stats) || {};
+    const videos = (res && res.videos) || [];
+    const longs = videos.filter((v) => !v.shorts);
+    const shorts = videos.filter((v) => v.shorts);
+
+    const withLen = longs.filter((v) => v.seconds > 0);
+    const avgLen = withLen.length
+      ? Math.round(withLen.reduce((a, v) => a + v.seconds, 0) / withLen.length) : null;
+
+    /* Views on videos put out in the last 28 days. Not the same thing as views received in
+       the last 28 days, which no public page reports — an old video keeps earning and is not
+       counted here. Labelled for what it is rather than passed off as the other. */
+    const recent = videos.filter((v) => {
+      const d = daysSince(F.relativeToISO(v.ago, Date.now()));
+      return d != null && d <= 28;
+    });
+    const recentViews = recent.reduce((a, v) => a + (v.views || 0), 0);
+
+    const rpm = res && res.niche ? res.niche.rpm : 0;
+    const days = st.joinedAt ? daysSince(new Date(st.joinedAt).toISOString()) : null;
+    const uploadsPerMo = days && st.videoCount ? (st.videoCount / (days / 30)) : null;
+
+    const longViews = longs.reduce((a, v) => a + (v.views || 0), 0);
+    const shortViews = shorts.reduce((a, v) => a + (v.views || 0), 0);
+
+    return {
+      subs: res && res.subs, totalViews: st.totalViews || null,
+      videoCount: st.videoCount || null, avgViews: st.avgViews || null,
+      days, uploadsPerMo, avgLen, rpm,
+      niche: res && res.niche ? res.niche.label : '',
+      recentViews, recentCount: recent.length,
+      revenue: rpm && recentViews ? (recentViews / 1000) * rpm : null,
+      hasShorts: shorts.length > 0,
+      longViews, shortViews,
+      lastUpload: videos.length ? videos[0].ago : '',
+      sampled: videos.length
+    };
+  }
+
+  function anCard(label, value, sub, icon) {
+    return '<div class="ytc-an__card">' +
+      '<span class="ytc-an__label">' + (icon ? '<i>' + icon + '</i>' : '') +
+        escapeHtml(label) + '</span>' +
+      '<b class="ytc-an__value">' + value + '</b>' +
+      (sub ? '<span class="ytc-an__sub">' + sub + '</span>' : '') +
+    '</div>';
+  }
+
+  function anFact(label, value) {
+    return '<div class="ytc-an__fact">' +
+      '<span class="ytc-an__label">' + escapeHtml(label) + '</span>' +
+      '<b>' + value + '</b></div>';
+  }
+
+  /* Where this channel's rate falls across the reference table, which is what makes $5.25
+     mean something: it is the middle of the range, not a number without a scale. */
+  function rpmMeter(rpm) {
+    if (!rpm) return '';
+    const pos = Math.max(0, Math.min(1, (rpm - 2) / (20 - 2)));
+    const band = rpm >= 11 ? 'High' : rpm >= 5.5 ? 'Medium' : 'Low';
+    return '<span class="ytc-an__sub">' + band + '</span>' +
+      '<span class="ytc-an__meter"><i style="width:' + Math.round(pos * 100) + '%"></i></span>';
+  }
+
+  function renderAnalytics(res) {
+    const host = analyticsHost();
+    if (!host) return;
+    host.dataset.loaded = '1';
+
+    if (!res || !res.ok) {
+      host.innerHTML = '<p class="ytc-an__note">' +
+        escapeHtml((res && res.reason) || 'Could not read this channel') +
+        ' <button type="button" class="ytc-an__retry">Try again</button></p>';
+      const again = host.querySelector('.ytc-an__retry');
+      if (again) again.addEventListener('click', () => askAnalytics(true));
+      return;
+    }
+
+    const m = analyticsModel(res);
+    const dash = '\u2014';
+    const money = (n) => n == null ? dash : '$' + Math.round(n).toLocaleString();
+    const num = (n) => n == null ? dash : Math.round(n).toLocaleString();
+    const pct = m.longViews + m.shortViews > 0
+      ? Math.round((m.longViews / (m.longViews + m.shortViews)) * 100) : null;
+
+    host.innerHTML =
+      '<div class="ytc-an__head">' +
+        '<b>Channel analytics</b>' +
+        '<button type="button" class="ytc-an__refresh">Refresh</button>' +
+      '</div>' +
+
+      '<div class="ytc-an__top">' +
+        anCard('Estimated revenue', money(m.revenue),
+          'From ' + m.recentCount + ' video' + (m.recentCount === 1 ? '' : 's') +
+          ' published in the last 28 days', '$') +
+        anCard('Views', num(m.recentViews),
+          'On videos from the last 28 days', '\u25B6') +
+        anCard('RPM' + (m.niche ? ' \u00b7 ' + escapeHtml(m.niche) : ''),
+          m.rpm ? '$' + m.rpm.toFixed(2) : dash, rpmMeter(m.rpm), '\u25CE') +
+      '</div>' +
+
+      '<div class="ytc-an__mid">' +
+        '<div class="ytc-an__panel">' +
+          '<span class="ytc-an__label">Videos vs Shorts views</span>' +
+          (pct == null
+            ? '<p class="ytc-an__note">No view counts on the sampled videos.</p>'
+            : '<span class="ytc-an__bar"><i style="width:' + pct + '%"></i></span>' +
+              '<b class="ytc-an__value">' + F.compact(m.longViews + m.shortViews) + '</b>' +
+              '<span class="ytc-an__sub">' + pct + '% long form, ' + (100 - pct) +
+              '% shorts, across ' + m.sampled + ' recent videos</span>') +
+        '</div>' +
+        '<div class="ytc-an__panel">' +
+          '<span class="ytc-an__label">Top geographies</span>' +
+          '<p class="ytc-an__none">YouTube does not publish audience country for a channel, ' +
+          'and nothing on the page implies it. Any figure here would be invented, so there ' +
+          'is none.</p>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="ytc-an__facts">' +
+        anFact('Subscribers', m.subs == null ? dash : F.compact(m.subs)) +
+        anFact('Total views', m.totalViews == null ? dash : F.compact(m.totalViews)) +
+        anFact('Videos', num(m.videoCount)) +
+        anFact('Avg. views per video', m.avgViews == null ? dash : F.compact(m.avgViews)) +
+        anFact('Days since start', num(m.days)) +
+        anFact('Avg. monthly uploads',
+          m.uploadsPerMo == null ? dash : m.uploadsPerMo.toFixed(2)) +
+        anFact('Avg. video length', m.avgLen == null ? dash : F.formatDuration
+          ? F.formatDuration(m.avgLen) : Math.floor(m.avgLen / 60) + ' min ' +
+            (m.avgLen % 60) + ' sec') +
+        anFact('Has shorts', m.sampled ? (m.hasShorts ? 'Yes' : 'No') : dash) +
+        anFact('Category', m.niche ? escapeHtml(m.niche) : dash) +
+        anFact('Last upload', m.lastUpload ? escapeHtml(m.lastUpload) : dash) +
+      '</div>' +
+
+      '<div class="ytc-an__panel">' +
+        '<span class="ytc-an__label">Age and gender</span>' +
+        '<p class="ytc-an__none">Only the channel owner can see this, in YouTube Studio. It ' +
+        'is not derivable from a public page.</p>' +
+      '</div>' +
+
+      '<p class="ytc-an__foot">Revenue is views multiplied by the reference rate for this ' +
+        'niche, adjusted for nothing else. Audience country moves real RPM further than ' +
+        'niche does, so treat it as a scale rather than a figure.</p>';
+
+    const refresh = host.querySelector('.ytc-an__refresh');
+    if (refresh) refresh.addEventListener('click', () => askAnalytics(true));
+  }
+
   function tabIsVisible(el) {
     if (!el || !el.isConnected) return false;
     const r = el.getBoundingClientRect();
@@ -1613,9 +1820,9 @@
     return out;
   }
 
-  function buildSimilarTab() {
+  function buildSimilarTab(label, extraClass, onClick) {
     const tab = document.createElement('div');
-    tab.className = 'ytc-tab';
+    tab.className = 'ytc-tab' + (extraClass ? ' ' + extraClass : '');
     tab.setAttribute('role', 'tab');
     /* The extension's own icon, so the tab reads as ours and not as one of YouTube's. It is a
        packaged file, so it needs the extension URL — a bare path resolves against youtube.com.
@@ -1626,11 +1833,11 @@
     let icon = '';
     try { icon = chrome.runtime.getURL('icons/icon32.png'); } catch (e) { icon = ''; }
     tab.innerHTML = (icon ? '<img class="ytc-tab__icon" src="' + icon + '" alt="">' : '') +
-      '<span>' + TAB_LABEL + '</span>';
+      '<span>' + (label || TAB_LABEL) + '</span>';
     tab.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openSimilarView();
+      (onClick || openSimilarView)();
     });
     return tab;
   }
@@ -1807,15 +2014,24 @@
         return;
       }
 
-      const existing = document.querySelector('.ytc-tab');
-      if (existing && tabIsVisible(existing)) return;
-      if (existing) existing.remove();   // in a container that never rendered: try again
+      /* Both or neither. Finding one is not proof the other survived a rebuild, and a pass
+         that replaced only the missing one could place it in a different row. */
+      const existing = document.querySelector('.ytc-tab:not(.ytc-tab--an)');
+      const existingAn = document.querySelector('.ytc-tab--an');
+      if (existing && existingAn && tabIsVisible(existing) && tabIsVisible(existingAn)) return;
+      document.querySelectorAll('.ytc-tab').forEach((n) => n.remove());
 
       for (const bar of tabBarCandidates()) {
         if (!tabIsVisible(bar)) continue;
         const tab = buildSimilarTab();
         placeSimilarTab(tab, bar);
         if (!tabIsVisible(tab)) { tab.remove(); continue; }
+
+        /* Analytics goes in beside it, built by the same function so the pair always look
+           alike, and placed relative to it so they cannot end up in different rows. */
+        const an = buildSimilarTab(ANALYTICS_LABEL, 'ytc-tab--an', openAnalyticsView);
+        tab.parentElement.insertBefore(an, tab.nextSibling);
+        if (!tabIsVisible(an)) an.remove();
 
         /* YouTube's own tabs do not know about this one, so clicking any of them has to put
            the page back. Without this the channel's real content stays hidden behind our
@@ -1825,6 +2041,7 @@
           bar.addEventListener('click', (ev) => {
             if (ev.target.closest('.ytc-tab')) return;
             closeSimilarView();
+            closeAnalyticsView();
           }, true);
         }
         return;
@@ -1847,6 +2064,7 @@
   }
 
   function openSimilarView() {
+    closeAnalyticsView();
     simFilter.open = true;
     const content = pageContent();
     if (content) content.style.display = 'none';
@@ -2495,7 +2713,8 @@
       if (stray) stray.remove();
       // Restore YouTube's own content before dropping our view, or it stays display:none.
       closeSimilarView();
-      document.querySelectorAll('.ytc-sim, .ytc-simview').forEach((n) => n.remove());
+      closeAnalyticsView();
+      document.querySelectorAll('.ytc-sim, .ytc-simview, .ytc-an').forEach((n) => n.remove());
       return;
     }
     if (!settings.showMoney) {

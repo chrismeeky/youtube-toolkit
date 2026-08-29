@@ -993,6 +993,59 @@
      YouTube API takes. Discovery has to happen here rather than on the server, because a
      server scraping YouTube search gets the bot interstitial — the extension is on a
      residential connection, which is the only reason this works at all. */
+  /* Videos listed on a channel's own page, read out of the payload rather than the rendered
+     DOM so one background fetch answers instead of asking the user to scroll.
+
+     YouTube has carried these fields through several renderer shapes; the ones matched here
+     are the two that have survived. Anything a page does not yield is left out rather than
+     defaulted, because a zero average length is a wrong answer where a missing one is not. */
+  function channelVideosFromHtml(html) {
+    if (!html) return [];
+    const out = [];
+    const seen = new Set();
+    /* Anchored on videoId and read forward a bounded distance: the fields belong to the same
+       renderer, and scanning further would pick up the next video's. */
+    const re = /"videoId":"([\w-]{11})"([\s\S]{0,1200}?)(?="videoId":"|$)/g;
+    let m;
+    while ((m = re.exec(html)) && out.length < 200) {
+      const id = m[1];
+      if (seen.has(id)) continue;
+      const chunk = m[2];
+      const grab = (rx) => { const g = rx.exec(chunk); return g ? g[1] : ''; };
+
+      const lengthText = grab(/"(?:lengthText|thumbnailOverlayTimeStatusRenderer)"[^}]*?"simpleText":"([\d:]+)"/) ||
+                         grab(/"accessibilityText":"[^"]*?(\d+ minutes?, \d+ seconds?)/) ||
+                         grab(/"simpleText":"(\d{1,2}:\d{2}(?::\d{2})?)"/);
+      const views = grab(/"viewCountText":\{"simpleText":"([^"]+)"/) ||
+                    grab(/"viewCountText":\{[^}]*"text":"([^"]+)"/);
+      const ago = grab(/"publishedTimeText":\{"simpleText":"([^"]+)"/);
+      const title = grab(/"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"/) ||
+                    grab(/"title":\{"simpleText":"((?:[^"\\]|\\.)*)"/);
+
+      // A record with none of the three numbers is a thumbnail reference, not a video.
+      if (!lengthText && !views && !ago) continue;
+      seen.add(id);
+      out.push({
+        id: id,
+        title: title ? title.replace(/\\"/g, '"') : '',
+        seconds: durationToSeconds(lengthText),
+        views: viewsToNumber(views),
+        ago: ago || '',
+        shorts: /"reelWatchEndpoint"/.test(chunk) || chunk.indexOf('/shorts/') >= 0
+      });
+    }
+    return out;
+  }
+
+  function durationToSeconds(text) {
+    if (!text) return null;
+    const parts = String(text).split(':').map((p) => parseInt(p, 10));
+    if (parts.some(isNaN)) return null;
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return null;
+  }
+
   function channelPairsFromSearch(html, depth) {
     if (!html) return [];
     const cut = depth || SEARCH_DEPTH;
@@ -1300,6 +1353,7 @@
     isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken,
     parseChannelStats, adSignalFromHtml, monetizationVerdict, channelPairsFromSearch,
     revenueSignals, revenueSummary, descriptionFromHtml,
+    channelVideosFromHtml, durationToSeconds,
     videoMetrics, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH,
     relativeToDate, vphFromRelative,
     topicQueries, channelsFromSearch, rankSimilar,
