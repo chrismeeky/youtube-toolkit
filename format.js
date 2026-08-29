@@ -996,16 +996,17 @@
   /* Videos listed on a channel's own page, read out of the payload rather than the rendered
      DOM so one background fetch answers instead of asking the user to scroll.
 
-     YouTube has carried these fields through several renderer shapes; the ones matched here
-     are the two that have survived. Anything a page does not yield is left out rather than
-     defaulted, because a zero average length is a wrong answer where a missing one is not. */
+     Two shapes, because YouTube is midway through replacing one with the other. The classic
+     renderers carry videoId with lengthText, viewCountText and publishedTimeText; the newer
+     lockupViewModel carries contentId with the same three facts under content and text keys
+     nested differently. Both are matched by anchoring on the id and reading a bounded
+     distance forward — the fields belong to that renderer, and scanning further would pick up
+     the next video's. */
   function channelVideosFromHtml(html) {
     if (!html) return [];
     const out = [];
     const seen = new Set();
-    /* Anchored on videoId and read forward a bounded distance: the fields belong to the same
-       renderer, and scanning further would pick up the next video's. */
-    const re = /"videoId":"([\w-]{11})"([\s\S]{0,1200}?)(?="videoId":"|$)/g;
+    const re = /"(?:videoId|contentId)":"([\w-]{11})"([\s\S]{0,1500}?)(?="(?:videoId|contentId)":"|$)/g;
     let m;
     while ((m = re.exec(html)) && out.length < 200) {
       const id = m[1];
@@ -1013,16 +1014,18 @@
       const chunk = m[2];
       const grab = (rx) => { const g = rx.exec(chunk); return g ? g[1] : ''; };
 
-      const lengthText = grab(/"(?:lengthText|thumbnailOverlayTimeStatusRenderer)"[^}]*?"simpleText":"([\d:]+)"/) ||
-                         grab(/"accessibilityText":"[^"]*?(\d+ minutes?, \d+ seconds?)/) ||
-                         grab(/"simpleText":"(\d{1,2}:\d{2}(?::\d{2})?)"/);
-      const views = grab(/"viewCountText":\{"simpleText":"([^"]+)"/) ||
-                    grab(/"viewCountText":\{[^}]*"text":"([^"]+)"/);
-      const ago = grab(/"publishedTimeText":\{"simpleText":"([^"]+)"/);
+      /* Matched on the value's own shape rather than on the key that happens to hold it:
+         "12:04" is a duration wherever it appears in this window, "457K views" is a view
+         count, and "6 months ago" is a date. That survives the key being renamed again. */
+      const lengthText = grab(/"(?:simpleText|text|content)":"(\d{1,3}:\d{2}(?::\d{2})?)"/);
+      const views = grab(/"(?:simpleText|text|content)":"([\d.,]+[KMB]? views?)"/i) ||
+                    grab(/"(?:simpleText|text|content)":"(No views)"/i);
+      const ago = grab(/"(?:simpleText|text|content)":"((?:\d+|a|an)\s+\w+\s+ago)"/i) ||
+                  grab(/"(?:simpleText|text|content)":"(Streamed[^"]{0,30}ago)"/i);
       const title = grab(/"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"/) ||
-                    grab(/"title":\{"simpleText":"((?:[^"\\]|\\.)*)"/);
+                    grab(/"title":\{"(?:simpleText|content)":"((?:[^"\\]|\\.)*)"/);
 
-      // A record with none of the three numbers is a thumbnail reference, not a video.
+      // Nothing measurable in the window: a thumbnail reference, not a listed video.
       if (!lengthText && !views && !ago) continue;
       seen.add(id);
       out.push({
@@ -1031,7 +1034,9 @@
         seconds: durationToSeconds(lengthText),
         views: viewsToNumber(views),
         ago: ago || '',
-        shorts: /"reelWatchEndpoint"/.test(chunk) || chunk.indexOf('/shorts/') >= 0
+        /* A short has no duration badge in either shape, and its own reel endpoint in both.
+           Length is the surer test: the badge is present on every long-form entry. */
+        shorts: /reelWatchEndpoint|\/shorts\//.test(chunk) || (!lengthText && !!views)
       });
     }
     return out;

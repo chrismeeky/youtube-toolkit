@@ -1743,11 +1743,17 @@
       '</div>' +
 
       '<div class="ytc-an__top">' +
-        anCard('Estimated revenue', money(m.revenue),
-          'From ' + m.recentCount + ' video' + (m.recentCount === 1 ? '' : 's') +
-          ' published in the last 28 days', '$') +
-        anCard('Views', num(m.recentViews),
-          'On videos from the last 28 days', '\u25B6') +
+        /* A channel with no videos read is a failure to read them, not a channel that
+           published nothing. Reporting 0 there states something false with the same
+           confidence as the figures that are real. */
+        anCard('Estimated revenue', m.sampled ? money(m.revenue) : dash,
+          m.sampled
+            ? 'From ' + m.recentCount + ' video' + (m.recentCount === 1 ? '' : 's') +
+              ' published in the last 28 days'
+            : 'Could not read this channel\u2019s video list', '$') +
+        anCard('Views', m.sampled ? num(m.recentViews) : dash,
+          m.sampled ? 'On videos from the last 28 days'
+                    : 'Could not read this channel\u2019s video list', '\u25B6') +
         anCard('RPM' + (m.niche ? ' \u00b7 ' + escapeHtml(m.niche) : ''),
           m.rpm ? '$' + m.rpm.toFixed(2) : dash, rpmMeter(m.rpm), '\u25CE') +
       '</div>' +
@@ -1756,7 +1762,10 @@
         '<div class="ytc-an__panel">' +
           '<span class="ytc-an__label">Videos vs Shorts views</span>' +
           (pct == null
-            ? '<p class="ytc-an__note">No view counts on the sampled videos.</p>'
+            ? '<p class="ytc-an__note">' + (m.sampled
+                ? 'The sampled videos carried no view counts.'
+                : 'Could not read this channel\u2019s video list. It may be rate limited \u2014 ' +
+                  'Refresh in a minute.') + '</p>'
             : '<span class="ytc-an__bar"><i style="width:' + pct + '%"></i></span>' +
               '<b class="ytc-an__value">' + F.compact(m.longViews + m.shortViews) + '</b>' +
               '<span class="ytc-an__sub">' + pct + '% long form, ' + (100 - pct) +
@@ -1778,9 +1787,8 @@
         anFact('Days since start', num(m.days)) +
         anFact('Avg. monthly uploads',
           m.uploadsPerMo == null ? dash : m.uploadsPerMo.toFixed(2)) +
-        anFact('Avg. video length', m.avgLen == null ? dash : F.formatDuration
-          ? F.formatDuration(m.avgLen) : Math.floor(m.avgLen / 60) + ' min ' +
-            (m.avgLen % 60) + ' sec') +
+        anFact('Avg. video length', m.avgLen == null ? dash
+          : Math.floor(m.avgLen / 60) + ' min ' + (m.avgLen % 60) + ' sec') +
         anFact('Has shorts', m.sampled ? (m.hasShorts ? 'Yes' : 'No') : dash) +
         anFact('Category', m.niche ? escapeHtml(m.niche) : dash) +
         anFact('Last upload', m.lastUpload ? escapeHtml(m.lastUpload) : dash) +
@@ -1792,6 +1800,10 @@
         'is not derivable from a public page.</p>' +
       '</div>' +
 
+      (m.sampled ? '' :
+        '<p class="ytc-an__none">The figures above that need the channel\u2019s video list ' +
+        'are blank because it could not be read. Everything else comes from the channel page ' +
+        'itself and is unaffected.</p>') +
       '<p class="ytc-an__foot">Revenue is views multiplied by the reference rate for this ' +
         'niche, adjusted for nothing else. Audience country moves real RPM further than ' +
         'niche does, so treat it as a scale rather than a figure.</p>';
