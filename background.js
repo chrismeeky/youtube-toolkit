@@ -66,7 +66,7 @@ const GAP_MS = 150;
 /* Bump whenever a cached value's MEANING changes, not just its shape. Similar-channel
    results are cached for a week, so six rounds of query fixes were invisible to anyone who
    had already opened the panel once — they kept seeing results built by the old logic. */
-const CACHE_VERSION = 9;  // monetization entries now carry revenue streams; old ones have none
+const CACHE_VERSION = 10; // niche classification changed; entries cached under 9 can be wrong
 
 const MAX_BYTES = 3000000;      // some channel pages bury the count deep in ytInitialData
 /* The /about cap is its own number because the lifetime totals sit at the very END of the
@@ -619,6 +619,7 @@ function pushToIndex(base, pairs) {
 }
 
 const TTL_NICHE = 30 * 24 * 60 * 60 * 1000;   // a channel's subject does not drift weekly
+const TTL_NICHE_MISS = 24 * 60 * 60 * 1000;   // a refusal is worth rechecking sooner than that
 
 async function getNiche(key, opts) {
   const id = 'niche:' + key;
@@ -649,6 +650,14 @@ async function getNiche(key, opts) {
       const entry = Object.assign({}, out, { t: Date.now(), v: CACHE_VERSION });
       await chrome.storage.local.set({ [id]: entry });
       return entry;
+    }
+    /* "No niche fits" is a real answer and worth keeping, or every video on that channel
+       asks again. Held briefly rather than for a month: the index may classify the channel
+       once it has more of its text. */
+    if (out && out.reason) {
+      const entry = Object.assign({}, out, { t: Date.now() - TTL_NICHE + TTL_NICHE_MISS,
+                                             v: CACHE_VERSION });
+      await chrome.storage.local.set({ [id]: entry });
     }
     return out || { ok: false };
   } catch (e) {

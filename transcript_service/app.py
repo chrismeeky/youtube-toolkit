@@ -173,6 +173,8 @@ NICHES = [
     ("Aviation and transport", 5.0, "aviation, aircraft, air crash investigation, trains, ships, transport"),
     ("Science and space", 5.0, "science, space, astronomy, physics, engineering, nature documentaries"),
     ("Pets and animals", 4.0, "pets, dogs, cats, animals, wildlife, aquariums"),
+    ("Storytelling and drama", 3.5, "narrated stories, folktales, fiction, drama series, audio stories, tales, moral stories"),
+    ("Religion and spirituality", 4.5, "church, sermons, faith, prayer, bible, gospel, spirituality, pastor"),
     ("Comedy and entertainment", 3.5, "comedy, sketches, entertainment, reactions, pranks, challenges, vlogs"),
     ("Gaming", 3.0, "gaming, gameplay, walkthrough, minecraft, fortnite, esports, streamers"),
     ("Anime and animation", 2.5, "anime, manga, animation, cartoons, recaps, storytelling"),
@@ -209,6 +211,13 @@ def _cosine(a, b):
     return dot / ((num ** 0.5) * (den ** 0.5))
 
 
+# Below this, no niche is claimed. Channels that clearly belong somewhere score 0.42 to 0.57
+# against their niche; a folktales channel with nothing in the table to match scored 0.297 and
+# was handed "Kids and family", which is a worse answer than admitting there is none. The
+# caller falls back to the flat rate, which is what it used before any of this existed.
+NICHE_FLOOR = 0.38
+
+
 def niche_for(vector, top=2):
     """The closest niches, and an RPM blended between them by how close each one is.
 
@@ -232,6 +241,9 @@ def niche_for(vector, top=2):
     weights = [math.exp((sc - best) / NICHE_TEMP) for sc, _ in scored]
     total = sum(weights) or 1.0
     rpm = sum(w * n[1] for w, (_, n) in zip(weights, scored)) / total
+    if best < NICHE_FLOOR:
+        return {"niche": None, "confidence": round(best, 3),
+                "reason": "no niche fits this channel well enough"}
     return {
         "niche": scored[0][1][0],
         "also": [n[0] for _, n in scored[1:]],
@@ -1427,6 +1439,10 @@ class Handler(BaseHTTPRequestHandler):
             out = niche_for(vector)
             if not out:
                 self._send(200, {"ok": False, "reason": "could not classify"})
+                return
+            if not out.get("niche"):
+                out["ok"] = False
+                self._send(200, out)
                 return
             out["ok"] = True
             out["indexed"] = bool(known)
