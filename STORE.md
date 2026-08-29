@@ -217,4 +217,4 @@ unrelated to the extension's single purpose.
 > No data is sold or shared with third parties. No advertising or tracking libraries are
 > included, and the extension contains no remotely loaded code.
 >
-> Questions: <your contact address>
+> Questions: nwodochristian@gmail.com

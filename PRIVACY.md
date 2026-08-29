@@ -81,4 +81,4 @@ version ships.
 
 ## Contact
 
-Questions about this policy: <your contact address>
+Questions about this policy: nwodochristian@gmail.com
