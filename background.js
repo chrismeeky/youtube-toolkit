@@ -66,7 +66,7 @@ const GAP_MS = 150;
 /* Bump whenever a cached value's MEANING changes, not just its shape. Similar-channel
    results are cached for a week, so six rounds of query fixes were invisible to anyone who
    had already opened the panel once — they kept seeing results built by the old logic. */
-const CACHE_VERSION = 8;  // similar-channel queries rebuilt; old results are not comparable
+const CACHE_VERSION = 9;  // monetization entries now carry revenue streams; old ones have none
 
 const MAX_BYTES = 3000000;      // some channel pages bury the count deep in ytInitialData
 /* The /about cap is its own number because the lifetime totals sit at the very END of the
@@ -347,7 +347,11 @@ async function adSignalFor(videoId) {
       if (done) break;
       read += value.length;
       buf += decoder.decode(value, { stream: true });
-      if (buf.indexOf('"adPlacements"') >= 0) break;        // settled: monetized
+      /* Both markers, not just the first. Stopping at adPlacements often cut the buffer
+         before shortDescription arrived, and the description is where every revenue stream
+         other than ads is read from — so the early exit was quietly costing the feature its
+         evidence. */
+      if (buf.indexOf('"adPlacements"') >= 0 && buf.indexOf('"shortDescription"') >= 0) break;
       if (buf.indexOf('ytInitialData') >= 0) break;         // player response closed: settled
     }
   } catch (e) {
@@ -355,7 +359,15 @@ async function adSignalFor(videoId) {
   } finally {
     try { await reader.cancel(); } catch (e) { /* already closed */ }
   }
-  return F.adSignalFromHtml(buf);
+  /* The ad counts stay at the top level so monetizationVerdict keeps reading them where it
+     always has; the revenue streams ride alongside. */
+  const rev = F.revenueSignals(buf);
+  const ads = (rev && rev.ads) || F.adSignalFromHtml(buf);
+  if (!ads) return null;
+  return Object.assign({}, ads, {
+    declaredPaid: !!(rev && rev.declaredPaid),
+    streams: (rev && rev.streams) || {}
+  });
 }
 
 async function getMonetization(key, force) {
@@ -400,6 +412,7 @@ async function getMonetization(key, force) {
     state: verdict.state,
     checked: verdict.checked,
     withAds: verdict.withAds,
+    streams: F.revenueSummary(samples),
     subs,
     t: Date.now(),
     v: CACHE_VERSION

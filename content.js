@@ -1868,6 +1868,77 @@
       lead: 'Not enough samples to judge' }
   };
 
+  /* The breakdown behind the badge.
+
+     The badge answers "is this channel earning". The obvious next question is "how", and the
+     evidence for it was already being collected and thrown away. Each row names the stream,
+     how many of the sampled videos carried it, and the line that decided it — so the reader
+     can judge the call instead of taking it. */
+  function closeRevenuePanel() {
+    document.querySelectorAll('.ytc-rev').forEach((n) => n.remove());
+  }
+
+  function openRevenuePanel(anchorEl, res) {
+    closeRevenuePanel();
+    const streams = (res && res.streams) || [];
+    const label = MONEY_LABEL[res && res.state] || MONEY_LABEL.unknown;
+
+    const rows = streams.length
+      ? streams.map((st) =>
+          '<div class="ytc-rev__row">' +
+            '<span class="ytc-rev__tick">\u2713</span>' +
+            '<span class="ytc-rev__body">' +
+              '<span class="ytc-rev__name">' + escapeHtml(st.label) + '</span>' +
+              '<span class="ytc-rev__hint">' + escapeHtml(st.hint) + '</span>' +
+              '<span class="ytc-rev__eg">' + escapeHtml(st.example) + '</span>' +
+            '</span>' +
+            '<span class="ytc-rev__n">' + st.videos +
+              (st.videos === 1 ? ' video' : ' videos') + '</span>' +
+          '</div>').join('')
+      : '<p class="ytc-rev__none">No revenue streams found in the sampled descriptions.</p>';
+
+    const ads = res && res.withAds
+      ? '<div class="ytc-rev__row">' +
+          '<span class="ytc-rev__tick">\u2713</span>' +
+          '<span class="ytc-rev__body">' +
+            '<span class="ytc-rev__name">YouTube ads</span>' +
+            '<span class="ytc-rev__hint">Ad slots served on the video</span>' +
+          '</span>' +
+          '<span class="ytc-rev__n">' + res.withAds +
+            (res.withAds === 1 ? ' video' : ' videos') + '</span>' +
+        '</div>'
+      : '';
+
+    const panel = document.createElement('div');
+    panel.className = 'ytc-rev';
+    panel.innerHTML =
+      '<div class="ytc-rev__head">' +
+        '<b>' + escapeHtml(label.big) + '</b>' +
+        '<button type="button" class="ytc-rev__x" aria-label="Close">\u00d7</button>' +
+      '</div>' +
+      '<p class="ytc-rev__sub">Based on ' + (res && res.checked ? res.checked : 0) +
+        ' sampled ' + ((res && res.checked) === 1 ? 'video' : 'videos') + '.</p>' +
+      ads + rows +
+      '<p class="ytc-rev__foot">Read from what the videos disclose. Evidence of a stream, ' +
+        'not a measure of income.</p>';
+
+    document.body.appendChild(panel);
+    const r = anchorEl.getBoundingClientRect();
+    // Kept inside the viewport: the badge sits near the right edge on a channel header.
+    const left = Math.min(r.left, window.innerWidth - panel.offsetWidth - 12);
+    panel.style.top = (r.bottom + window.scrollY + 8) + 'px';
+    panel.style.left = (Math.max(12, left) + window.scrollX) + 'px';
+
+    panel.querySelector('.ytc-rev__x').addEventListener('click', closeRevenuePanel);
+    setTimeout(() => {
+      document.addEventListener('click', function away(e) {
+        if (panel.contains(e.target)) return;
+        closeRevenuePanel();
+        document.removeEventListener('click', away);
+      });
+    }, 0);
+  }
+
   function moneyTitle(res, videoNote) {
     const label = MONEY_LABEL[res.state] || MONEY_LABEL.unknown;
     const parts = [label.lead];
@@ -1930,6 +2001,13 @@
       el.textContent = label.text;
     }
     el.title = moneyTitle(safe, videoNote) + (retryable ? '. Click to try again' : '');
+
+    /* Only the channel-page pill opens the breakdown. The card badge is 18px and already has
+       a click meaning when a verdict needs retrying. */
+    if (big && !retryable) {
+      el.classList.add('ytc-money--more');
+      el.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openRevenuePanel(el, safe); };
+    }
   }
 
   /* An "unknown" badge should never be a dead end that only a page reload clears. */

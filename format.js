@@ -594,6 +594,80 @@
 
   /* Ad placements read out of a watch page's HTML, for the channel-page sampler which has
      no live player to ask. Mirrors page.js adSignal() so both paths agree. */
+  /* Where a channel's money comes from, read out of pages already fetched.
+
+     The ad-slot check downloads three watch pages and keeps only a count of placements. The
+     description sits in the same HTML and was being thrown away, so every stream below costs
+     nothing extra to detect — no request, no quota, no extra wait.
+
+     Each is evidence of a revenue stream, not proof of income: an Amazon link may carry no
+     affiliate tag, and a merch link may sell nothing. The panel says how many of the sampled
+     videos carried each, so a single stray link reads as what it is.  */
+  const REVENUE_RULES = [
+    { key: 'sponsor', label: 'Sponsorships', hint: 'Paid promotions & brand deals',
+      // "Thanks to X for sponsoring" is the near-universal phrasing, and YouTube's own
+      // disclosure is checked separately in revenueSignals — it is the authoritative one.
+      re: /\b(sponsored by|thanks to [^.\n]{1,40} for sponsoring|in partnership with|paid promotion|use code\s+\w+|promo code)\b/i },
+    { key: 'affiliate', label: 'Affiliate links', hint: 'Commissioned product links',
+      // Matched on known affiliate hosts and Amazon's own short forms rather than on the word
+      // "affiliate", which appears in disclaimers on channels that carry none.
+      re: /(amzn\.to|a\.co\/|amazon\.[a-z.]+\/[^\s]*tag=|shareasale|impact\.com|geni\.us|ltk\.app|rstyle\.me|\bref=[a-z0-9_-]{4,})/i },
+    { key: 'product', label: 'Products', hint: 'Merch, books, downloads, store',
+      re: /\b(new merch|merch(andise)?\s*[:\-]|my (new )?(book|course|ebook|preset|app)\b|shop(ify)?\.|teespring|fourthwall|\.store\b|\bstore\.[a-z0-9-]+\.[a-z]{2,})/i },
+    { key: 'donation', label: 'Donations', hint: 'Tips & viewer contributions',
+      re: /\b(patreon\.com|ko-?fi\.com|buymeacoffee|gofundme|paypal\.me|cash\.app|donate\b|donation)\b/i }
+  ];
+
+  /* The description as YouTube stores it, out of the player payload. Read from the JSON
+     rather than the rendered page because a soft navigation leaves the old description in
+     the DOM long after the video has changed. */
+  function descriptionFromHtml(html) {
+    const m = /"shortDescription":"((?:[^"\\]|\\.)*)"/.exec(html || '');
+    if (!m) return '';
+    try {
+      return JSON.parse('"' + m[1] + '"');
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function revenueSignals(html) {
+    if (!html) return null;
+    const desc = descriptionFromHtml(html);
+    const out = {
+      ads: adSignalFromHtml(html),
+      // YouTube's own "includes paid promotion" disclosure: a declaration by the creator
+      // rather than a guess from wording, so it outranks the phrasing rule.
+      declaredPaid: html.indexOf('paidContentOverlay') >= 0,
+      streams: {}
+    };
+    for (const rule of REVENUE_RULES) {
+      const hit = rule.re.exec(desc);
+      if (hit) {
+        // The line it appeared on, so the panel can show why it decided this.
+        const line = desc.split('\n').find((l) => rule.re.test(l)) || hit[0];
+        out.streams[rule.key] = line.trim().slice(0, 160);
+      }
+    }
+    if (out.declaredPaid && !out.streams.sponsor) {
+      out.streams.sponsor = 'YouTube paid-promotion disclosure on this video';
+    }
+    return out;
+  }
+
+  /* Across the sampled videos: which streams appeared, on how many, and one example each. */
+  function revenueSummary(samples) {
+    const seen = (samples || []).filter(Boolean);
+    const out = [];
+    for (const rule of REVENUE_RULES) {
+      const hits = seen.filter((s) => s.streams && s.streams[rule.key]);
+      if (!hits.length) continue;
+      out.push({ key: rule.key, label: rule.label, hint: rule.hint,
+                 videos: hits.length, example: hits[0].streams[rule.key] });
+    }
+    return out;
+  }
+
   function adSignalFromHtml(html) {
     if (!html) return null;
     if (html.indexOf('"adPlacements"') < 0) {
@@ -1177,6 +1251,7 @@
     merge, formatOne, formatList, viewsToNumber, relativeToISO, compact, parseSubscribers,
     isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken,
     parseChannelStats, adSignalFromHtml, monetizationVerdict, channelPairsFromSearch,
+    revenueSignals, revenueSummary, descriptionFromHtml,
     videoMetrics, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH,
     relativeToDate, vphFromRelative,
     topicQueries, channelsFromSearch, rankSimilar,
