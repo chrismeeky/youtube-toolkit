@@ -963,10 +963,23 @@
   /* The channel's niche rate, once the index has classified it. Held for the current channel
      only, so a soft navigation to a different channel cannot price this video at the last
      one's rate. */
-  const nicheState = { key: '', rpm: 0, label: '' };
+  const nicheState = { key: '', rpm: 0, label: '', asked: false };
 
   function renderMetrics(card, stats, videoId) {
     trackCardVideo(videoId);
+
+    /* Cleared before anything is drawn, not after. Navigating from a car review to a politics
+       interview kept pricing at the automotive rate: the card was rendered with the previous
+       channel's figure and only then was the state reset, so a lookup that came back with no
+       niche left the stale rate on screen with nothing to replace it. */
+    const key = (stats && stats.channelHandle) || '';
+    if (nicheState.key !== key) {
+      nicheState.key = key;
+      nicheState.rpm = 0;
+      nicheState.label = '';
+      nicheState.asked = false;
+    }
+
     const m = F.videoMetrics(stats, Date.now(), nicheState.rpm);
     // Only overwrite on success: a read that came back empty should leave a card that is
     // already showing this video's numbers alone rather than removing it.
@@ -976,13 +989,10 @@
     }
     renderStatsCard();
 
-    /* Asked once per channel and cached for a month in the service worker. When it lands the
-       card is drawn again, because the first draw used the flat rate. */
-    const key = (stats && stats.channelHandle) || '';
-    if (!key || !settings.showStats || nicheState.key === key) return;
-    nicheState.key = key;
-    nicheState.rpm = 0;
-    nicheState.label = '';
+    /* Asked once per channel and cached in the service worker. When it lands the card is
+       drawn again, because the first draw used the flat rate. */
+    if (!key || !settings.showStats || nicheState.asked) return;
+    nicheState.asked = true;
     /* The video's title, only as a fallback for a channel the index has not classified yet.
        One title is a thin signal — the point of asking the index is that its vector was built
        from the channel's description and many titles together — but it beats no answer, and
