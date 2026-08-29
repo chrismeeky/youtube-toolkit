@@ -311,11 +311,20 @@ def _cosine(a, b):
     return dot / ((num ** 0.5) * (den ** 0.5))
 
 
-# Below this, no niche is claimed. Channels that clearly belong somewhere score 0.42 to 0.57
-# against their niche; a folktales channel with nothing in the table to match scored 0.297 and
-# was handed "Kids and family", which is a worse answer than admitting there is none. The
-# caller falls back to the flat rate, which is what it used before any of this existed.
-NICHE_FLOOR = 0.38
+# How far the best niche stands above the channel's own average across all of them, in
+# standard deviations — not the raw score.
+#
+# A raw threshold measures how richly a channel describes itself rather than how well it
+# matches. A news channel whose description reads only "ORIGINAL CONTENTS AT ITS BEST" scored
+# 0.310 against News and politics, below a 0.38 floor, while scoring 2.7 deviations above its
+# own baseline — a clearer signal than a channel that passed the floor at 0.418. Thin text
+# scores low against everything, so the comparison has to be against the rest of that
+# channel's own scores.
+#
+# The absolute minimum stays as a backstop against a match that is nominally distinctive but
+# too weak to mean anything.
+NICHE_MIN_Z = 2.0
+NICHE_MIN_COS = 0.25
 
 
 def niche_for(vector, top=2):
@@ -328,9 +337,13 @@ def niche_for(vector, top=2):
     vecs = niche_vectors()
     if not vecs or not vector:
         return None
-    scored = sorted(
-        ((_cosine(vector, v), NICHES[i]) for i, v in enumerate(vecs)),
-        key=lambda pair: pair[0], reverse=True)[:max(1, top)]
+    every = [(_cosine(vector, v), NICHES[i]) for i, v in enumerate(vecs)]
+    scored = sorted(every, key=lambda pair: pair[0], reverse=True)[:max(1, top)]
+
+    # The channel's own spread, which is what the best score has to stand out from.
+    raw = [sc for sc, _ in every]
+    mean = sum(raw) / len(raw)
+    sd = (sum((x - mean) ** 2 for x in raw) / len(raw)) ** 0.5 or 1e-9
 
     # Softmax rather than raw cosine. Every niche scores between about 0.40 and 0.52 against
     # any channel, so weighting by the score directly gives a plainly wrong runner-up almost
@@ -341,13 +354,15 @@ def niche_for(vector, top=2):
     weights = [math.exp((sc - best) / NICHE_TEMP) for sc, _ in scored]
     total = sum(weights) or 1.0
     rpm = sum(w * n[1] for w, (_, n) in zip(weights, scored)) / total
-    if best < NICHE_FLOOR:
-        return {"niche": None, "confidence": round(best, 3),
+    zscore = (best - mean) / sd
+    if best < NICHE_MIN_COS or zscore < NICHE_MIN_Z:
+        return {"niche": None, "confidence": round(best, 3), "z": round(zscore, 2),
                 "reason": "no niche fits this channel well enough"}
     return {
         "niche": scored[0][1][0],
         "also": [n[0] for _, n in scored[1:]],
         "confidence": round(scored[0][0], 3),
+        "z": round(zscore, 2),
         "rpm": round(rpm, 2)
     }
 
