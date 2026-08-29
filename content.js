@@ -1874,7 +1874,22 @@
      evidence for it was already being collected and thrown away. Each row names the stream,
      how many of the sampled videos carried it, and the line that decided it — so the reader
      can judge the call instead of taking it. */
+  let revOpenTimer = null;
+  let revCloseTimer = null;
+
+  function holdRevenuePanel() {
+    clearTimeout(revCloseTimer);
+    revCloseTimer = null;
+  }
+
+  function scheduleRevenueClose() {
+    clearTimeout(revCloseTimer);
+    revCloseTimer = setTimeout(closeRevenuePanel, 260);
+  }
+
   function closeRevenuePanel() {
+    clearTimeout(revOpenTimer);
+    clearTimeout(revCloseTimer);
     document.querySelectorAll('.ytc-rev').forEach((n) => n.remove());
   }
 
@@ -1912,10 +1927,7 @@
     const panel = document.createElement('div');
     panel.className = 'ytc-rev';
     panel.innerHTML =
-      '<div class="ytc-rev__head">' +
-        '<b>' + escapeHtml(label.big) + '</b>' +
-        '<button type="button" class="ytc-rev__x" aria-label="Close">\u00d7</button>' +
-      '</div>' +
+      '<div class="ytc-rev__head"><b>' + escapeHtml(label.big) + '</b></div>' +
       '<p class="ytc-rev__sub">Based on ' + (res && res.checked ? res.checked : 0) +
         ' sampled ' + ((res && res.checked) === 1 ? 'video' : 'videos') + '.</p>' +
       ads + rows +
@@ -1929,14 +1941,11 @@
     panel.style.top = (r.bottom + window.scrollY + 8) + 'px';
     panel.style.left = (Math.max(12, left) + window.scrollX) + 'px';
 
-    panel.querySelector('.ytc-rev__x').addEventListener('click', closeRevenuePanel);
-    setTimeout(() => {
-      document.addEventListener('click', function away(e) {
-        if (panel.contains(e.target)) return;
-        closeRevenuePanel();
-        document.removeEventListener('click', away);
-      });
-    }, 0);
+    /* Moving the pointer from the pill to the panel crosses a gap, so leaving either one
+       only schedules the close; entering the other cancels it. Without that the panel shuts
+       on the way to it and can never be read. */
+    panel.addEventListener('mouseenter', holdRevenuePanel);
+    panel.addEventListener('mouseleave', scheduleRevenueClose);
   }
 
   function moneyTitle(res, videoNote) {
@@ -2006,7 +2015,24 @@
        a click meaning when a verdict needs retrying. */
     if (big && !retryable) {
       el.classList.add('ytc-money--more');
-      el.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openRevenuePanel(el, safe); };
+      /* A short delay so passing over the pill on the way somewhere else does not flash the
+         panel open. */
+      el.onmouseenter = () => {
+        holdRevenuePanel();
+        clearTimeout(revOpenTimer);
+        revOpenTimer = setTimeout(() => openRevenuePanel(el, safe), 160);
+      };
+      el.onmouseleave = () => {
+        clearTimeout(revOpenTimer);
+        scheduleRevenueClose();
+      };
+      /* Touch has no hover, so the tap has to work too — and a second tap closes it. */
+      el.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (document.querySelector('.ytc-rev')) closeRevenuePanel();
+        else openRevenuePanel(el, safe);
+      };
     }
   }
 

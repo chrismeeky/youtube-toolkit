@@ -668,14 +668,7 @@ html[dark] .ytc-money--lg.ytc-money--no { color: #ff8a80; border-color: #ff8a80;
   border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,.18);
   font-family: Roboto, Arial, sans-serif; overflow: hidden;
 }
-.ytc-rev__head {
-  display: flex; align-items: center; gap: 8px;
-  padding: 14px 16px 6px; font-size: 16px;
-}
-.ytc-rev__x {
-  margin-left: auto; border: 0; background: none; cursor: pointer;
-  font-size: 20px; line-height: 1; color: var(--yt-spec-text-secondary, #606060);
-}
+.ytc-rev__head { padding: 14px 16px 6px; font-size: 16px; }
 .ytc-rev__sub {
   margin: 0 0 8px; padding: 0 16px;
   font-size: 12px; color: var(--yt-spec-text-secondary, #606060);
@@ -715,4 +708,4 @@ html[dark] .ytc-rev__row, html[dark] .ytc-rev__none, html[dark] .ytc-rev__foot {
   border-top-color: rgba(255,255,255,.1);
 }
 html[dark] .ytc-rev__sub, html[dark] .ytc-rev__hint,
-html[dark] .ytc-rev__eg, html[dark] .ytc-rev__n, html[dark] .ytc-rev__x { color: #aaa; }
+html[dark] .ytc-rev__eg, html[dark] .ytc-rev__n { color: #aaa; }
