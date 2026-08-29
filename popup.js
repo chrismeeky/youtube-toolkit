@@ -10,7 +10,8 @@
      deprecated. Their stored values are left untouched so nothing is lost if it comes back;
      they simply have no control here any more. */
   const TOGGLES = ['csvHeader', 'numericViews', 'absoluteDate', 'quoteTitle', 'showButtons',
-    'toast', 'showSubs', 'showRatio', 'showMoney', 'showStats', 'showSimilar', 'showThumb',
+    'toast', 'showSubs', 'showRatio', 'showMoney', 'showStats', 'showSimilar', 'showFilter',
+    'showThumb',
     'showTranscript',
     'transcriptTimestamps', 'transcriptSave'];
 

@@ -699,6 +699,7 @@
     /* Kept out of decorateChannelHeader deliberately: that function returns early when the
        monetization badge is switched off, which would silently take the tab with it. */
     ensureSimilarTab();
+    ensureFilterButton();
     noteChannelSeen();
     renderStatsCard();
     const watch = watchCard();
@@ -2496,6 +2497,11 @@
          as the fallback for channels whose /about page did not yield totals. */
       const avgViews = entry.stats && entry.stats.avgViews > 0 ? entry.stats.avgViews : 0;
       const denom = avgViews || subsN;
+      /* Stamped on the card so the filter can read these back without re-parsing the badges
+         it just drew. Every number here was computed to render the badge anyway. */
+      card.dataset.ytcSubsN = subsN || '';
+      card.dataset.ytcViewsN = (viewsN == null ? '' : viewsN);
+      card.dataset.ytcDenomN = denom || '';
       if (settings.showRatio && denom > 0 && viewsN != null) {
         const shown = ratioLabel(viewsN / denom);
         parts.push('<span class="ytc-ratio ' + ratioClass(shown.value) + '" title="' +
@@ -2895,6 +2901,269 @@
     settings = F.merge(Object.assign({}, settings, patch));
     applySettings();
   });
+
+  /* ---------------------------------------------------- scrolled-video filter */
+
+  /* Everything the page has loaded, read back off the cards.
+
+     The point of it is that YouTube's own results cannot be filtered by the numbers that
+     matter for research — subscriber count, or views against the channel's size. Scrolling
+     loads them; this reads what was loaded and lets it be narrowed. Nothing is fetched: every
+     figure here was already on screen. */
+  const FILTER_STATE = {
+    kind: 'all',            // all | shorts | long
+    minSubs: '', maxSubs: '',
+    minViews: '', maxViews: '',
+    age: '',                // '' | 1 | 7 | 30 | 90 | 365, in days
+    sort: 'ratio',          // ratio | subs | views | date
+    desc: true
+  };
+
+  function collectScrolled() {
+    const out = [];
+    const seen = new Set();
+    document.querySelectorAll('.ytc-card').forEach((card) => {
+      if (card.offsetParent === null) return;
+      const v = readCard(card);
+      if (!v || !v.url || seen.has(v.url)) return;
+      seen.add(v.url);
+      const num = (k) => {
+        const raw = card.dataset[k];
+        return raw === '' || raw == null ? null : Number(raw);
+      };
+      const views = num('ytcViewsN');
+      const denom = num('ytcDenomN');
+      out.push({
+        title: v.title,
+        url: v.url,
+        channel: v.channel || '',
+        views: views,
+        subs: num('ytcSubsN'),
+        ratio: (views != null && denom) ? views / denom : null,
+        ageDays: daysSince(F.relativeToISO(v.date, Date.now())),
+        shorts: /\/shorts\//.test(v.url),
+        thumb: (card.querySelector('img[src*="i.ytimg.com"]') || {}).src || '',
+        date: v.date || ''
+      });
+    });
+    return out;
+  }
+
+  function applyFilter(rows) {
+    const f = FILTER_STATE;
+    const numOr = (v, d) => (v === '' || v == null || isNaN(Number(v)) ? d : Number(v));
+    const minSubs = numOr(f.minSubs, -Infinity), maxSubs = numOr(f.maxSubs, Infinity);
+    const minViews = numOr(f.minViews, -Infinity), maxViews = numOr(f.maxViews, Infinity);
+    const maxAge = numOr(f.age, Infinity);
+
+    const kept = rows.filter((r) => {
+      if (f.kind === 'shorts' && !r.shorts) return false;
+      if (f.kind === 'long' && r.shorts) return false;
+      /* A missing number fails a range the user set, and passes one they did not. Treating
+         unknown as zero would park every un-looked-up card at the bottom of a subscriber
+         filter and look like the filter had eaten them. */
+      if (f.minSubs !== '' || f.maxSubs !== '') {
+        if (r.subs == null || r.subs < minSubs || r.subs > maxSubs) return false;
+      }
+      if (f.minViews !== '' || f.maxViews !== '') {
+        if (r.views == null || r.views < minViews || r.views > maxViews) return false;
+      }
+      if (f.age !== '' && (r.ageDays == null || r.ageDays > maxAge)) return false;
+      return true;
+    });
+
+    const key = { ratio: (r) => r.ratio, subs: (r) => r.subs,
+                  views: (r) => r.views, date: (r) => (r.ageDays == null ? null : -r.ageDays) };
+    const get = key[f.sort] || key.ratio;
+    const dir = f.desc ? 1 : -1;
+    return kept.sort((a, b) => {
+      const x = get(a), y = get(b);
+      // Rows with no value sink, whichever way the column is pointing.
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return (y - x) * dir;
+    });
+  }
+
+  const FILTER_SORTS = [
+    { key: 'date', label: 'Upload date' },
+    { key: 'subs', label: 'Channel subscribers' },
+    { key: 'views', label: 'Video views' },
+    { key: 'ratio', label: 'Views vs channel average' }
+  ];
+
+  const AGE_CHOICES = [
+    { v: '', label: 'Any time' }, { v: '1', label: 'Last 24 hours' },
+    { v: '7', label: 'This week' }, { v: '30', label: 'This month' },
+    { v: '90', label: 'Last 3 months' }, { v: '365', label: 'This year' }
+  ];
+
+  function closeFilterModal() {
+    document.querySelectorAll('.ytc-fm, .ytc-fm__veil').forEach((n) => n.remove());
+    document.documentElement.style.overflow = '';
+  }
+
+  function filterRow(r) {
+    const shown = r.ratio == null ? null : ratioLabel(r.ratio);
+    const ratio = shown == null ? '' :
+      '<span class="ytc-fm__ratio ytc-ratio--' + ratioTier(shown.value) + '">' +
+      shown.text + '</span>';
+    return '<a class="ytc-fm__row" href="' + escapeHtml(r.url) +
+      '" target="_blank" rel="noopener noreferrer">' +
+      (r.thumb ? '<img class="ytc-fm__thumb" src="' + escapeHtml(r.thumb) + '" alt="" loading="lazy">'
+               : '<span class="ytc-fm__thumb ytc-fm__thumb--none"></span>') +
+      '<span class="ytc-fm__meta">' +
+        '<span class="ytc-fm__title">' + escapeHtml(r.title) + '</span>' +
+        '<span class="ytc-fm__nums">' +
+          (r.views == null ? '' : F.compact(r.views) + ' views') +
+          (r.date ? ' \u00b7 ' + escapeHtml(r.date) : '') + ratio +
+        '</span>' +
+        '<span class="ytc-fm__chan">' + escapeHtml(r.channel || '') +
+          (r.subs == null ? '' :
+            '<span class="ytc-fm__subs">' + F.compact(r.subs) + ' subscribers</span>') +
+        '</span>' +
+      '</span>' +
+    '</a>';
+  }
+
+  function paintFilterResults(all) {
+    const box = document.querySelector('.ytc-fm__results');
+    const count = document.querySelector('.ytc-fm__count');
+    if (!box) return;
+    const rows = applyFilter(all);
+    if (count) {
+      count.textContent = rows.length + ' of ' + all.length +
+        (all.length === 1 ? ' video' : ' videos');
+    }
+    box.innerHTML = rows.length
+      ? rows.map(filterRow).join('')
+      : '<p class="ytc-fm__none">Nothing on this page matches. Widen a range, or scroll ' +
+        'YouTube further and reopen \u2014 only what has loaded can be filtered.</p>';
+  }
+
+  function openFilterModal() {
+    closeFilterModal();
+    const all = collectScrolled();
+
+    const veil = document.createElement('div');
+    veil.className = 'ytc-fm__veil';
+
+    const modal = document.createElement('div');
+    modal.className = 'ytc-fm';
+    const num = (id, ph, val) =>
+      '<input class="ytc-fm__num" type="number" min="0" data-f="' + id +
+      '" placeholder="' + ph + '" value="' + (val === '' ? '' : val) + '">';
+
+    modal.innerHTML =
+      '<div class="ytc-fm__head">' +
+        '<b>Filter what you have scrolled</b>' +
+        '<span class="ytc-fm__count"></span>' +
+        '<button type="button" class="ytc-fm__x" aria-label="Close">\u00d7</button>' +
+      '</div>' +
+      '<div class="ytc-fm__body">' +
+        '<div class="ytc-fm__side">' +
+          '<label class="ytc-fm__lbl">Show</label>' +
+          '<div class="ytc-fm__seg">' +
+            ['all', 'shorts', 'long'].map((k) =>
+              '<button type="button" data-kind="' + k + '"' +
+              (FILTER_STATE.kind === k ? ' class="on"' : '') + '>' +
+              (k === 'all' ? 'All' : k === 'shorts' ? 'Shorts' : 'Long form') +
+              '</button>').join('') +
+          '</div>' +
+          '<label class="ytc-fm__lbl">Subscribers</label>' +
+          '<div class="ytc-fm__pair">' + num('minSubs', 'min', FILTER_STATE.minSubs) +
+            num('maxSubs', 'max', FILTER_STATE.maxSubs) + '</div>' +
+          '<label class="ytc-fm__lbl">Views</label>' +
+          '<div class="ytc-fm__pair">' + num('minViews', 'min', FILTER_STATE.minViews) +
+            num('maxViews', 'max', FILTER_STATE.maxViews) + '</div>' +
+          '<label class="ytc-fm__lbl">Uploaded</label>' +
+          '<select class="ytc-fm__sel" data-f="age">' +
+            AGE_CHOICES.map((a) => '<option value="' + a.v + '"' +
+              (FILTER_STATE.age === a.v ? ' selected' : '') + '>' + a.label + '</option>').join('') +
+          '</select>' +
+          '<button type="button" class="ytc-fm__reset">Reset</button>' +
+        '</div>' +
+        '<div class="ytc-fm__main">' +
+          '<div class="ytc-fm__sorts">' +
+            FILTER_SORTS.map((c) =>
+              '<button type="button" class="ytc-fm__sort' +
+              (FILTER_STATE.sort === c.key ? ' on' : '') + '" data-sort="' + c.key + '">' +
+              c.label + '<span>' +
+              (FILTER_STATE.sort === c.key ? (FILTER_STATE.desc ? '\u25BC' : '\u25B2') : '\u25BC') +
+              '</span></button>').join('') +
+          '</div>' +
+          '<div class="ytc-fm__results"></div>' +
+        '</div>' +
+      '</div>';
+
+    document.body.appendChild(veil);
+    document.body.appendChild(modal);
+    document.documentElement.style.overflow = 'hidden';
+    paintFilterResults(all);
+
+    const redraw = () => paintFilterResults(all);
+    veil.addEventListener('click', closeFilterModal);
+    modal.querySelector('.ytc-fm__x').addEventListener('click', closeFilterModal);
+    modal.querySelectorAll('.ytc-fm__seg button').forEach((b) => {
+      b.addEventListener('click', () => {
+        FILTER_STATE.kind = b.dataset.kind;
+        modal.querySelectorAll('.ytc-fm__seg button').forEach((o) => o.classList.remove('on'));
+        b.classList.add('on');
+        redraw();
+      });
+    });
+    modal.querySelectorAll('.ytc-fm__num, .ytc-fm__sel').forEach((el) => {
+      /* Redrawn as it is typed. A Go button would make every adjustment feel like a round
+         trip when the whole set is already in memory and the filtering is instant. */
+      el.addEventListener('input', () => { FILTER_STATE[el.dataset.f] = el.value; redraw(); });
+    });
+    modal.querySelectorAll('.ytc-fm__sort').forEach((b) => {
+      b.addEventListener('click', () => {
+        const k = b.dataset.sort;
+        if (FILTER_STATE.sort === k) FILTER_STATE.desc = !FILTER_STATE.desc;
+        else { FILTER_STATE.sort = k; FILTER_STATE.desc = true; }
+        modal.querySelectorAll('.ytc-fm__sort').forEach((o) => {
+          o.classList.toggle('on', o.dataset.sort === FILTER_STATE.sort);
+          o.querySelector('span').textContent =
+            o.dataset.sort === FILTER_STATE.sort
+              ? (FILTER_STATE.desc ? '\u25BC' : '\u25B2') : '\u25BC';
+        });
+        redraw();
+      });
+    });
+    modal.querySelector('.ytc-fm__reset').addEventListener('click', () => {
+      Object.assign(FILTER_STATE, { kind: 'all', minSubs: '', maxSubs: '', minViews: '',
+                                    maxViews: '', age: '', sort: 'ratio', desc: true });
+      closeFilterModal();
+      openFilterModal();
+    });
+    document.addEventListener('keydown', function esc(e) {
+      if (e.key !== 'Escape') return;
+      closeFilterModal();
+      document.removeEventListener('keydown', esc);
+    });
+  }
+
+  /* The trigger, only where a grid of videos exists to filter. A watch page has nothing to
+     narrow, and a button offering to do so would be a dead end. */
+  function ensureFilterButton() {
+    const wanted = settings.showFilter !== false &&
+      /^\/(results|feed\/|$)|^\/@[^/]+\/?(videos|shorts)?$|^\/channel\//.test(location.pathname);
+    const existing = document.querySelector('.ytc-fmbtn');
+    if (!wanted) { if (existing) existing.remove(); return; }
+    if (existing) return;
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ytc-fmbtn';
+    let icon = '';
+    try { icon = chrome.runtime.getURL('icons/icon32.png'); } catch (e) { icon = ''; }
+    btn.innerHTML = (icon ? '<img src="' + icon + '" alt="">' : '') + '<span>Filter</span>';
+    btn.title = 'Filter the videos this page has loaded';
+    btn.addEventListener('click', openFilterModal);
+    document.body.appendChild(btn);
+  }
 
   function pageVideos() {
     scan();
