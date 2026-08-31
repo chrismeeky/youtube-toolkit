@@ -88,6 +88,71 @@
     return window.ytInitialPlayerResponse || {};
   }
 
+  /* The search page's own result list, straight from ytInitialData.
+
+     The DOM only holds what YouTube has painted, and it paints as the reader scrolls — so a
+     result sitting at position fifteen of twenty is simply absent until scrolled to, and any
+     figure computed over "the first twenty results" was really over the first however-many it
+     had drawn. Scrolling to a video with Ctrl-F and watching the highest-views figure jump is
+     that gap showing.
+
+     The payload has all of them before anything is painted, and carries exact view counts
+     rather than the abbreviated "1.7M" the cards show. */
+  function runs(node) {
+    if (!node) return '';
+    if (typeof node.simpleText === 'string') return node.simpleText;
+    if (Array.isArray(node.runs)) return node.runs.map((r) => r.text || '').join('');
+    return '';
+  }
+
+  function exactViews(v) {
+    // viewCountText is "1,701,369 views" on search; shortViewCountText is the rounded "1.7M".
+    const raw = runs(v.viewCountText);
+    const digits = raw.replace(/[^\d]/g, '');
+    if (digits) return parseInt(digits, 10);
+    return null;
+  }
+
+  function searchResults() {
+    const data = window.ytInitialData;
+    if (!data || !/^\/results/.test(location.pathname)) return null;
+    const out = [];
+    const seen = Object.create(null);
+    const walk = (node, depth) => {
+      if (!node || typeof node !== 'object' || depth > 14 || out.length >= 60) return;
+      const v = node.videoRenderer;
+      if (v && v.videoId && !seen[v.videoId]) {
+        seen[v.videoId] = 1;
+        out.push({
+          id: v.videoId,
+          title: runs(v.title),
+          views: exactViews(v),
+          published: runs(v.publishedTimeText),
+          channel: runs(v.ownerText) || runs(v.longBylineText),
+          shorts: false
+        });
+      }
+      /* Shorts arrive under their own renderers and are results like any other — whatever
+         ranks for a term is what a creator is up against. */
+      const r = node.reelItemRenderer;
+      if (r && r.videoId && !seen[r.videoId]) {
+        seen[r.videoId] = 1;
+        out.push({
+          id: r.videoId, title: runs(r.headline),
+          views: exactViews({ viewCountText: r.viewCountText }),
+          published: '', channel: '', shorts: true
+        });
+      }
+      if (Array.isArray(node)) {
+        for (let i = 0; i < node.length; i++) walk(node[i], depth + 1);
+        return;
+      }
+      for (const key of Object.keys(node)) walk(node[key], depth + 1);
+    };
+    try { walk(data, 0); } catch (e) { return null; }
+    return out.length ? out : null;
+  }
+
   function collect() {
     const cfg = window.ytcfg && typeof window.ytcfg.get === 'function' ? window.ytcfg : null;
     const player = currentPlayerResponse();
@@ -98,11 +163,12 @@
       // Bumped when the payload shape changes, so the content script can tell a stale
       // MAIN-world injection (which survives an extension reload in an open tab) from a
       // genuine read failure.
-      v: 2,
+      v: 3,
       apiKey: cfg ? cfg.get('INNERTUBE_API_KEY') || '' : '',
       clientVersion: cfg ? cfg.get('INNERTUBE_CLIENT_VERSION') || '' : '',
       visitorData: cfg ? cfg.get('VISITOR_DATA') || '' : '',
       params: findTranscriptParams(window.ytInitialData, { n: 40000 }),
+      search: searchResults(),
       videoId: (player.videoDetails || {}).videoId || '',
       captionTracks: (tracklist.captionTracks || []).map((t) => ({
         baseUrl: t.baseUrl,

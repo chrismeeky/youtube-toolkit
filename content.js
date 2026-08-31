@@ -700,6 +700,9 @@
        monetization badge is switched off, which would silently take the tab with it. */
     ensureSimilarTab();
     ensureFilterButton();
+    /* Wrapped because it runs before noteChannelSeen and the stats card, and a throw here
+       would silently stop both — the same failure the badge row was wrapped against. */
+    try { ensureCompanion(); } catch (e) { /* keep the rest of the scan */ }
     noteChannelSeen();
     renderStatsCard();
     const watch = watchCard();
@@ -823,14 +826,21 @@
   /* Two different denominators can end up here, and they do not mean the same thing, so the
      tooltip always says which one produced the number. */
   function ratioTitle(r, avgViews) {
-    if (avgViews) {
-      const label = r >= 10 ? 'breakout' : r >= 3 ? 'strong' : r >= 1 ? 'above channel average'
-        : r >= 0.5 ? 'below channel average' : 'well below channel average';
-      return 'views ÷ channel average (' + (F.compact(avgViews) || avgViews) + ') — ' + label;
-    }
-    const label = r >= 10 ? 'breakout' : r >= 3 ? 'strong' : r >= 1 ? 'above subscriber count'
-      : r >= 0.5 ? 'below subscriber count' : 'well below subscriber count';
-    return 'views ÷ subscribers (channel average unavailable) — ' + label;
+    const label = r >= 10 ? 'breakout' : r >= 3 ? 'strong' : r >= 1 ? 'above channel average'
+      : r >= 0.5 ? 'below channel average' : 'well below channel average';
+    return 'Outlier \u2014 views ÷ this channel\'s lifetime average (' +
+      (F.compact(avgViews) || avgViews) + ' per video) \u2014 ' + label;
+  }
+
+  /* A different question from the outlier, and worth asking separately: the outlier says
+     whether a video beat what the channel normally gets, this says whether it travelled
+     beyond the channel's own audience. A small channel can be 8x its own average and still
+     under its subscriber count; a large one can be under its average and far over it. */
+  function subRatioTitle(r, subs) {
+    const label = r >= 10 ? 'far beyond its audience' : r >= 3 ? 'well beyond its audience'
+      : r >= 1 ? 'more views than subscribers' : r >= 0.5 ? 'under its subscriber count'
+      : 'well under its subscriber count';
+    return 'Views ÷ subscribers (' + (F.compact(subs) || subs) + ') \u2014 ' + label;
   }
 
   /* ------------------------------------------------------------- video metrics */
@@ -844,7 +854,24 @@
      the element was still there. */
   const SIDEBAR_HOSTS = ['#secondary-inner', '#secondary', 'ytd-watch-flexy #secondary'];
 
-  const cardState = { videoId: '', metrics: null, outlier: null };
+  /* Whether each half of the card is still waiting or has given up. A dash means "there is
+     no number"; a sweeping bar means "one is coming". Without the distinction a cell waiting
+     on its lookup was drawn exactly like one whose lookup had failed, and the only way to
+     tell them apart was to reload and watch it fill in. */
+  const cardState = { videoId: '', metrics: null, outlier: null, stats: null,
+                      pending: { metrics: true, outlier: true }, giveUp: 0 };
+
+  /* Comfortably past every retry chain that feeds this card. Each of those settles its own
+     cells, so this only fires on a path that failed in a way none of them anticipated — and
+     a placeholder promising a number that is never coming is worse than a dash. If a slow
+     chain does land afterwards it simply overwrites the dash with the real figure. */
+  const CARD_GIVE_UP_MS = 30000;
+
+  function settleOutlier() {
+    if (!cardState.pending.outlier) return;
+    cardState.pending.outlier = false;
+    renderStatsCard();
+  }
 
   function sidebarHost() {
     if (!/^\/watch/.test(location.pathname)) return null;
@@ -891,30 +918,51 @@
     const m = cardState.metrics;
     const ol = cardState.outlier;
     const dash = '—';
+    /* Only ever waiting on something that is actually coming: the outlier needs the
+       subscriber lookup, so with that switched off it is settled from the start rather than
+       sweeping for a request nobody is going to make. */
+    const waitOl = cardState.pending.outlier && settings.showSubs;
+    const waitM = cardState.pending.metrics;
+    const skel = '<span class="ytc-cs__skel"></span>';
+    const soon = (waiting) => (waiting ? skel : dash);
 
     const rows =
       '<div class="ytc-cs__row">' +
-        cell('Outlier', ol == null ? dash : (ol >= 10 ? Math.round(ol) : Number(ol.toFixed(1))) + '×',
-          ol == null ? 'Waiting for the channel average'
+        cell('Outlier', ol == null ? soon(waitOl) : (ol >= 10 ? Math.round(ol) : Number(ol.toFixed(1))) + '×',
+          ol == null
+            ? (waitOl ? 'Waiting for the channel average'
+                      : 'No channel average available — this channel publishes no lifetime ' +
+                        'totals, or the lookup could not reach them')
             : 'Views against this channel\'s lifetime average views per video') +
-        cell('VPH', m ? F.formatVph(m.vph) : dash,
-          !m ? 'Reading video data' : m.vph == null ? 'Publish date unavailable'
+        cell('VPH', m ? F.formatVph(m.vph) : soon(waitM),
+          !m ? (waitM ? 'Reading video data' : 'Video data could not be read')
+            : m.vph == null ? 'Publish date unavailable'
             : Math.round(m.vph).toLocaleString() + ' views/hour averaged since publishing — a lifetime rate, not current velocity') +
-        cell('Engagement', m && m.engagement != null ? m.engagement.toFixed(1) + '%' : dash,
-          !m ? 'Reading video data' : m.engagement == null ? 'Likes hidden on this video'
+        cell('Engagement', !m ? soon(waitM) : m.engagement != null ? m.engagement.toFixed(1) + '%' : dash,
+          !m ? (waitM ? 'Reading video data' : 'Video data could not be read')
+            : m.engagement == null ? 'Likes hidden on this video'
             : (m.likes || 0).toLocaleString() + ' likes on ' + m.views.toLocaleString() + ' views. Comments are not counted') +
       '</div>' +
       '<div class="ytc-cs__row">' +
         /* Named by niche once the index has classified the channel, because "RPM (assumed)"
-           invites the question "assumed from what". */
-        cell(m && m.nicheLabel ? 'RPM (' + m.nicheLabel.toLowerCase() + ')' : 'RPM (assumed)',
-          !m ? dash : m.rpm == null ? 'n/a' : '$' + (Math.round(m.rpm * 100) / 100),
-          !m ? 'Reading video data'
+           invites the question "assumed from what". A name matched from this one video's
+           title carries a question mark: single titles scatter across niches even within one
+           channel, so presenting that guess the same way as a classification built from the
+           channel's own vector claims a confidence it has not earned. */
+        cell(m && m.nicheLabel
+              ? 'RPM (' + m.nicheLabel.toLowerCase() + (m.nicheProvisional ? '?' : '') + ')'
+              : 'RPM (assumed)',
+          !m ? soon(waitM) : m.rpm == null ? 'n/a' : '$' + (Math.round(m.rpm * 100) / 100),
+          !m ? (waitM ? 'Reading video data' : 'Video data could not be read')
             : m.rpm == null
               ? 'Shorts are paid from a separate ad-share pool, not a long-form RPM'
               : (m.nicheLabel
                   ? 'Reference rate for ' + m.nicheLabel + ', scaled for a video ' +
-                    m.length.label + '. Matched from what the channel publishes'
+                    m.length.label +
+                    (m.nicheProvisional
+                      ? '. Guessed from this video\'s title alone — the channel is not in ' +
+                        'the index yet, so this may change once it is'
+                      : '. Matched from what the channel publishes')
                   : 'Assumed rate for a video ' + m.length.label + '. Base band $' + F.RPM_LOW +
                     '-$' + F.RPM_HIGH + ', scaled for length') +
                 /* Only mentioned when it actually moved the number. A line explaining a
@@ -928,8 +976,8 @@
                 'than niche does' +
                 (m.category ? '. Category: ' + m.category : '')) +
         cell('Est. earnings',
-          !m ? dash : m.earnings == null ? dash : F.formatMoney(m.earnings.mid),
-          !m ? 'Reading video data'
+          !m ? soon(waitM) : m.earnings == null ? dash : F.formatMoney(m.earnings.mid),
+          !m ? (waitM ? 'Reading video data' : 'Video data could not be read')
             : m.earnings == null
               ? 'Not estimated for Shorts. They earn from a revenue-share pool at roughly ' +
                 'cents per 1,000 views, so a long-form RPM would be the wrong unit entirely'
@@ -956,14 +1004,98 @@
   function trackCardVideo(videoId) {
     if (!videoId || cardState.videoId === videoId) return;
     cardState.videoId = videoId;
-    cardState.outlier = null;          // both belong to the previous video
+    cardState.outlier = null;          // all of these belong to the previous video
     cardState.metrics = null;
+    cardState.stats = null;
+    cardState.pending.metrics = true;
+    cardState.pending.outlier = true;
+    if (cardState.giveUp) clearTimeout(cardState.giveUp);
+    cardState.giveUp = setTimeout(() => {
+      if (cardState.videoId !== videoId) return;
+      if (!cardState.pending.metrics && !cardState.pending.outlier) return;
+      cardState.pending.metrics = false;
+      cardState.pending.outlier = false;
+      renderStatsCard();
+    }, CARD_GIVE_UP_MS);
   }
 
   /* The channel's niche rate, once the index has classified it. Held for the current channel
      only, so a soft navigation to a different channel cannot price this video at the last
      one's rate. */
-  const nicheState = { key: '', rpm: 0, label: '', asked: false };
+  const nicheState = { key: '', rpm: 0, label: '', provisional: false, asked: false,
+                       tries: 0, timer: 0 };
+
+  /* The index answers "not indexed yet" on the first visit to a channel — asking is what
+     starts the ingest, and it finishes after the answer has already been sent. The background
+     treats that as a "not yet" and deliberately leaves it uncached so the next ask can do
+     better, but nothing here ever asked again: one miss set asked and the card kept the flat
+     assumed band for the rest of the visit. The real niche rate appeared only after a manual
+     reload, which is the refresh people were reaching for. */
+  const NICHE_MAX_TRIES = 4;
+  const NICHE_RETRY_DELAYS = [2000, 6000, 15000];
+
+  function resetNiche(key) {
+    if (nicheState.timer) clearTimeout(nicheState.timer);
+    nicheState.timer = 0;
+    nicheState.key = key;
+    nicheState.rpm = 0;
+    nicheState.label = '';
+    nicheState.provisional = false;
+    nicheState.asked = false;
+    nicheState.tries = 0;
+  }
+
+  /* Reprices whatever the card is showing now, from the stats it was drawn with, rather than
+     the stats captured when the lookup was sent. A reply can land after a soft navigation
+     within the same channel, and repricing the captured copy wrote the previous video's views
+     and earnings back onto the card. */
+  function repriceCard() {
+    const again = F.videoMetrics(cardState.stats, Date.now(), nicheState.rpm);
+    if (!again) return;
+    again.nicheLabel = nicheState.rpm > 0 ? nicheState.label : '';
+    again.nicheProvisional = nicheState.rpm > 0 && nicheState.provisional;
+    cardState.metrics = again;
+    renderStatsCard();
+  }
+
+  function askNiche(card, key) {
+    nicheState.asked = true;
+    /* The video's title, only as a fallback for a channel the index has not classified yet.
+       One title is a thin signal — the point of asking the index is that its vector was built
+       from the channel's description and many titles together — but it beats no answer, and
+       visiting the page indexes the channel for next time anyway. */
+    const opts = { videoTitles: [findTitle(card) || ''].filter(Boolean) };
+    sendMessage({ type: 'ytc-niche', key, opts }, (res) => {
+      if (nicheState.key !== key) return;              // moved on to another channel
+      if (!chrome.runtime.lastError && res && res.ok) {
+        nicheState.rpm = Number(res.rpm) || 0;
+        nicheState.label = res.niche || '';
+        nicheState.provisional = !res.indexed;
+        repriceCard();
+        /* An answer from the channel's own vector is final. One guessed from a single video
+           title is not — it is built from the same thin signal that gets refused when it
+           falls under the floor — so show it, because a provisional rate beats the flat
+           band, and keep asking. Ingestion was started by this very request, and the stored
+           vector supersedes the guess within seconds. */
+        if (res.indexed) return;
+      }
+      /* Settled the moment the index says it holds the channel, whether it classified it or
+         refused to: either is an answer from the stored vector, the background caches it, and
+         asking again would only replay that cache. Settled too when there is no index to ask
+         — a build without one answers the same way however often it is asked. Anything else
+         — not indexed yet, unreachable, a dead service worker — is worth one more try. */
+      const reason = (res && res.reason) || '';
+      const settled = !chrome.runtime.lastError && res &&
+        (res.indexed || reason === 'no index' || /not configured/.test(reason));
+      if (settled || nicheState.tries >= NICHE_MAX_TRIES - 1) return;
+      const wait = NICHE_RETRY_DELAYS[Math.min(nicheState.tries, NICHE_RETRY_DELAYS.length - 1)];
+      nicheState.tries++;
+      nicheState.timer = setTimeout(() => {
+        nicheState.timer = 0;
+        if (nicheState.key === key && card.isConnected) askNiche(card, key);
+      }, wait);
+    });
+  }
 
   function renderMetrics(card, stats, videoId) {
     trackCardVideo(videoId);
@@ -972,43 +1104,39 @@
        interview kept pricing at the automotive rate: the card was rendered with the previous
        channel's figure and only then was the state reset, so a lookup that came back with no
        niche left the stale rate on screen with nothing to replace it. */
-    const key = (stats && stats.channelHandle) || '';
-    if (nicheState.key !== key) {
-      nicheState.key = key;
-      nicheState.rpm = 0;
-      nicheState.label = '';
-      nicheState.asked = false;
+    /* The player names the channel; the DOM fallback that stands in when the player cannot be
+       read does not, and losing the handle lost the niche with it — the lookup below needs a
+       key and gives up without one, so every video whose player data failed was priced at the
+       flat band however obvious its subject. A music video on a 3M-subscriber music channel
+       read as "RPM (assumed)" for exactly that reason. The owner link sits in the same
+       metadata block the views were just read from, so read it rather than give up.
+       Handles only: the endpoint prefixes a bare key with "@", which would turn a
+       "channel/UC..." id into nonsense, and the player reports a handle too, so both sources
+       agree on the cache key. */
+    let key = (stats && stats.channelHandle) || '';
+    if (!key) {
+      const fromDom = findChannelKey(card);
+      if (fromDom && fromDom[0] === '@') key = fromDom;
     }
+    if (nicheState.key !== key) resetNiche(key);
 
     const m = F.videoMetrics(stats, Date.now(), nicheState.rpm);
     // Only overwrite on success: a read that came back empty should leave a card that is
     // already showing this video's numbers alone rather than removing it.
     if (m) {
       m.nicheLabel = nicheState.rpm > 0 ? nicheState.label : '';
+      m.nicheProvisional = nicheState.rpm > 0 && nicheState.provisional;
       cardState.metrics = m;
+      cardState.stats = stats;       // what a late niche reply reprices
+      cardState.pending.metrics = false;
     }
     renderStatsCard();
 
-    /* Asked once per channel and cached in the service worker. When it lands the card is
-       drawn again, because the first draw used the flat rate. */
+    /* Asked once per channel and cached in the service worker, then retried on backoff for as
+       long as the answer is only a "not yet". When it lands the card is drawn again, because
+       the first draw used the flat rate. */
     if (!key || !settings.showStats || nicheState.asked) return;
-    nicheState.asked = true;
-    /* The video's title, only as a fallback for a channel the index has not classified yet.
-       One title is a thin signal — the point of asking the index is that its vector was built
-       from the channel's description and many titles together — but it beats no answer, and
-       visiting the page indexes the channel for next time anyway. */
-    const opts = { videoTitles: [findTitle(card) || ''].filter(Boolean) };
-    sendMessage({ type: 'ytc-niche', key, opts }, (res) => {
-      if (chrome.runtime.lastError || !res || !res.ok || nicheState.key !== key) return;
-      nicheState.rpm = Number(res.rpm) || 0;
-      nicheState.label = res.niche || '';
-      const again = F.videoMetrics(stats, Date.now(), nicheState.rpm);
-      if (again) {
-        again.nicheLabel = nicheState.label;
-        cardState.metrics = again;
-        renderStatsCard();
-      }
-    });
+    askNiche(card, key);
   }
 
   /* Likes as rendered on the page. Abbreviated ("32K") and localised, so this is a fallback
@@ -1052,6 +1180,7 @@
   function setCardOutlier(videoId, value) {
     if (cardState.videoId !== videoId) return;
     cardState.outlier = value;
+    cardState.pending.outlier = false;
     renderStatsCard();
   }
 
@@ -1646,6 +1775,16 @@
     });
   }
 
+  /* Shortest first: the panel reports on the first of these that contains any upload. The
+     last one has no cut-off, so a channel whose sample is entirely older than a year still
+     gets figures instead of a blank card. */
+  const ANALYTICS_WINDOWS = [
+    { days: 28, label: 'the last 28 days', short: '' },
+    { days: 90, label: 'the last 90 days', short: '90 days' },
+    { days: 365, label: 'the last 12 months', short: '12 months' },
+    { days: Infinity, label: 'the whole sample', short: 'all uploads' }
+  ];
+
   /* Derived once, so the cards read from one place and cannot disagree with each other. */
   function analyticsModel(res) {
     const st = (res && res.stats) || {};
@@ -1657,13 +1796,23 @@
     const avgLen = withLen.length
       ? Math.round(withLen.reduce((a, v) => a + v.seconds, 0) / withLen.length) : null;
 
-    /* Views on videos put out in the last 28 days. Not the same thing as views received in
-       the last 28 days, which no public page reports — an old video keeps earning and is not
+    /* Views on videos put out in a recent window. Not the same thing as views received in
+       that window, which no public page reports — an old video keeps earning and is not
        counted here. Labelled for what it is rather than passed off as the other. */
-    const recent = videos.filter((v) => {
-      const d = daysSince(v.publishedAt);
-      return d != null && d <= 28;
-    });
+    /* The window widens rather than reporting nothing. 28 days is the right frame for a
+       channel that uploads weekly and an empty one for a channel that uploads twice a year:
+       a 1.2M-subscriber channel whose last upload was 16 months ago showed a dash and a zero
+       beside a confident RPM, which reads as a broken panel rather than as the true answer,
+       "nothing in that window". So take the shortest span that actually holds uploads and say
+       which one it was — widening silently would be the worse lie. */
+    const dated = videos.filter((v) => daysSince(v.publishedAt) != null);
+    const inWindow = (days) => dated.filter((v) => daysSince(v.publishedAt) <= days);
+    let win = ANALYTICS_WINDOWS[0];
+    let recent = inWindow(win.days);
+    for (let i = 1; i < ANALYTICS_WINDOWS.length && !recent.length && dated.length; i++) {
+      win = ANALYTICS_WINDOWS[i];
+      recent = inWindow(win.days);
+    }
     const recentViews = recent.reduce((a, v) => a + (v.views || 0), 0);
 
     const rpm = res && res.niche ? res.niche.rpm : 0;
@@ -1678,7 +1827,7 @@
       videoCount: st.videoCount || null, avgViews: st.avgViews || null,
       days, uploadsPerMo, avgLen, rpm,
       niche: res && res.niche ? res.niche.label : '',
-      recentViews, recentCount: recent.length,
+      recentViews, recentCount: recent.length, window: win,
       revenue: rpm && recentViews ? (recentViews / 1000) * rpm : null,
       hasShorts: shorts.length > 0,
       longViews, shortViews,
@@ -1760,6 +1909,7 @@
     const num = (n) => n == null ? dash : Math.round(n).toLocaleString();
     const pct = m.longViews + m.shortViews > 0
       ? Math.round((m.longViews / (m.longViews + m.shortViews)) * 100) : null;
+    const win = m.window.short ? ' \u00b7 ' + m.window.short : '';
 
     host.innerHTML =
       '<div class="ytc-an__head">' +
@@ -1771,13 +1921,17 @@
         /* A channel with no videos read is a failure to read them, not a channel that
            published nothing. Reporting 0 there states something false with the same
            confidence as the figures that are real. */
-        anCard('Estimated revenue', m.sampled ? money(m.revenue) : dash,
+        /* The window is named in the card label, not only in the sub, whenever it is not
+           the usual 28 days. A reader who skims the big number and the title has to be able
+           to see that the frame moved; burying it in the small print would leave a
+           twice-a-year channel's whole-sample revenue looking like a monthly figure. */
+        anCard('Estimated revenue' + win, m.sampled ? money(m.revenue) : dash,
           m.sampled
             ? 'From ' + m.recentCount + ' video' + (m.recentCount === 1 ? '' : 's') +
-              ' published in the last 28 days'
+              ' in ' + m.window.label
             : 'Could not read this channel\u2019s video list', '$') +
-        anCard('Views', m.sampled ? num(m.recentViews) : dash,
-          m.sampled ? 'On videos from the last 28 days'
+        anCard('Views' + win, m.sampled ? num(m.recentViews) : dash,
+          m.sampled ? 'On videos from ' + m.window.label
                     : 'Could not read this channel\u2019s video list', '\u25B6') +
         anCard('RPM' + (m.niche ? ' \u00b7 ' + escapeHtml(m.niche) : ''),
           m.rpm ? '$' + m.rpm.toFixed(2) : dash, rpmMeter(m.rpm), '\u25CE') +
@@ -2523,7 +2677,17 @@
       if (ok || card.dataset.ytcMoneyVid !== id) return;
       const tries = Number(card.dataset.ytcMoneyTries || 0) + 1;
       card.dataset.ytcMoneyTries = String(tries);
-      if (tries >= WATCH_MAX_TRIES) { card.removeAttribute('data-ytc-money-pending'); return; }
+      if (tries >= WATCH_MAX_TRIES) {
+        card.removeAttribute('data-ytc-money-pending');
+        /* Out of retries: the player data is not coming. The cells that need it should say
+           so with a dash rather than sweep forever, which would promise a number that no
+           longer has anything on its way. */
+        if (cardState.videoId === id && cardState.pending.metrics) {
+          cardState.pending.metrics = false;
+          renderStatsCard();
+        }
+        return;
+      }
       card.removeAttribute('data-ytc-money-vid');
       card.dataset.ytcMoneyPending = id;
 
@@ -2841,10 +3005,29 @@
       card.dataset.ytcJoined = (entry.stats && entry.stats.joinedAt) || '';
       card.dataset.ytcViewsN = (viewsN == null ? '' : viewsN);
       card.dataset.ytcDenomN = denom || '';
-      if (settings.showRatio && denom > 0 && viewsN != null) {
-        const shown = ratioLabel(viewsN / denom);
-        parts.push('<span class="ytc-ratio ' + ratioClass(shown.value) + '" title="' +
-          ratioTitle(shown.value, avgViews) + '">' + shown.text + '</span>');
+      // Kept apart so the filter can tell the two ratios from each other; denom above
+      // conflates them and is only still written for anything reading it as one number.
+      card.dataset.ytcAvgN = avgViews || '';
+      /* Two questions, so two pills rather than one that quietly changes meaning. Filled is
+         the outlier proper, against what this channel normally gets; outlined is against the
+         subscriber count. The single badge showed whichever denominator it could get and
+         named it only in the tooltip, so the same pill meant different things on neighbouring
+         cards — and a filter built on it could not say which it was filtering. */
+      if (settings.showRatio && viewsN != null) {
+        if (avgViews > 0) {
+          const shown = ratioLabel(viewsN / avgViews);
+          parts.push('<span class="ytc-ratio ' + ratioClass(shown.value) + '" title="' +
+            ratioTitle(shown.value, avgViews) + '">' + shown.text + '</span>');
+        }
+        if (subsN > 0) {
+          const shown = ratioLabel(viewsN / subsN);
+          /* The outlined ladder the channel-header pill already uses — same five hues, same
+             thresholds, and already carrying its dark-theme values. Filled means against the
+             channel's average, outlined means against its subscribers; a 3x reads as a 3x
+             either way, and the shape says which question was asked. */
+          parts.push('<span class="ytc-vsub ytc-out--' + ratioTier(shown.value) +
+            '" title="' + subRatioTitle(shown.value, subsN) + '">' + shown.text + '</span>');
+        }
       }
       /* Views per hour, from the card's own metadata — no extra request. The card only has a
          relative timestamp, so this is coarser than the watch page's figure, which has an
@@ -2987,6 +3170,74 @@
       }, { rootMargin: NEAR_VIEWPORT_PX + 'px' })
     : null;
 
+  /* The channel's lifetime totals, which the watch page never prints — the Outlier cell is
+     the only thing that needs them. Driven by a timer rather than by the next scan: a
+     throttled lookup is cached for two minutes in the background, and scans come from the
+     MutationObserver, which falls silent once the page has settled. So one unlucky first ask
+     left the cell blank for the rest of the visit with a working answer a few seconds away,
+     and reloading was the only way to get it. That is the refresh people were reaching for.
+
+     Bounded, and only while asking again could plausibly change the answer: a channel that
+     publishes no totals says so the same way however often it is asked. */
+  const STATS_MAX_TRIES = 4;
+  const STATS_RETRY_DELAYS = [1500, 4000, 12000];
+
+  /* The key stays in statsRequested for the whole chain, not just the request in flight.
+     Releasing it between attempts let each arriving scan start a chain of its own, and the
+     whole budget burned in a couple of seconds — before the two-minute backoff the retries
+     exist to outlast had even begun. */
+  function askWatchStats(card, key, shownText) {
+    if (statsRequested.has(key)) return;
+    statsRequested.add(key);
+    attemptWatchStats(card, key, shownText, 0);
+  }
+
+  function attemptWatchStats(card, key, shownText, tries) {
+    sendMessage({ type: 'ytc-subs', key }, (res) => {
+      const failed = !!chrome.runtime.lastError || !res;
+      const stats = (!failed && res.stats) || null;
+      const text = (!failed && res.text) || '';
+      const reason = (!failed && res.reason) || '';
+      if (!failed) {
+        // Keep the DOM's count — it is the one we trust for this channel — and take only
+        // the totals from the lookup.
+        subsByKey.set(key, {
+          text: text || shownText, reason, stats, t: Date.now(), tries: 0
+        });
+      }
+      const live = card.isConnected && findChannelKey(card) === key;
+      if (stats) {
+        statsRequested.delete(key);
+        if (live) {
+          renderBadge(card, { text: shownText, reason: '', stats, t: Date.now() });
+          /* The totals are here. If no outlier came of them — no view count on the page to
+             divide by the average — that is the answer rather than something still coming,
+             so the cell settles. renderBadge has already cleared this when it did compute
+             one, which makes this a no-op in the ordinary case. */
+          settleOutlier();
+        }
+        return;
+      }
+      /* Reached the channel but found no totals on it: an answer about the channel rather
+         than a failure to reach it, so asking again would only replay it. */
+      const settled = !failed && (!!text || !F.isRetryableFailure(reason));
+      if (!live || settled || tries >= STATS_MAX_TRIES - 1) {
+        statsRequested.delete(key);
+        // A card that has moved on owns none of this; the new video drives its own state.
+        if (live) settleOutlier();
+        return;
+      }
+      const wait = STATS_RETRY_DELAYS[Math.min(tries, STATS_RETRY_DELAYS.length - 1)];
+      setTimeout(() => {
+        if (card.isConnected && findChannelKey(card) === key) {
+          attemptWatchStats(card, key, shownText, tries + 1);
+        } else {
+          statsRequested.delete(key);
+        }
+      }, wait);
+    });
+  }
+
   function wantSubs(card) {
     if (!settings.showSubs) return;
     if (isAd(card)) return;
@@ -3017,26 +3268,7 @@
       renderBadge(card, {
         text: shownText, reason: '', stats: (cached && cached.stats) || null, t: Date.now()
       });
-      if (watchKey && !(cached && cached.stats) && !statsRequested.has(watchKey)) {
-        statsRequested.add(watchKey);
-        sendMessage({ type: 'ytc-subs', key: watchKey }, (res) => {
-          statsRequested.delete(watchKey);
-          if (chrome.runtime.lastError) return;
-          const stats = (res && res.stats) || null;
-          // Keep the DOM's count — it is the one we trust for this channel — and take only
-          // the totals from the lookup.
-          subsByKey.set(watchKey, {
-            text: (res && res.text) || shownText,
-            reason: (res && res.reason) || '',
-            stats,
-            t: Date.now(),
-            tries: 0
-          });
-          if (stats && card.isConnected) {
-            renderBadge(card, { text: shownText, reason: '', stats, t: Date.now() });
-          }
-        });
-      }
+      if (watchKey && !(cached && cached.stats)) askWatchStats(card, watchKey, shownText);
       return;
     }
 
@@ -3258,53 +3490,116 @@
     subs:  { top: 100000000, fmt: (v) => F.compact(v) + ' subs' },
     views: { top: 100000000, fmt: (v) => F.compact(v) + ' views' },
     age:   { top: 3650,      fmt: (v) => (v <= 0 ? 'today' : ageLabel(
-               new Date(Date.now() - v * 86400000).toISOString())) }
+               new Date(Date.now() - v * 86400000).toISOString())) },
+    vph:   { top: 100000,    fmt: (v) => F.formatVph(v) + '/h' },
+    /* Multiples, not counts, so the same log curve is doing a different job here: it spends
+       the first tenth of the track below 1x, which is where "did not beat the average" lives
+       and where a linear track would leave no room at all.
+
+       dp is what makes that stretch usable. Rounding to whole numbers is right for a
+       subscriber count and wrong for a multiplier: it collapses 0.5x to 1x and 1.5x to 2x,
+       which are three of the handful of thresholds anyone actually wants here. */
+    ratio:    { top: 100, dp: 1, fmt: (v) => v + '\u00d7 avg' },
+    subratio: { top: 100, dp: 1, fmt: (v) => v + '\u00d7 subs' }
   };
-
-  function posToVal(pos, spec) {
-    const p = Math.max(0, Math.min(RANGE_MAX, Number(pos))) / RANGE_MAX;
-    return Math.round(Math.pow(10, p * Math.log10(spec.top + 1)) - 1);
-  }
-
-  const FILTER_STATE = {
-    kind: 'all',                    // all | shorts | long
-    subs: [0, RANGE_MAX],
-    views: [0, RANGE_MAX],
-    age: [0, RANGE_MAX],
-    sort: 'ratio',                  // ratio | subs | views | date
-    desc: true,
-    preset: 'all'
-  };
-
-  /* The same questions the Similar Channels chips ask, put to videos instead of channels.
-     Each one sets the ranges rather than filtering separately, so what a preset did stays
-     visible on the sliders and can be adjusted from there. */
-  const FILTER_PRESETS = [
-    { key: 'all', label: 'All' },
-    { key: 'outlier', label: 'Overperforming',
-      apply: (f) => { f.ratioMin = 2; } },
-    { key: 'lowsub', label: 'Low subs, high views',
-      apply: (f) => { f.subs = [0, valToPos(25000, RANGE_SPECS.subs)];
-                      f.views = [valToPos(50000, RANGE_SPECS.views), RANGE_MAX]; } },
-    { key: 'big', label: 'Above 50k views',
-      apply: (f) => { f.views = [valToPos(50000, RANGE_SPECS.views), RANGE_MAX]; } },
-    { key: 'fresh', label: 'Uploaded this month',
-      apply: (f) => { f.age = [0, valToPos(30, RANGE_SPECS.age)]; } },
-    { key: 'newbig', label: 'New and big',
-      apply: (f) => { f.views = [valToPos(50000, RANGE_SPECS.views), RANGE_MAX];
-                      f.age = [0, valToPos(90, RANGE_SPECS.age)]; } }
-  ];
 
   function valToPos(val, spec) {
     if (val <= 0) return 0;
     return Math.round(RANGE_MAX * Math.log10(val + 1) / Math.log10(spec.top + 1));
   }
 
+  function posToVal(pos, spec) {
+    const p = Math.max(0, Math.min(RANGE_MAX, Number(pos))) / RANGE_MAX;
+    const v = Math.pow(10, p * Math.log10(spec.top + 1)) - 1;
+    return spec.dp ? Number(v.toFixed(spec.dp)) : Math.round(v);
+  }
+
+  const RANGE_KEYS = ['views', 'subs', 'vph', 'ratio', 'subratio', 'age'];
+
+  const FILTER_STATE = {
+    kind: 'all',                    // all | shorts | long
+    subs: [0, RANGE_MAX],
+    views: [0, RANGE_MAX],
+    age: [0, RANGE_MAX],
+    vph: [0, RANGE_MAX],
+    ratio: [0, RANGE_MAX],
+    subratio: [0, RANGE_MAX],
+    sort: 'ratio',                  // ratio | subratio | vph | subs | views | date
+    desc: true,
+    preset: 'all',
+    custom: false,                  // whether the custom-filter drawer is open
+    allPresets: false               // whether the preset list is expanded past the cut
+  };
+
+  function resetRanges(f) {
+    for (const k of RANGE_KEYS) f[k] = [0, RANGE_MAX];
+    f.kind = 'all';
+  }
+
+  // Ranges are held as positions, so a preset says what it means in real units.
+  const from = (key, v) => [valToPos(v, RANGE_SPECS[key]), RANGE_MAX];
+  const upTo = (key, v) => [0, valToPos(v, RANGE_SPECS[key])];
+
+  /* Each preset only moves the sliders and the sort — it never filters by some hidden rule
+     of its own. So whatever a preset did stays visible in the custom drawer below and can be
+     adjusted from there, and nothing can filter the list in a way the controls cannot show.
+     Every one needs a denominator the page may not have supplied yet: a preset resting on
+     the outlier or on views-per-hour will look thin until the subscriber lookups land. */
+  // The one preset that filters nothing — where clearing any other one lands.
+  const NO_FILTER_KEY = 'all';
+
+  const FILTER_PRESETS = [
+    { key: 'all', label: 'All videos', note: 'No filters applied' },
+
+    { key: 'recent', label: 'Recent uploads', note: 'Newest videos from this week',
+      apply: (f) => { f.age = upTo('age', 7); f.sort = 'date'; } },
+
+    { key: 'today', label: "Today's top", note: 'Most-viewed videos from the last 24 hours',
+      apply: (f) => { f.age = upTo('age', 1); f.sort = 'views'; } },
+
+    { key: 'underdog', label: 'Underdogs', note: 'High views from small channels',
+      apply: (f) => { f.subs = upTo('subs', 25000); f.views = from('views', 50000);
+                      f.sort = 'subratio'; } },
+
+    { key: 'velocity', label: 'High velocity', note: 'Videos with the fastest view growth',
+      apply: (f) => { f.vph = from('vph', 500); f.sort = 'vph'; } },
+
+    { key: 'trendshorts', label: 'Trending shorts', note: 'Shorts gaining views fastest',
+      apply: (f) => { f.kind = 'shorts'; f.age = upTo('age', 7); f.sort = 'vph'; } },
+
+    { key: 'hidden', label: 'Hidden outliers', note: 'High outlier scores from small creators',
+      apply: (f) => { f.subs = upTo('subs', 50000); f.ratio = from('ratio', 3);
+                      f.sort = 'ratio'; } },
+
+    /* Old and still being watched is the hardest thing to find by scrolling, because the
+       feed is ordered against it — which is exactly what makes the preset worth having. */
+    { key: 'evergreen', label: 'Evergreens', note: 'Older videos still performing well',
+      apply: (f) => { f.age = from('age', 180); f.ratio = from('ratio', 1.5);
+                      f.sort = 'ratio'; } },
+
+    { key: 'breakout', label: 'Breakout hits', note: '10x the channel\u2019s own average',
+      apply: (f) => { f.ratio = from('ratio', 10); f.sort = 'ratio'; } },
+
+    /* Distinct from the outlier: this one asks whether a video escaped the channel's own
+       audience, which a modest channel can do while sitting on its own average. */
+    { key: 'beyond', label: 'Beyond its audience',
+      note: 'More views than the channel has subscribers',
+      apply: (f) => { f.subratio = from('subratio', 1); f.sort = 'subratio'; } },
+
+    { key: 'longwin', label: 'Long-form winners', note: 'Full videos beating their average',
+      apply: (f) => { f.kind = 'long'; f.ratio = from('ratio', 2); f.sort = 'ratio'; } }
+  ];
+
   function collectScrolled() {
     const out = [];
     const seen = new Set();
     document.querySelectorAll('.ytc-card').forEach((card) => {
       if (card.offsetParent === null) return;
+      /* Sponsored slots were being counted as results. They are someone's ad budget,
+         not someone competing for the term, and on a commercial search they carry the
+         biggest numbers on the page. isAd already existed for the subscriber badge;
+         the statistics simply never asked it. */
+      if (isAd(card)) return;
       const v = readCard(card);
       if (!v || !v.url || seen.has(v.url)) return;
       seen.add(v.url);
@@ -3312,8 +3607,17 @@
         const raw = card.dataset[k];
         return raw === '' || raw == null ? null : Number(raw);
       };
-      const views = num('ytcViewsN');
-      const denom = num('ytcDenomN');
+      /* The dataset is written by renderBadge, which does not run until the channel's
+         subscriber lookup returns — so a card whose channel had not been looked up yet
+         carried no view count, and dropped out of every view figure including the
+         maximum. A 2.6B-view result sat visible on the page while the panel reported
+         26.6M, because the one video that mattered had no number attached to it.
+         The card's own text is there from the moment it is painted; the dataset is
+         only preferred because it is already parsed. */
+      const views = num('ytcViewsN') != null ? num('ytcViewsN')
+        : F.viewsToNumber(v.views);
+      const avg = num('ytcAvgN');
+      const subs = num('ytcSubsN');
       /* A clone of the row the card already carries, rather than a second implementation of
          it. Every badge — subscribers, outlier, views per hour — and both buttons come out
          identical because they are the same markup and the same stylesheet. Ids are stripped
@@ -3332,10 +3636,18 @@
         tools: tools,
         title: v.title,
         url: v.url,
+        id: v.id || '',
         channel: v.channel || '',
         views: views,
-        subs: num('ytcSubsN'),
-        ratio: (views != null && denom) ? views / denom : null,
+        subs: subs,
+        /* Strictly what each one claims. ratio used to fall back to the subscriber count
+           whenever the channel average was unavailable, so a column headed "views vs channel
+           average" was quietly showing views vs subscribers for some of its rows. */
+        ratio: (views != null && avg) ? views / avg : null,
+        subRatio: (views != null && subs) ? views / subs : null,
+        /* The same figure the card's own VPH pill shows, from the card's relative date — so
+           it can be filtered and sorted on, not only read. */
+        vph: F.vphFromRelative(v.views, v.date, Date.now()),
         ageDays: daysSince(F.relativeToISO(v.date, Date.now())),
         /* How long the channel has existed, from its about page — already fetched for the
            subscriber count, so this costs nothing. Absent when the page did not yield it. */
@@ -3346,7 +3658,25 @@
            url for "/shorts/" could never match and every short read as long form. */
         shorts: !!(card.matches('ytd-reel-item-renderer, ytm-shorts-lockup-view-model') ||
                    card.querySelector('a[href*="/shorts/"]')),
-        thumb: (card.querySelector('img[src*="i.ytimg.com"]') || {}).src || '',
+        /* Built from the video id, not read off the card. YouTube lazy-loads its thumbnails,
+           so a card that has never been scrolled into view carries an <img> with no src at
+           all — and since loading more appends each batch below the fold, most of a fresh
+           batch matched nothing here and drew a grey box. The id is always known and
+           i.ytimg.com serves every video under these names, so the row can ask for the
+           picture itself instead of waiting for the page to be scrolled through.
+
+           mqdefault (320x180) rather than a larger name, because it is the only one that is
+           both always present and already 16:9: hqdefault (480x360) and sddefault (640x480)
+           are 4:3 with letterbox bars baked into the pixels, and maxresdefault exists only
+           when the upload was 720p or better — besides being four times the size this 168px
+           row can use, across a list that can run to hundreds. The card's own src still wins
+           when it is there: that one is decoded and in cache already, so it paints without a
+           second request. */
+        thumb: (card.querySelector('img[src*="i.ytimg.com"]') || {}).src ||
+               (v.id ? 'https://i.ytimg.com/vi/' + v.id + '/mqdefault.jpg' : ''),
+        /* The channel's avatar, from the byline rather than the thumbnail rail — yt3 is the
+           avatar host, i.ytimg is the video still, so the host is what tells them apart. */
+        avatar: (card.querySelector('img[src*="yt3."], #channel-thumbnail img') || {}).src || '',
         date: v.date || ''
       });
     });
@@ -3364,20 +3694,26 @@
       return { active: lo > 0 || hi < RANGE_MAX,
                lo: posToVal(lo, spec), hi: posToVal(hi, spec) };
     };
-    const bSubs = band('subs'), bViews = band('views'), bAge = band('age');
+    /* Which row field each range asks about. Kept as one table so a new slider needs a spec,
+       a field here, and nothing else. */
+    const FIELD = { subs: 'subs', views: 'views', age: 'ageDays', vph: 'vph',
+                    ratio: 'ratio', subratio: 'subRatio' };
+
+    const bands = RANGE_KEYS.map((k) => [FIELD[k], band(k)]).filter((b) => b[1].active);
 
     const kept = rows.filter((r) => {
       if (f.kind === 'shorts' && !r.shorts) return false;
       if (f.kind === 'long' && r.shorts) return false;
-      if (bSubs.active && (r.subs == null || r.subs < bSubs.lo || r.subs > bSubs.hi)) return false;
-      if (bViews.active && (r.views == null || r.views < bViews.lo || r.views > bViews.hi)) return false;
-      if (bAge.active && (r.ageDays == null || r.ageDays < bAge.lo || r.ageDays > bAge.hi)) return false;
-      if (f.ratioMin && (r.ratio == null || r.ratio < f.ratioMin)) return false;
+      for (const [field, b] of bands) {
+        const v = r[field];
+        if (v == null || v < b.lo || v > b.hi) return false;
+      }
       return true;
     });
 
-    const key = { ratio: (r) => r.ratio, subs: (r) => r.subs,
-                  views: (r) => r.views, date: (r) => (r.ageDays == null ? null : -r.ageDays) };
+    const key = { ratio: (r) => r.ratio, subratio: (r) => r.subRatio, vph: (r) => r.vph,
+                  subs: (r) => r.subs, views: (r) => r.views,
+                  date: (r) => (r.ageDays == null ? null : -r.ageDays) };
     const get = key[f.sort] || key.ratio;
     const dir = f.desc ? 1 : -1;
     return kept.sort((a, b) => {
@@ -3394,7 +3730,9 @@
     { key: 'date', label: 'Upload date' },
     { key: 'subs', label: 'Channel subscribers' },
     { key: 'views', label: 'Video views' },
-    { key: 'ratio', label: 'Views vs channel average' }
+    { key: 'vph', label: 'Views per hour' },
+    { key: 'ratio', label: 'Views vs channel average' },
+    { key: 'subratio', label: 'Views vs subscribers' }
   ];
 
   const AGE_CHOICES = [
@@ -3403,9 +3741,53 @@
     { v: '90', label: 'Last 3 months' }, { v: '365', label: 'This year' }
   ];
 
+  /* Everything the open modal needs to keep between repaints: the rows read off the page so
+     far, whether a batch is in flight, and the observer that asks for the next one. Held here
+     rather than passed around because loading more has to reach the same list the filter
+     controls are already redrawing. */
+  let FM = null;
+
+  const FM_DEFAULT_SORT = 'ratio';
+  /* No deadline. A clock here was always guessing, and on a slow connection it guessed wrong
+     — it expired while the response was still in flight and reported the list as finished.
+     The page itself already knows the answer: YouTube keeps its continuation element for
+     exactly as long as it holds a token for the next page, so that element's presence is the
+     wait and its absence is the end. What is left is a poll to read that state, a re-ask for
+     when a scroll goes unheard, and — for a connection that has genuinely dropped, where
+     YouTube would sit spinning too — an offer to poke it again rather than a cancellation. */
+  const FM_REFRESH = 1200;          // how often to look for badges that have since filled in
+  const FM_QUIET_TICKS = 8;         // ...and when to stop looking, once nothing is changing
+  const FM_RENUDGE = 3000;          // idle sentinel: ask again, one request can go unheard
+  const FM_SLOW = 12000;            // still nothing: offer a retry, but keep waiting
+  const FM_POLL = 300;
+  const FM_SETTLE = 2500;           // subscriber lookups for a fresh batch land after it does
+
+  /* Infinite scrolling is offered only from a standing start. Under a sort or a filter each
+     new batch is merged into the middle of the list rather than appended to the end, so rows
+     the reader is looking at slide as it lands — which is why the button exists instead. */
+  function filterIsDefault() {
+    const f = FILTER_STATE;
+    return f.kind === 'all' && f.preset === 'all' &&
+      f.sort === FM_DEFAULT_SORT && f.desc === true &&
+      RANGE_KEYS.every((k) => f[k][0] === 0 && f[k][1] === RANGE_MAX);
+  }
+
   function closeFilterModal() {
+    let restoreTo = null;
+    if (FM) {
+      if (FM.io) FM.io.disconnect();
+      if (FM.rowIo) FM.rowIo.disconnect();
+      if (FM.refresh) clearInterval(FM.refresh);
+      if (FM.tick) clearInterval(FM.tick);
+      if (FM.settle) clearTimeout(FM.settle);
+      /* Loading more scrolls the page along underneath the veil, so put it back where the
+         reader left it. The videos that loaded stay loaded — only the position is restored. */
+      restoreTo = FM.scrollY;
+      FM = null;
+    }
     document.querySelectorAll('.ytc-fm, .ytc-fm__veil').forEach((n) => n.remove());
-    document.documentElement.style.overflow = '';
+    pageLock(false);
+    if (restoreTo != null) window.scrollTo(0, restoreTo);
   }
 
   function filterRow(r, i) {
@@ -3430,10 +3812,503 @@
     '</a>';
   }
 
-  function paintFilterResults(all) {
+  /* The footer under the list, which is both the message and the mechanism: in the default
+     view it is the sentinel the observer watches, so reaching it asks for the next batch. */
+  const LOAD_MODES = [
+    { key: 'all', label: 'All', note: 'until no new results come back' },
+    { key: 'few', label: 'One batch', note: 'about 20 more, then stop' }
+  ];
+
+  /* Split control: the action, and a caret for choosing how far it goes. */
+  function loadButton() {
+    const mode = LOAD_MODES.find((m) => m.key === (FM.mode || 'all')) || LOAD_MODES[0];
+    return '<div class="ytc-fm__split">' +
+      '<button type="button" class="ytc-fm__more-btn">' +
+        (mode.key === 'all' ? 'Load all videos' : 'Load more videos') + '</button>' +
+      '<button type="button" class="ytc-fm__split-caret" aria-haspopup="true" ' +
+        'aria-expanded="' + (FM.menu ? 'true' : 'false') + '" title="How much to load">' +
+        '\u25BE</button>' +
+      (FM.menu
+        ? '<div class="ytc-fm__split-menu">' +
+            LOAD_MODES.map((m) =>
+              '<button type="button" data-mode="' + m.key + '"' +
+                (m.key === mode.key ? ' class="on"' : '') + '>' +
+                '<b>' + escapeHtml(m.label) + '</b>' +
+                '<i>' + escapeHtml(m.note) + '</i></button>').join('') +
+          '</div>'
+        : '') +
+    '</div>';
+  }
+
+  /* The run's own controls, pinned above the results rather than at the end of them. */
+  function loadBarHtml() {
+    if (!FM || !FM.loading) return '';
+    const n = FM.all ? FM.all.length : 0;
+    if (FM.paused) {
+      const pct = Math.round((FM.left / LOAD_PAUSE_SECS) * 100);
+      return '<div class="ytc-fm__prog ytc-fm__prog--paused">' +
+          '<div class="ytc-fm__prog-head">' +
+            '<b>' + n + '</b>' +
+            '<span>results loaded \u2014 stopping in ' +
+              '<b class="ytc-fm__left">' + FM.left + 's</b> unless you continue</span>' +
+          '</div>' +
+          '<span class="ytc-fm__prog-track"><i style="width:' + pct + '%"></i></span>' +
+        '</div>' +
+        '<button type="button" class="ytc-fm__go">Continue</button>' +
+        '<button type="button" class="ytc-fm__stop">Stop</button>';
+    }
+    const stale = FM.stale || 0;
+    /* No percentage of results, because there is no total to be a percentage of — the chain
+       does not end at a number and its unique results flatten off wherever they happen to.
+       A count is the honest headline. The bar tracks the one thing that genuinely does have
+       an end in sight: how close this run is to concluding the page has no more. */
+    const done = Math.min(100, Math.round((stale / LOAD_STALE_LIMIT) * 100));
+    return '<div class="ytc-fm__prog">' +
+        '<div class="ytc-fm__prog-head">' +
+          '<b>' + n + '</b>' +
+          '<span>' + (stale
+            ? 'no new results \u2014 finishing (' + stale + ' of ' + LOAD_STALE_LIMIT + ')'
+            : 'results loaded, still finding more') + '</span>' +
+        '</div>' +
+        '<span class="ytc-fm__prog-track' + (stale ? '' : ' ytc-fm__prog-track--live') + '">' +
+          '<i style="width:' + (stale ? done : 100) + '%"></i></span>' +
+      '</div>' +
+      '<button type="button" class="ytc-fm__stop">Stop</button>';
+  }
+
+  function moreBarHtml() {
+    if (!FM) return '';
+    if (FM.loading) {
+      /* Progress and Stop live in the strip above the list now, not here. Down here they sat
+         inside the scroller and every batch pushed them further out of reach — the control
+         for stopping a run being carried off by the run itself. */
+      return '<div class="ytc-fm__more"><span class="ytc-spin"></span>' +
+        '<span class="ytc-fm__note">' +
+        (FM.slow
+          ? 'Still waiting on YouTube. It is holding more results, so this is a slow ' +
+            'connection rather than the end of the list.'
+          : FM.mode === 'all'
+            ? 'Loading every result YouTube will give for this search\u2026'
+            : 'Loading more videos\u2026') + '</span>' +
+        (FM.slow ? '<button type="button" class="ytc-fm__more-btn">Try again</button>' : '') +
+        '</div>';
+    }
+    if (FM.ended) {
+      return '<div class="ytc-fm__more"><span class="ytc-fm__note">' +
+        'That is everything \u2014 YouTube has no more results for this search.' +
+        '</span></div>';
+    }
+    if (FM.stopped) {
+      return '<div class="ytc-fm__more">' +
+        '<span class="ytc-fm__note">Stopped at ' + (FM.all ? FM.all.length : 0) +
+        ' results. The rest are still there whenever you want them.</span>' +
+        loadButton() + '</div>';
+    }
+    if (filterIsDefault()) {
+      return '<div class="ytc-fm__more" data-auto="1">' +
+        '<span class="ytc-fm__note">Scrolling for more\u2026</span></div>';
+    }
+    return '<div class="ytc-fm__more">' +
+      '<span class="ytc-fm__note">Infinite scrolling is only available with the default ' +
+      'sorting and filters. Everything else loads on demand, so a sorted list does not ' +
+      'reshuffle under you as each batch arrives.</span>' +
+      loadButton() + '</div>';
+  }
+
+  /* Rooted on the results box rather than the viewport, and re-armed after every repaint
+     because the bar is rebuilt with the list. Rooting it here also covers the case a scroll
+     handler cannot see: a list too short to scroll at all, where the bar is already in view
+     and the next batch should simply load. */
+  function paintLoadBar() {
+    const bar = document.querySelector('.ytc-fm__loadbar');
+    if (!bar) return;
+    const html = loadBarHtml();
+    bar.hidden = !html;
+    /* Keyed on what the bar IS, not on what it says. Keying on the markup meant the countdown
+       changed the signature every second and rebuilt the buttons with it. */
+    const key = !FM || !FM.loading ? ''
+      : [FM.paused ? 'paused' : 'run', FM.mode, FM.stale || 0,
+         FM.all ? FM.all.length : 0].join('|');
+    if (bar.dataset.key === key) { paintCountdown(); return; }
+    bar.dataset.key = key;
+    bar.innerHTML = html;
+    const stop = bar.querySelector('.ytc-fm__stop');
+    // Bound here rather than delegated: this strip is outside the results box, so the
+    // handler watching that box never sees it.
+    if (stop) {
+      stop.addEventListener('click', () => {
+        if (!FM) return;
+        FM.cancel = true;
+        /* A pause has no batch in flight to notice the flag, so it has to be ended here. */
+        if (FM.paused) {
+          clearPause();
+          FM.paused = false;
+          FM.loading = false;
+          FM.stopped = true;
+          FM.cancel = false;
+          FM.all = collectScrolled();
+          paintFilterResults();
+        }
+      });
+    }
+    const go = bar.querySelector('.ytc-fm__go');
+    if (go) go.addEventListener('click', resumeRun);
+  }
+
+  function watchMoreBar(box) {
+    if (!FM) return;
+    if (FM.io) { FM.io.disconnect(); FM.io = null; }
+    const bar = box.querySelector('.ytc-fm__more');
+    if (!bar) return;
+    const caret = bar.querySelector('.ytc-fm__split-caret');
+    if (caret) {
+      caret.addEventListener('click', (e) => {
+        e.stopPropagation();
+        FM.menu = !FM.menu;
+        paintFilterResults();
+      });
+    }
+    bar.querySelectorAll('.ytc-fm__split-menu button').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        FM.mode = b.dataset.mode;
+        FM.menu = false;
+        paintFilterResults();
+      });
+    });
+    const stop = bar.querySelector('.ytc-fm__stop');
+    if (stop) {
+      stop.addEventListener('click', () => { if (FM) FM.cancel = true; });
+    }
+    const btn = bar.querySelector('.ytc-fm__more-btn');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        if (FM) { FM.stopped = false; FM.menu = false; }
+        retryMore();
+      });
+      return;
+    }
+    if (!bar.dataset.auto || typeof IntersectionObserver !== 'function') return;
+    FM.io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) loadMoreVideos();
+    }, { root: box, rootMargin: '600px' });
+    FM.io.observe(bar);
+  }
+
+  /* The modal filters what YouTube has already rendered, so "more videos" means letting the
+     page run the same continuation it would have run on its own: bring the sentinel it
+     watches into view and its observer fires.
+
+     Which means the page has to genuinely move, and the modal's own scroll lock is what
+     stopped it. overflow:hidden on the root element propagates to the viewport, so the
+     document is not merely unscrollable by the reader — it is unscrollable full stop, and
+     both scrollTo and scrollIntoView are clamped. The spinner ran, nothing scrolled, and no
+     batch ever arrived. So the lock comes off for as long as a batch is in flight and goes
+     straight back on once it lands. The modal and veil are position:fixed, so they do not
+     move while it is off. */
+  function pageLock(on) {
+    document.documentElement.style.overflow = on ? 'hidden' : '';
+  }
+
+  function nudgeYouTube() {
+    pageLock(false);
+    const sentinel = document.querySelector('ytd-continuation-item-renderer');
+    if (sentinel && sentinel.scrollIntoView) {
+      sentinel.scrollIntoView({ block: 'end' });
+      /* Not every surface renders a sentinel — a channel grid may simply grow. Ask for the
+         bottom as well; when the sentinel exists this is where it already is. */
+    }
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  }
+
+  /* Decorated cards, not raw YouTube ones: a new batch only becomes readable once scan() has
+     been over it, so counting these is what says the rows are actually there to collect. */
+  function decoratedCards() {
+    return document.querySelectorAll('.ytc-card').length;
+  }
+
+  /* YouTube keeps this element in the list for exactly as long as it holds a token for the
+     next page. Its presence is the difference between "slow" and "finished". */
+  function hasContinuation() {
+    return !!document.querySelector('ytd-continuation-item-renderer');
+  }
+
+  /* Whether a request is actually out, read off the spinner YouTube puts inside its own
+     continuation element. Only ever used to decide whether to ask again, so it is written to
+     fail towards "idle": a renamed spinner costs a harmless extra nudge, where a wrong "yes"
+     would sit and wait on a request nobody made. */
+  function ytFetching() {
+    const sentinel = document.querySelector('ytd-continuation-item-renderer');
+    return !!sentinel && !!sentinel.querySelector(
+      'tp-yt-paper-spinner[active], tp-yt-paper-spinner-lite[active], [aria-busy="true"]');
+  }
+
+  /* The check-in. Counts down in the load bar, and stops when it reaches zero. */
+  function pauseRun() {
+    if (!FM) return;
+    pageLock(true);
+    FM.paused = true;
+    FM.left = LOAD_PAUSE_SECS;
+    paintFilterResults();
+    if (FM.tick) clearInterval(FM.tick);
+    FM.tick = setInterval(() => {
+      if (!FM || !document.querySelector('.ytc-fm')) { clearPause(); return; }
+      FM.left--;
+      if (FM.left <= 0) {
+        clearPause();
+        FM.paused = false;
+        FM.loading = false;
+        FM.stopped = true;         // stopped, not ended: there is more, nobody asked for it
+        FM.all = collectScrolled();
+        paintFilterResults();
+        return;
+      }
+      paintCountdown();
+    }, 1000);
+  }
+
+  /* Writes only the two things that change. It used to repaint the whole bar each second,
+     which replaced the buttons — and a click only fires when the mousedown and the mouseup
+     land on the same element, so Continue was being destroyed between the press and the
+     release and the click never happened. The button was never broken; it was being rebuilt
+     out from under the press. */
+  function paintCountdown() {
+    const bar = document.querySelector('.ytc-fm__loadbar');
+    if (!bar || !FM || !FM.paused) return;
+    const left = bar.querySelector('.ytc-fm__left');
+    if (left) left.textContent = FM.left + 's';
+    const fill = bar.querySelector('.ytc-fm__prog-track i');
+    if (fill) fill.style.width = Math.round((FM.left / LOAD_PAUSE_SECS) * 100) + '%';
+  }
+
+  function clearPause() {
+    if (FM && FM.tick) { clearInterval(FM.tick); FM.tick = 0; }
+  }
+
+  function resumeRun() {
+    if (!FM || !FM.paused) return;
+    clearPause();
+    FM.paused = false;
+    /* The next check-in is a hundred further on, so each answer buys the same amount of
+       running rather than the run getting quieter the longer it goes. */
+    FM.nextPause = (FM.all ? FM.all.length : 0) + LOAD_CHECKPOINT;
+    paintFilterResults();
+    loadBatch();
+  }
+
+  function finishBatch() {
+    clearPause();
+    if (FM && FM.cancel) { FM.stopped = true; FM.cancel = false; }
+    pageLock(true);
+    FM.all = collectScrolled();
+    FM.loading = false;
+    FM.slow = false;
+    paintFilterResults();
+    /* The rows land before their numbers do: a fresh batch is looked up only once it is near
+       the viewport, which the scroll above has just made true. Repaint once when those have
+       had time to arrive, rather than leaving the new rows showing dashes where every row
+       above them has figures. */
+    if (FM.settle) clearTimeout(FM.settle);
+    FM.settle = setTimeout(() => {
+      if (FM && !FM.loading && document.querySelector('.ytc-fm')) {
+        FM.all = collectScrolled();
+        paintFilterResults();
+      }
+    }, FM_SETTLE);
+    // A fresh batch is entirely unlooked-up, so start watching for its badges again.
+    watchBadges();
+  }
+
+  /* There is no five-hundred cap. Following YouTube's own continuation chain for "apple" to
+     sixty pages, it never stopped: 751 result entries handed back, still offering a token,
+     and only 200 distinct videos among them. Unique results flatten early and the chain pads
+     on indefinitely — 168 unique by page 32, 200 by page 60.
+
+     Which means a count target is the wrong stopping rule twice over. It is not a limit
+     YouTube enforces, and the extension counts distinct cards, so a target of 500 would never
+     have been reached on that search — the run would have gone until someone pressed Stop.
+
+     What actually ends a run is the results ceasing to be new. So the rule is stagnation:
+     batches that add nothing, a few times over, mean the page has given what it has. */
+  const LOAD_STALE_LIMIT = 3;     // consecutive fruitless batches before calling it done
+  const LOAD_HARD_MAX = 1500;     // runaway guard only, not a target
+
+  /* A run that only ends when the results do can go a long way — sixty pages of chain on the
+     search I measured, and no natural stopping point in sight. So it checks in: every
+     hundred results it pauses and waits, and if nobody says carry on it stops.
+     The default is to stop rather than to continue, because an unattended run is exactly the
+     one that should not keep going. */
+  const LOAD_FIRST_PAUSE = 500;   // let it get properly underway before the first check-in
+  const LOAD_CHECKPOINT = 100;    // and every hundred after that
+  const LOAD_PAUSE_SECS = 10;     // how long it waits for an answer before stopping
+
+  function loadMoreVideos() {
+    if (!FM || FM.loading || FM.ended) return;
+    /* Asked before anything spins: if the page is holding no token there is nothing to wait
+       for, and saying so straight away beats a spinner that has already lost. */
+    if (!hasContinuation()) { FM.ended = true; paintFilterResults(); return; }
+    FM.loading = true;
+    FM.slow = false;
+    FM.cancel = false;
+    FM.stale = 0;
+    FM.paused = false;
+    clearPause();
+    FM.startedAt = decoratedCards();
+    FM.nextPause = decoratedCards() + LOAD_FIRST_PAUSE;
+    if (FM.io) { FM.io.disconnect(); FM.io = null; }   // one batch in flight at a time
+    paintFilterResults();
+    loadBatch();
+  }
+
+  /* One batch, then another if the reader asked for all of them.
+   *
+   * A single batch is often too few to satisfy a narrow filter — twenty more results against
+   * a preset that keeps one in fifty just leaves the same empty list and another button. So
+   * "All" keeps going by itself, which is only bearable because it reports where it has got
+   * to and can be stopped mid-run. */
+  function loadBatch() {
+    if (!FM) return;
+    FM.since = Date.now();
+    const before = decoratedCards();
+    nudgeYouTube();
+    let nudgedAt = Date.now();
+    const tick = () => {
+      if (!FM || !document.querySelector('.ytc-fm')) return;   // closed while waiting
+      if (FM.cancel) { finishBatch(); return; }
+      if (decoratedCards() > before) {
+        /* Keep going only while there is somewhere to go: the reader asked for everything,
+           the page still holds a token, and the ceiling is not reached. Any of those failing
+           ends the run rather than spinning against a wall. */
+        if (FM.mode === 'all' && !FM.cancel &&
+            decoratedCards() < LOAD_HARD_MAX && hasContinuation()) {
+          FM.all = collectScrolled();
+          FM.slow = false;
+          FM.stale = 0;              // this batch produced, so the count starts over
+          if (FM.all.length >= FM.nextPause) { pauseRun(); return; }
+          paintFilterResults();      // the count moves, so the progress does too
+          loadBatch();
+          return;
+        }
+        finishBatch();
+        return;
+      }
+      /* The page's own answer, not a clock's: the continuation element is gone, so YouTube
+         is holding nothing more for this query and the list has genuinely ended. */
+      if (!hasContinuation()) {
+        pageLock(true);
+        FM.loading = false;
+        FM.ended = true;
+        paintFilterResults();
+        return;
+      }
+      const now = Date.now();
+      /* A token still held but nothing being fetched means the scroll went unheard — the page
+         grew under it, or the observer had already fired for this position. Ask again, and
+         count the attempt: the chain keeps offering tokens long after it has stopped offering
+         anything new, so "asked again and got nothing" is what exhaustion actually looks
+         like here. */
+      if (!ytFetching() && now - nudgedAt >= FM_RENUDGE) {
+        nudgedAt = now;
+        FM.stale = (FM.stale || 0) + 1;
+        if (FM.mode === 'all' && FM.stale >= LOAD_STALE_LIMIT) {
+          pageLock(true);
+          FM.loading = false;
+          FM.ended = true;
+          FM.all = collectScrolled();
+          paintFilterResults();
+          return;
+        }
+        paintFilterResults();
+        nudgeYouTube();
+      }
+      /* Still waiting, and still legitimately waiting — so this offers a retry rather than
+         taking the decision away. A dropped connection leaves YouTube spinning too; the
+         reader can see that and poke it, or close the modal. */
+      if (!FM.slow && now - FM.since > FM_SLOW) {
+        FM.slow = true;
+        paintFilterResults();
+      }
+      setTimeout(tick, FM_POLL);
+    };
+    setTimeout(tick, FM_POLL);
+  }
+
+  /* One button, three jobs: start a batch, poke one that is taking too long, or re-check a
+     list the page said had ended. */
+  function retryMore() {
+    if (!FM) return;
+    if (FM.loading) { nudgeYouTube(); return; }
+    FM.ended = false;
+    loadMoreVideos();
+  }
+
+  /* The modal covers the page and locks its scroll, so a card the reader never happened to
+     scroll past is never brought near the viewport and its subscriber lookup never fires —
+     which is why a row here can show no subs, no outlier and no VPH while the very same card
+     on the page behind has all three. Loading more makes it worse: the nudge jumps straight
+     to the bottom, so every card it skipped over is passed without ever intersecting.
+
+     So the list asks for its own data, the same way the page would, driven by what is
+     actually on screen in the modal rather than by all of it at once — a few hundred channel
+     lookups fired together would trip the background's rate-limit breaker and come back with
+     nothing at all. */
+  function primeVisibleRows(box, rows) {
+    if (!FM) return;
+    if (FM.rowIo) { FM.rowIo.disconnect(); FM.rowIo = null; }
+    if (typeof IntersectionObserver !== 'function') return;
+    FM.rowIo = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        if (FM && FM.rowIo) FM.rowIo.unobserve(e.target);       // asked once is enough
+        const rec = rows[Number(e.target.dataset.i)];
+        const card = rec && rec.card;
+        if (!card || !card.isConnected) continue;
+        // The modal is looking at it even though the page is not.
+        card.dataset.ytcNear = '1';
+        try { wantSubs(card); } catch (err) { /* one row must not stop the rest */ }
+      }
+    }, { root: box, rootMargin: '300px' });
+    box.querySelectorAll('.ytc-fm__row').forEach((n) => FM.rowIo.observe(n));
+  }
+
+  /* Cheap enough to run on a timer: three counts, no cloning. Every badge the page finishes
+     drawing moves one of them, which is the signal that the rows are worth reading again. */
+  function badgeSignature() {
+    return document.querySelectorAll('.ytc-card .ytc-ratio').length + '/' +
+      document.querySelectorAll('.ytc-card .ytc-vph').length + '/' +
+      document.querySelectorAll('.ytc-card .ytc-subs:not(.ytc-subs--loading)').length;
+  }
+
+  /* A lookup queued behind others takes far longer than the one settle repaint after a batch
+     allowed for, so the rows it belongs to kept the empty clone they were built with for as
+     long as the modal stayed open. Watch until the badges stop changing, then stop watching:
+     an interval that runs for the life of the modal would still be running long after the
+     last answer had landed. */
+  function watchBadges() {
+    if (!FM) return;
+    if (FM.refresh) clearInterval(FM.refresh);
+    FM.sig = badgeSignature();
+    FM.quiet = 0;
+    FM.refresh = setInterval(() => {
+      if (!FM || !document.querySelector('.ytc-fm')) return;
+      if (FM.loading) { FM.quiet = 0; return; }   // a batch lands with its own repaint
+      const sig = badgeSignature();
+      if (sig === FM.sig) {
+        if (++FM.quiet >= FM_QUIET_TICKS) { clearInterval(FM.refresh); FM.refresh = 0; }
+        return;
+      }
+      FM.sig = sig;
+      FM.quiet = 0;
+      FM.all = collectScrolled();
+      paintFilterResults();
+    }, FM_REFRESH);
+  }
+
+  function paintFilterResults() {
     const box = document.querySelector('.ytc-fm__results');
     const count = document.querySelector('.ytc-fm__count');
-    if (!box) return;
+    if (!box || !FM) return;
+    const all = FM.all;
     const rows = applyFilter(all);
     if (count) {
       count.textContent = rows.length + ' of ' + all.length +
@@ -3441,10 +4316,18 @@
     }
     // Held so a click on a cloned button can find the card the clone came from.
     box._rows = rows;
-    box.innerHTML = rows.length
+    /* Kept across the repaint. An appending list is only usable if the reader stays where
+       they were — a redraw that jumps back to the top loses their place every time a batch
+       lands, which is precisely when it must not. */
+    const keepTop = box.scrollTop;
+    box.innerHTML = (rows.length
       ? rows.map(filterRow).join('')
-      : '<p class="ytc-fm__none">Nothing on this page matches. Widen a range, or scroll ' +
-        'YouTube further and reopen \u2014 only what has loaded can be filtered.</p>';
+      : '<p class="ytc-fm__none">Nothing on this page matches. Widen a range, or load more ' +
+        'below \u2014 only what has loaded can be filtered.</p>') + moreBarHtml();
+    box.scrollTop = keepTop;
+    paintLoadBar();
+    watchMoreBar(box);
+    primeVisibleRows(box, rows);
   }
 
   /* Two range inputs on one track. A native <input type=range> gives one handle; the pair is
@@ -3474,6 +4357,65 @@
     return (lo === 0 ? 'up to ' + hiV : loV + ' \u2013 ' + hiV);
   }
 
+  /* Every control redrawn from the state in one pass: sliders, the video-type segment and
+     the sort row. A preset changes several at once, and anything it moved has to be visible
+     in the drawer below or the list is filtered by something the reader cannot see. */
+  function syncFilterControls(modal) {
+    modal.querySelectorAll('.ytc-fm__range').forEach((box) => {
+      const [lo, hi] = FILTER_STATE[box.dataset.range];
+      box.querySelector('[data-end="lo"]').value = lo;
+      box.querySelector('[data-end="hi"]').value = hi;
+      paintRange(box);
+    });
+    modal.querySelectorAll('.ytc-fm__seg button').forEach((o) =>
+      o.classList.toggle('on', o.dataset.kind === FILTER_STATE.kind));
+    modal.querySelectorAll('.ytc-fm__sort').forEach((o) => {
+      const on = o.dataset.sort === FILTER_STATE.sort;
+      o.classList.toggle('on', on);
+      o.querySelector('span').textContent = on ? (FILTER_STATE.desc ? '\u25BC' : '\u25B2') : '\u25BC';
+    });
+  }
+
+  /* Eleven presets filled the sidebar top to bottom, which pushed the custom-filter drawer
+     and the Reset button below the fold — and a control nobody can see may as well not
+     exist. So the list is cut to roughly two thirds, with the next one clipped and faded
+     rather than removed: an item half in view says "there is more here" in a way a hard edge
+     never does, and it leaves the two things underneath on screen. */
+  const PRESET_SHOWN = Math.max(4, Math.round(FILTER_PRESETS.length * 0.65));
+
+  /* Forced open when the active preset is one of the hidden ones, since a selection the
+     reader cannot see is worse than a long list. */
+  function presetsOpen() {
+    if (FILTER_STATE.allPresets) return true;
+    /* >= not >: the chip at the cut is the clipped one, and it is click-through, so leaving
+       a selection sitting in it would show the active preset half-faded and unclickable. */
+    const i = FILTER_PRESETS.findIndex((pz) => pz.key === FILTER_STATE.preset);
+    return i >= PRESET_SHOWN;
+  }
+
+  function setPresetList(modal, open) {
+    FILTER_STATE.allPresets = !!open;
+    const box = modal.querySelector('.ytc-fm__chips');
+    const btn = modal.querySelector('.ytc-fm__more-presets');
+    if (box) box.classList.toggle('ytc-fm__chips--all', presetsOpen());
+    if (btn) {
+      btn.classList.toggle('open', presetsOpen());
+      btn.firstChild.nodeValue = presetsOpen()
+        ? 'Show fewer' : 'Show all ' + FILTER_PRESETS.length + ' presets';
+    }
+  }
+
+  function setDrawer(modal, open) {
+    FILTER_STATE.custom = !!open;
+    const drawer = modal.querySelector('.ytc-fm__drawer');
+    const btn = modal.querySelector('.ytc-fm__sec--btn');
+    if (drawer) drawer.hidden = !open;
+    if (btn) {
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      btn.classList.toggle('open', !!open);
+    }
+  }
+
   function paintRange(box) {
     const key = box.dataset.range;
     const [lo, hi] = FILTER_STATE[key];
@@ -3486,7 +4428,11 @@
 
   function openFilterModal() {
     closeFilterModal();
-    const all = collectScrolled();
+    FM = { all: collectScrolled(), loading: false, ended: false, slow: false, since: 0,
+           io: null, rowIo: null, refresh: 0, sig: '', quiet: 0, settle: 0,
+           mode: 'all', menu: false, cancel: false, stopped: false, startedAt: 0,
+           paused: false, left: 0, tick: 0, nextPause: 0, stale: 0,
+           scrollY: window.scrollY };
 
     const veil = document.createElement('div');
     veil.className = 'ytc-fm__veil';
@@ -3501,24 +4447,46 @@
       '</div>' +
       '<div class="ytc-fm__body">' +
         '<div class="ytc-fm__side">' +
-          '<label class="ytc-fm__lbl">Quick filters</label>' +
-          '<div class="ytc-fm__chips">' +
-            FILTER_PRESETS.map((pz) =>
+          '<div class="ytc-fm__sec">Presets</div>' +
+          '<div class="ytc-fm__chips' + (presetsOpen() ? ' ytc-fm__chips--all' : '') + '">' +
+            FILTER_PRESETS.map((pz, i) =>
               '<button type="button" class="ytc-fm__chip' +
-              (FILTER_STATE.preset === pz.key ? ' on' : '') + '" data-preset="' + pz.key + '">' +
-              escapeHtml(pz.label) + '</button>').join('') +
-          '</div>' +
-          '<label class="ytc-fm__lbl">Show</label>' +
-          '<div class="ytc-fm__seg">' +
-            ['all', 'shorts', 'long'].map((k) =>
-              '<button type="button" data-kind="' + k + '"' +
-              (FILTER_STATE.kind === k ? ' class="on"' : '') + '>' +
-              (k === 'all' ? 'All' : k === 'shorts' ? 'Shorts' : 'Long form') +
+              (FILTER_STATE.preset === pz.key ? ' on' : '') +
+              (i === PRESET_SHOWN ? ' ytc-fm__chip--peek'
+                : i > PRESET_SHOWN ? ' ytc-fm__chip--extra' : '') +
+              '" data-preset="' + pz.key + '">' +
+              '<b>' + escapeHtml(pz.label) + '</b>' +
+              (pz.note ? '<i>' + escapeHtml(pz.note) + '</i>' : '') +
               '</button>').join('') +
           '</div>' +
-          rangeControl('subs', 'Subscribers') +
-          rangeControl('views', 'Views') +
-          rangeControl('age', 'Uploaded') +
+          (FILTER_PRESETS.length > PRESET_SHOWN + 1
+            ? '<button type="button" class="ytc-fm__more-presets">' +
+                (presetsOpen() ? 'Show fewer'
+                  : 'Show all ' + FILTER_PRESETS.length + ' presets') +
+                '<span class="ytc-fm__caret">\u25BE</span></button>'
+            : '') +
+          /* Collapsed by default: eleven presets answer most of what anyone opens this for,
+             and six sliders under them turns a list you scan into a form you fill in. Opened
+             the moment a preset moves something, so a filtered list always says why. */
+          '<button type="button" class="ytc-fm__sec ytc-fm__sec--btn" aria-expanded="' +
+            (FILTER_STATE.custom ? 'true' : 'false') + '">Custom filters' +
+            '<span class="ytc-fm__caret">\u25BE</span></button>' +
+          '<div class="ytc-fm__drawer"' + (FILTER_STATE.custom ? '' : ' hidden') + '>' +
+            '<label class="ytc-fm__lbl">Video type</label>' +
+            '<div class="ytc-fm__seg">' +
+              ['all', 'shorts', 'long'].map((k) =>
+                '<button type="button" data-kind="' + k + '"' +
+                (FILTER_STATE.kind === k ? ' class="on"' : '') + '>' +
+                (k === 'all' ? 'All' : k === 'shorts' ? 'Shorts' : 'Long form') +
+                '</button>').join('') +
+            '</div>' +
+            rangeControl('views', 'Views') +
+            rangeControl('subs', 'Subscribers') +
+            rangeControl('vph', 'Views per hour') +
+            rangeControl('ratio', 'Views vs channel average') +
+            rangeControl('subratio', 'Views vs subscribers') +
+            rangeControl('age', 'Uploaded') +
+          '</div>' +
           '<button type="button" class="ytc-fm__reset">Reset</button>' +
         '</div>' +
         '<div class="ytc-fm__main">' +
@@ -3530,13 +4498,14 @@
               (FILTER_STATE.sort === c.key ? (FILTER_STATE.desc ? '\u25BC' : '\u25B2') : '\u25BC') +
               '</span></button>').join('') +
           '</div>' +
+          '<div class="ytc-fm__loadbar" hidden></div>' +
           '<div class="ytc-fm__results"></div>' +
         '</div>' +
       '</div>';
 
     document.body.appendChild(veil);
     document.body.appendChild(modal);
-    document.documentElement.style.overflow = 'hidden';
+    pageLock(true);
 
     /* The badge row in each result is a clone, so its buttons carry no handlers — those were
        bound to the card they were built for. Rather than reimplement copying and thumbnail
@@ -3556,9 +4525,10 @@
       if (real) real.click();
     });
     modal.querySelectorAll('.ytc-fm__range').forEach(paintRange);
-    paintFilterResults(all);
+    paintFilterResults();
+    watchBadges();
 
-    const redraw = () => paintFilterResults(all);
+    const redraw = () => paintFilterResults();
     veil.addEventListener('click', closeFilterModal);
     modal.querySelector('.ytc-fm__x').addEventListener('click', closeFilterModal);
 
@@ -3585,26 +4555,50 @@
     modal.querySelectorAll('.ytc-fm__chip').forEach((b) => {
       b.addEventListener('click', () => {
         const pz = FILTER_PRESETS.find((x) => x.key === b.dataset.preset);
-        Object.assign(FILTER_STATE, { subs: [0, RANGE_MAX], views: [0, RANGE_MAX],
-                                      age: [0, RANGE_MAX], ratioMin: 0, preset: pz.key });
-        if (pz.apply) pz.apply(FILTER_STATE);
+        /* Clicking the preset that is already on clears it instead of reapplying it. The
+           chip is the only thing that shows a preset is active, so it has to be the thing
+           that turns it off — otherwise the only way out is Reset, which closes and reopens
+           the whole modal. Clearing lands on the no-filter preset rather than on an unnamed
+           empty state, so the list and the chips still agree about what is on. */
+        const clearing = FILTER_STATE.preset === pz.key && pz.key !== NO_FILTER_KEY;
+        const use = clearing
+          ? FILTER_PRESETS.find((x) => x.key === NO_FILTER_KEY) : pz;
+        /* Every preset starts from a clean sheet, including the sort, so picking one is
+           never the last one's leftovers plus this one's changes. */
+        resetRanges(FILTER_STATE);
+        FILTER_STATE.sort = FM_DEFAULT_SORT;
+        FILTER_STATE.desc = true;
+        FILTER_STATE.preset = use.key;
+        if (use.apply) use.apply(FILTER_STATE);
         modal.querySelectorAll('.ytc-fm__chip').forEach((c) =>
-          c.classList.toggle('on', c === b));
-        modal.querySelectorAll('.ytc-fm__range').forEach((box) => {
-          const [lo, hi] = FILTER_STATE[box.dataset.range];
-          box.querySelector('[data-end="lo"]').value = lo;
-          box.querySelector('[data-end="hi"]').value = hi;
-          paintRange(box);
-        });
+          c.classList.toggle('on', c.dataset.preset === use.key));
+        // A preset that moved a slider opens the drawer, so the list never filters by
+        // something the reader has no way to see. Clearing moves nothing, so it leaves the
+        // drawer as the reader had it.
+        if (use.apply) setDrawer(modal, true);
+        setPresetList(modal, FILTER_STATE.allPresets);
+        syncFilterControls(modal);
         redraw();
       });
     });
 
+    const moreP = modal.querySelector('.ytc-fm__more-presets');
+    if (moreP) {
+      moreP.addEventListener('click', () => setPresetList(modal, !FILTER_STATE.allPresets));
+    }
+
+    const secBtn = modal.querySelector('.ytc-fm__sec--btn');
+    if (secBtn) {
+      secBtn.addEventListener('click', () => setDrawer(modal, !FILTER_STATE.custom));
+    }
+
     modal.querySelectorAll('.ytc-fm__seg button').forEach((b) => {
       b.addEventListener('click', () => {
         FILTER_STATE.kind = b.dataset.kind;
-        modal.querySelectorAll('.ytc-fm__seg button').forEach((o) => o.classList.remove('on'));
-        b.classList.add('on');
+        FILTER_STATE.preset = 'all';
+        modal.querySelectorAll('.ytc-fm__chip').forEach((c) =>
+          c.classList.toggle('on', c.dataset.preset === 'all'));
+        syncFilterControls(modal);
         redraw();
       });
     });
@@ -3614,20 +4608,14 @@
         const k = b.dataset.sort;
         if (FILTER_STATE.sort === k) FILTER_STATE.desc = !FILTER_STATE.desc;
         else { FILTER_STATE.sort = k; FILTER_STATE.desc = true; }
-        modal.querySelectorAll('.ytc-fm__sort').forEach((o) => {
-          o.classList.toggle('on', o.dataset.sort === FILTER_STATE.sort);
-          o.querySelector('span').textContent =
-            o.dataset.sort === FILTER_STATE.sort
-              ? (FILTER_STATE.desc ? '\u25BC' : '\u25B2') : '\u25BC';
-        });
+        syncFilterControls(modal);
         redraw();
       });
     });
 
     modal.querySelector('.ytc-fm__reset').addEventListener('click', () => {
-      Object.assign(FILTER_STATE, { kind: 'all', subs: [0, RANGE_MAX], views: [0, RANGE_MAX],
-                                    age: [0, RANGE_MAX], ratioMin: 0, sort: 'ratio',
-                                    desc: true, preset: 'all' });
+      resetRanges(FILTER_STATE);
+      Object.assign(FILTER_STATE, { sort: FM_DEFAULT_SORT, desc: true, preset: 'all' });
       closeFilterModal();
       openFilterModal();
     });
@@ -3652,6 +4640,1028 @@
       document.querySelectorAll(sel).forEach((el) => { if (out.indexOf(el) < 0) out.push(el); });
     }
     return out;
+  }
+
+  /* ------------------------------------------------------- search companion */
+
+  /* What a search page can be asked about itself, using only the results it has already
+     drawn. Every figure here is measured from those cards — nothing is fetched, and nothing
+     is estimated from data the page does not have.
+
+     Which is why there is no "search volume" panel. How many people type a phrase into
+     YouTube is not published anywhere, by any endpoint; a tool that shows it is modelling it
+     from its own users' behaviour. Inventing a number here and colouring it green would be
+     the same failure as pricing a boxing channel as basketball: confident, legible, and made
+     up. What the results genuinely do say is how much attention the topic is getting right
+     now and how contested it is, so those are the two the panel shows. */
+  function searchTerm() {
+    if (!/^\/results/.test(location.pathname)) return '';
+    try { return (new URL(location.href).searchParams.get('search_query') || '').trim(); }
+    catch (e) { return ''; }
+  }
+
+  const SNIPPET_SELECTORS = [
+    '.metadata-snippet-text',
+    '.metadata-snippet-container yt-formatted-string',
+    'yt-formatted-string.metadata-snippet-text-navigation',
+    '#description-text'
+  ].join(', ');
+
+  function cardSnippet(card) {
+    const el = card.querySelector(SNIPPET_SELECTORS);
+    return el ? (text(el) || '') : '';
+  }
+
+  /* Words rather than the raw phrase: "nolan wells case" should count as targeting "nolan
+     wells", and a title that happens to contain the letters inside a longer word should not.
+     Short filler words are dropped so a two-word term is not matched by "the" alone. */
+  function termWords(term) {
+    return String(term).toLowerCase().split(/[^\p{L}\p{N}]+/u)
+      .filter((w) => w.length > 2);
+  }
+
+  /* Whole words, not substrings. A plain indexOf counts "nolanwellsy" as targeting "nolan
+     wells", which would inflate the in-title figure with results that are not aimed at the
+     term at all — and that figure feeds the competition reading. Punctuation is flattened to
+     spaces first, so "Wells' case" and "Wells, Nolan:" both still count. */
+  function hasTerm(haystack, words) {
+    if (!words.length) return false;
+    const hay = ' ' + String(haystack || '').toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ').trim() + ' ';
+    return words.every((w) => hay.indexOf(' ' + w + ' ') >= 0);
+  }
+
+  /* How much of the query a title actually covers, 0 to 1. hasTerm above is all-or-nothing
+     and stays that way for the In-title count, which reports exact matches. This is the
+     graded version, and it is what decides whether a result is receiving attention for the
+     term or merely sitting on the same page as it. */
+  function titleOverlap(haystack, words) {
+    if (!words.length) return 0;
+    const hay = ' ' + String(haystack || '').toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ').trim() + ' ';
+    let hit = 0;
+    for (const w of words) if (hay.indexOf(' ' + w + ' ') >= 0) hit++;
+    return hit / words.length;
+  }
+
+  const median = (list) => {
+    if (!list.length) return null;
+    const a = list.slice().sort((x, y) => x - y);
+    const mid = Math.floor(a.length / 2);
+    return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+  };
+  const mean = (list) => (list.length
+    ? list.reduce((a, b) => a + b, 0) / list.length : null);
+
+  /* The sample is pinned to the first results the page showed, not to whatever is loaded at
+     the moment of asking. Recomputing over a growing list meant the panel described "the cards
+     currently in the DOM" while claiming to describe "the results for this term" — and every
+     figure shifted underfoot as you scrolled, which makes two terms impossible to compare and
+     one term impossible to trust.
+
+     Pinned by video id rather than by taking the first twenty rows each time: identity is what
+     keeps the membership fixed, and it still lets the numbers improve, because a row whose
+     subscriber lookup lands later is the same row and simply arrives with more filled in. */
+  const SC_SAMPLE = 20;
+  const SAMPLE = { keyword: '', ids: null };
+
+  /* The results the page itself knows about, whether or not it has drawn them yet. Asked for
+     once per search term and merged over the painted cards below.
+
+     Validated by overlap before it is trusted: ytInitialData is assigned when the document
+     loads and is not reliably rewritten when YouTube navigates between searches, exactly as
+     this codebase already documents for ytInitialPlayerResponse. If the payload describes a
+     different search than the one on screen, its ids will not match the cards that are
+     painted, and it is dropped rather than merged. */
+  const PAGE_RESULTS = { keyword: '', rows: null, asked: false };
+
+  function loadPageResults(term) {
+    if (PAGE_RESULTS.keyword === term) return;
+    PAGE_RESULTS.keyword = term;
+    PAGE_RESULTS.rows = null;
+    PAGE_RESULTS.asked = true;
+    pageData().then((page) => {
+      if (PAGE_RESULTS.keyword !== term) return;
+      const list = page && Array.isArray(page.search) ? page.search : null;
+      PAGE_RESULTS.rows = list && list.length ? list : null;
+      ensureCompanion();
+    }).catch(() => { /* the painted cards still work on their own */ });
+  }
+
+  /* One row per result the page lists, carrying whatever the painted card knows on top. The
+     card is the better source where it exists — its badges hold the subscriber lookup — but
+     the payload is the only source for a result that has not been drawn. */
+  function mergePageResults(dom) {
+    const list = PAGE_RESULTS.rows;
+    if (!list) return null;
+    const byId = new Map();
+    for (const r of dom) if (r.id) byId.set(r.id, r);
+    // Anything the payload lists that is also painted proves the two describe one page.
+    const overlap = list.filter((p) => byId.has(p.id)).length;
+    if (overlap < Math.min(3, list.length)) return null;
+    const now = Date.now();
+    const fromList = list.map((p) => {
+      const card = byId.get(p.id);
+      if (card) {
+        /* Exact counts beat the card's abbreviated text: "1.7M" parses back as 1,700,000 and
+           averaging rounded numbers is how the figures drifted between reads. */
+        return p.views != null ? Object.assign({}, card, { views: p.views }) : card;
+      }
+      const ageDays = daysSince(F.relativeToISO(p.published, now));
+      return {
+        card: null, tools: '', title: p.title, url: '', id: p.id,
+        channel: p.channel, views: p.views, subs: null,
+        ratio: null, subRatio: null,
+        vph: p.views != null && ageDays ? p.views / (ageDays * 24) : null,
+        ageDays: ageDays, chanAge: '', shorts: p.shorts, thumb: '', date: p.published
+      };
+    });
+
+    /* Union, not replacement. Returning only what the payload listed threw away every painted
+       card it did not mention — and the payload is read once per search and cached, so a
+       shallow one (three entries where the page went on to draw thirty) capped the panel at
+       three and froze it there however far anyone scrolled. The payload's job is to supply
+       results the page has not drawn yet, not to decide which ones count. */
+    const listed = new Set(list.map((p) => p.id));
+    for (const r of dom) if (r.id && !listed.has(r.id)) fromList.push(r);
+    return fromList;
+  }
+
+  /* The first twenty, pinned — the score's sample, not the panel's.
+
+     These are two different jobs and they were sharing one answer. The statistics describe
+     what is on the page and should grow as more of it loads: the reference tool's denominators
+     climb from 33 to 84 as the reader scrolls, and capping mine at 20 was answering a
+     different question than the one the block claims to. The score must not move, because a
+     number that drifts while you scroll cannot be compared between terms — and that is why it
+     was capped in the first place.
+
+     So the cap stays, on the score alone. Deeper results are genuinely weaker, so letting them
+     into the score would drift it downward the further anyone scrolled, which says more about
+     the reader than the keyword. */
+  function pinnedRows(all, term) {
+    /* Shorts stay in. Taking them out looked right — their views and velocity follow a
+       different distribution, and it explained the reference tool's 14s and 18s where mine
+       were a flat 20. "rtyui" showed what it cost: the only results genuinely matching that
+       term are Shorts, and removing them left nothing but the popular videos YouTube padded
+       the page with, so the panel described competition having nothing to do with the term.
+       Whatever ranks for a term is what a creator is up against, whichever format it is.
+
+       The 14s and 18s were something else anyway — sponsored slots, which the ad filter in
+       collectScrolled now removes. */
+    const rows = all;
+    if (SAMPLE.keyword !== term) { SAMPLE.keyword = term; SAMPLE.ids = null; }
+    // Not enough on the page yet: report on what there is and pin once the page has caught up.
+    if (!SAMPLE.ids) {
+      if (rows.length < SC_SAMPLE) return rows;
+      SAMPLE.ids = rows.slice(0, SC_SAMPLE).map((r) => r.id).filter(Boolean);
+    }
+    const byId = new Map();
+    for (const r of rows) if (r.id && !byId.has(r.id)) byId.set(r.id, r);
+    const picked = SAMPLE.ids.map((id) => byId.get(id)).filter(Boolean);
+    /* A soft navigation can replace the results under the same query string. If the pinned
+       videos are no longer on the page, the pin is stale and worth nothing. */
+    return picked.length >= Math.min(SC_SAMPLE, SAMPLE.ids.length) / 2
+      ? picked : rows.slice(0, SC_SAMPLE);
+  }
+
+  /* Caption results for the current term, once the reader has asked for them.
+     Keyed by term: the answer is about a phrase, not about the videos. */
+  const CAPS = { keyword: '', state: 'idle', hits: null, checked: 0, withCaptions: 0 };
+  /* The sample the button would act on. The panel's markup is replaced on every repaint, so
+     the handler is delegated and cannot close over the rows it was drawn with. */
+  const PANEL_ROWS = { term: '', rows: [] };
+
+  function capsFor(term) {
+    if (CAPS.keyword !== term) {
+      CAPS.keyword = term;
+      CAPS.state = 'idle';
+      CAPS.hits = null;
+      CAPS.checked = 0;
+      CAPS.withCaptions = 0;
+    }
+    return CAPS;
+  }
+
+  function runCaptionCheck(term, rows) {
+    const c = capsFor(term);
+    if (c.state === 'running') return;
+    c.state = 'running';
+    ensureCompanion();
+    const ids = rows.map((r) => r.id).filter(Boolean);
+    sendMessage({ type: 'ytc-captions', videos: ids, words: termWords(term) }, (res) => {
+      if (CAPS.keyword !== term) return;
+      if (chrome.runtime.lastError || !res || !res.ok) {
+        CAPS.state = 'failed';
+      } else {
+        CAPS.state = 'done';
+        CAPS.hits = new Set(res.hits || []);
+        CAPS.checked = res.checked || 0;
+        CAPS.withCaptions = res.withCaptions || 0;
+      }
+      ensureCompanion();
+    });
+  }
+
+  function searchStats(rows, term) {
+    const words = termWords(term);
+    const views = rows.map((r) => r.views).filter((v) => v != null);
+    const subs = rows.map((r) => r.subs).filter((v) => v != null);
+    const ages = rows.map((r) => r.ageDays).filter((v) => v != null);
+    const vphs = rows.map((r) => r.vph).filter((v) => v != null);
+
+    const inTitle = rows.filter((r) => hasTerm(r.title, words)).length;
+    const inDesc = rows.filter((r) => hasTerm(cardSnippet(r.card), words)).length;
+    const fresh = rows.filter((r) => r.ageDays != null && r.ageDays <= 7).length;
+
+    /* Attention, from the videos actually being watched FOR this term.
+
+       It used to average every result on the page, which meant it averaged the padding —
+       and padding is exactly what YouTube supplies when a query has no real matches. Type
+       "gjfgfkjdfdfd" and the page fills with popular unrelated videos whose velocity is
+       genuinely high, so the panel reported high attention for a string no video contains.
+       That is the same error already corrected for competition, where these results are
+       described as "videos YouTube reached for rather than competitors" — they are no more
+       evidence of demand than they are of contest.
+
+       So a result contributes in proportion to how much of the query its title carries, and
+       does not contribute at all below half. Nothing matching means no attention measured,
+       which is the honest reading of a page that has nothing to do with the term. */
+    const RELEVANT_ENOUGH = 0.5;
+    /* A checked caption hit is relevance at full weight — stronger evidence than a title,
+       not weaker: the video spends real time on the term rather than merely naming it. Until
+       the check has been run this contributes nothing, so the panel behaves exactly as it did
+       and the reader pays for the fetches only when they ask. */
+    const caps = CAPS.keyword === term && CAPS.hits ? CAPS.hits : null;
+    const scored = rows
+      .map((r) => ({
+        row: r,
+        w: Math.max(titleOverlap(r.title, words), caps && caps.has(r.id) ? 1 : 0)
+      }))
+      .filter((x) => x.w >= RELEVANT_ENOUGH);
+    const attentive = scored
+      .map((x) => ({ w: x.w, vph: x.row.vph }))
+      .filter((x) => x.vph != null);
+    const weight = attentive.reduce((a, x) => a + x.w, 0);
+    const attention = weight ? attentive.reduce((a, x) => a + x.w * x.vph, 0) : null;
+    const attentiveCount = attentive.length;
+
+    /* How hard this term is to take: how big the channels on page one are, and how many
+       views they already command.
+
+       The in-title share has been tried as an addend and then as a multiplier on this figure,
+       and it was wrong both times, for the same underlying reason — hasTerm requires every
+       significant word of the query in the title, which a multi-word search almost never
+       satisfies. "tech review" came back 3/20 and, as a multiplier, that scored one of the
+       most contested terms on YouTube at 29/100 "Low" while its page showed a 16.6M median
+       subscriber count. A signal that collapses on ordinary queries cannot be allowed to
+       scale the whole measure.
+
+       It is now reported (In title) and used as a caveat, but it does not move this number.
+       What moves it is what is actually on the page. */
+    const raw = rows.length ? inTitle / rows.length : 0;
+    /* Measured over the results that carry the term, not everything on the page — the same
+       correction attention just had, and for the same reason. A page of videos that have
+       nothing to do with the query describes no competition for it, however large those
+       videos are: "gfggdjfskfhsd" read 51/100 "Moderate" off six unrelated results. Nothing
+       carrying the term means there is no contest to measure, not a middling one. */
+    const medSubs = median(scored.map((x) => x.row.subs).filter((v) => v != null));
+    const medViews = median(scored.map((x) => x.row.views).filter((v) => v != null));
+    const logScale = (v, top) => Math.min(1, Math.log10(v + 1) / Math.log10(top));
+    const subsPressure = medSubs == null ? null : logScale(medSubs, 1e7);    // 10M saturates
+    const viewPressure = medViews == null ? null : logScale(medViews, 1e7);
+    const competition = subsPressure == null ? null
+      : Math.round((subsPressure * 0.55 +
+                    (viewPressure == null ? subsPressure : viewPressure) * 0.45) * 100);
+
+    /* Whether the page is answering the phrase or reaching past it. This used to withhold the
+       score outright, and it fired far too readily: hasTerm needs every significant word of
+       the query in the title, which a three-word search almost never satisfies, so ordinary
+       terms like "tech review usa" came back 2/20 and were treated as unanswerable. Two of
+       five sampled terms were withheld that way.
+
+       It is a caveat now rather than a veto. The reader gets the number and the reason it may
+       not mean what it appears to — which is the honest shape of the problem, because without
+       search volume a term nobody targets is indistinguishable from an opening and a dead
+       end, and refusing to score it did not tell them which either. */
+    const relevant = raw >= 0.15;
+
+    return {
+      term, n: rows.length,
+      counted: views.length,
+      topViews: views.length ? Math.max.apply(null, views) : null,
+      avgViews: mean(views),
+      avgSubs: mean(subs),
+      subsKnown: subs.length,
+      avgAge: mean(ages),
+      inTitle, inDesc, fresh,
+      rows,
+      capState: CAPS.keyword === term ? CAPS.state : 'idle',
+      capHits: caps ? rows.filter((r) => caps.has(r.id)).length : null,
+      capChecked: CAPS.keyword === term ? CAPS.checked : 0,
+      attention, competition, medSubs, medViews, relevant, targeting: raw,
+      attentiveCount,
+      // Weighted mean, so a title carrying half the query counts half.
+      attentionPerVideo: weight ? attention / weight : null
+    };
+  }
+
+  /* Thresholds set against the reference tool rather than picked, so the same magnitude gets
+     the same word in both. Read off its bars: a competition bar filled to ~85 is labelled
+     "High" there and was "Very high" here, and a score of 68 is "High" there and would have
+     been "Moderate" here. The measurements already agreed; only the vocabulary did not. */
+  const BANDS = [
+    { at: 90, label: 'Very high', tier: 'great' },
+    { at: 60, label: 'High', tier: 'good' },
+    { at: 38, label: 'Moderate', tier: 'ok' },
+    { at: 15, label: 'Low', tier: 'low' },
+    { at: 0,  label: 'Very low', tier: 'poor' }
+  ];
+  const bandFor = (pct) => BANDS.find((b) => pct >= b.at) || BANDS[BANDS.length - 1];
+
+  /* Attention is scored per video, not as a page total.
+
+     A total is a sum over however many results happen to have loaded, so it climbs as you
+     scroll and the score climbs with it — the number then partly measures how far down the
+     page you are, which is no property of the keyword. Competition never had this problem
+     because it is built from a ratio and a median; that is exactly why it sat at 89-93 across
+     the same scrolls that moved attention threefold.
+
+     A mean is invariant to how many results are in hand, so loading more refines the estimate
+     rather than inflating it, and two terms compare even when one has 8 results read and the
+     other 37.
+
+     No natural ceiling either way, so it goes on a log scale against a fixed top rather than
+     against the other results on screen — scaling to the page would make the busiest term on
+     any page 100% of itself, every time. */
+  /* 20,000 was set from what a runaway video can do, and that is the wrong end to calibrate
+     from: it is the ceiling of the whole platform, not of a search page. It squeezed the band
+     real results actually occupy — roughly 10 to 500 views/hour for a typical result — into
+     24-63% of the bar, so a breaking-news term at 1.2K/h still read 72% and nothing was ever
+     "very high". 2,000 puts the working range across the bar, where it discriminates. */
+  const ATTENTION_TOP = 2000;     // views/hour for a typical result on a hot search
+  function attentionPct(vph) {
+    if (vph == null) return null;
+    return Math.max(0, Math.min(100,
+      Math.round(Math.log10(vph + 1) / Math.log10(ATTENTION_TOP + 1) * 100)));
+  }
+
+  /* A semicircular gauge, drawn as one arc with a dash offset. 157.08 is the length of a
+     radius-50 half circle, so the visible fraction is just that length scaled by the score. */
+  const GAUGE_ARC = 157.08;
+
+  /* Competition is a median of the subscriber counts that have actually come back, and it is
+     half of what moves the score. On a page where few lookups have landed, that median is
+     taken over a handful of channels — the number is still the best available, but presenting
+     it at the same confidence as a full sample is the thing this panel keeps being wrong
+     about. So the gauge says what it is standing on until the sample fills in. */
+  const SC_THIN = 0.6;             // below this share of the sample, say so
+
+  function gauge(score, band, note) {
+    const none = score == null;
+    const shown = none ? 0 : Math.max(0, Math.min(100, score));
+    /* The caveats live in the tooltip, not under the number. They are three sentences on a
+       good day and five on a bad one, and printed out they pushed the score into a wall of
+       small grey text — the one thing the reader came to see, buried under the reasons it
+       might be wrong. The marker beside the label is what makes them findable. */
+    return '<div class="ytc-sc__gauge"' +
+      (note ? ' title="' + escapeHtml(note) + '"' : '') + '>' +
+      '<svg viewBox="0 0 120 68" class="ytc-sc__gsvg" aria-hidden="true">' +
+        '<path class="ytc-sc__gtrack" d="M10,60 A50,50 0 0 1 110,60"/>' +
+        '<path class="ytc-sc__garc ytc-sc__garc--' + (band ? band.tier : 'poor') + '" ' +
+          'd="M10,60 A50,50 0 0 1 110,60" ' +
+          'stroke-dasharray="' + (GAUGE_ARC * shown / 100).toFixed(2) + ' ' + GAUGE_ARC + '"/>' +
+      '</svg>' +
+      '<div class="ytc-sc__gnum">' + (none ? '\u2014' : Math.round(shown)) + '</div>' +
+      '<div class="ytc-sc__glabel">Overall score' +
+        (note ? '<span class="ytc-sc__ginfo" aria-hidden="true">?</span>' : '') + '</div>' +
+      '<div class="ytc-sc__gband' + (band ? ' ytc-onum--' + band.tier : '') + '">' +
+        escapeHtml(band ? band.label.toUpperCase() : '\u2014') + '</div>' +
+    '</div>';
+  }
+
+  /* A collapsible section, so a panel this tall can be cut down to the part being used. */
+  function scSection(key, title, body, note) {
+    const open = !SC_SHUT.has(key);
+    return '<section class="ytc-sc__sec' + (open ? '' : ' shut') + '" data-sec="' + key + '">' +
+      '<button type="button" class="ytc-sc__sechead"' +
+        (note ? ' title="' + escapeHtml(note) + '"' : '') + '>' +
+        '<b>' + escapeHtml(title) + '</b>' +
+        '<span class="ytc-sc__chev">\u25BE</span></button>' +
+      '<div class="ytc-sc__secbody">' + body + '</div>' +
+    '</section>';
+  }
+
+  const SC_SHUT = new Set();   // sections collapsed by hand, for this page view
+
+  /* Small line icons, drawn rather than taken from a font so they sit on the text baseline at
+     any zoom and inherit currentColor in both themes. */
+  const SC_ICONS = {
+    eye: 'M1 8s2.7-4.5 7-4.5S15 8 15 8s-2.7 4.5-7 4.5S1 8 1 8Z M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z',
+    trend: 'M1.5 11.5 6 7l3 3 5.5-5.5 M10.5 4.5h4v4',
+    people: 'M6 8a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z M1.5 13.5c0-2.2 2-3.5 4.5-3.5s4.5 1.3 4.5 3.5 M11 4.2a2.2 2.2 0 0 1 0 4.3 M12.5 13.5c0-1.6-.6-2.6-1.6-3.2',
+    clock: 'M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Z M8 4.5V8l2.5 1.5',
+    title: 'M2 4h12 M2 8h9 M2 12h6',
+    doc: 'M4 1.5h5l3 3v10H4Z M9 1.5v3h3',
+    cal: 'M2.5 3.5h11v11h-11Z M2.5 6.5h11 M5.5 1.5v3 M10.5 1.5v3',
+    cc: 'M1.5 3h13v10h-13Z M6 6.5a2 2 0 1 0 0 3 M11.5 6.5a2 2 0 1 0 0 3'
+  };
+
+  function scIcon(name) {
+    const d = SC_ICONS[name];
+    if (!d) return '';
+    return '<svg class="ytc-sc__ico" viewBox="0 0 16 16" aria-hidden="true">' +
+      '<path d="' + d + '"/></svg>';
+  }
+
+  /* tier is passed separately because the colour does not always follow the number.
+     Competition runs the other way from everything else here — a high one is a worse prospect,
+     not a better one — so it keeps its "Very high" label while taking the danger colour.
+     Colouring it by magnitude painted a wall of green over the single worst thing the panel
+     can tell you. */
+  function meterRow(label, pct, valueText, title, tier) {
+    const band = pct == null ? null : (tier ? { tier: tier } : bandFor(pct));
+    return '<div class="ytc-sc__meter" title="' + escapeHtml(title || '') + '">' +
+      '<span class="ytc-sc__mhead"><b>' + escapeHtml(label) + '</b>' +
+        '<i class="ytc-sc__mval' + (band ? ' ytc-onum--' + band.tier : '') + '">' +
+        escapeHtml(valueText) + '</i></span>' +
+      '<span class="ytc-sc__track"><i class="ytc-sc__fill' +
+        (band ? ' ytc-sc__fill--' + band.tier : '') +
+        '" style="width:' + (pct == null ? 0 : pct) + '%"></i></span>' +
+    '</div>';
+  }
+
+  function statCell(icon, label, value, title, note) {
+    return '<div class="ytc-sc__stat" title="' + escapeHtml(title || '') + '">' +
+      '<span class="ytc-sc__badge">' + scIcon(icon) + '</span>' +
+      '<span class="ytc-sc__statmeta"><span>' + escapeHtml(label) + '</span>' +
+      '<b>' + escapeHtml(value) + '</b>' +
+      (note ? '<em class="ytc-sc__partial">' + escapeHtml(note) + '</em>' : '') +
+      '</span></div>';
+  }
+
+  function miniStat(icon, label, value, title) {
+    return '<div class="ytc-sc__minirow" title="' + escapeHtml(title || '') + '">' +
+      scIcon(icon) + '<span>' + escapeHtml(label) + '</span>' +
+      '<b>' + escapeHtml(value) + '</b></div>';
+  }
+
+  /* The series, held per keyword for as long as the panel is open. Kept out of the render so
+     an arriving series repaints once, rather than every scan asking for it again. */
+  const SERIES = { keyword: '', asked: false, data: null };
+
+  /* An inline sparkline rather than a chart library: one path, two labels, no dependency, and
+     it has to sit inside a 292px panel. */
+  function sparkline(points) {
+    const vals = points.map((p) => p.vph);
+    const hi = Math.max.apply(null, vals);
+    const lo = Math.min.apply(null, vals);
+    const span = hi - lo || 1;
+    const W = 100, H = 34;
+    const xy = points.map((p, i) => {
+      const x = points.length === 1 ? W / 2 : (i / (points.length - 1)) * W;
+      const y = H - ((p.vph - lo) / span) * (H - 4) - 2;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    });
+    const line = 'M' + xy.join('L');
+    const area = line + 'L' + W + ',' + H + 'L0,' + H + 'Z';
+    return '<svg class="ytc-sc__spark" viewBox="0 0 ' + W + ' ' + H +
+        '" preserveAspectRatio="none" aria-hidden="true">' +
+      '<path class="ytc-sc__sparkfill" d="' + area + '"/>' +
+      '<path class="ytc-sc__sparkline" d="' + line + '" fill="none" vector-effect="non-scaling-stroke"/>' +
+    '</svg>';
+  }
+
+  function seriesHtml(term) {
+    const s = SERIES;
+    if (s.keyword !== term) {
+      return '<p class="ytc-sc__note">Reading\u2026</p>';
+    }
+    const d = s.data;
+    if (!d || !d.ok) {
+      /* One message on screen, the specifics in the tooltip.
+         It said "No index configured" for every failure, which named a cause it had not
+         checked and sent the reader to fix a setting that was already correct. Reporting the
+         real reason fixed that and introduced the opposite fault: "running a build without
+         the sampling routes" is a note to whoever runs the service, printed at someone
+         looking for a chart. Neither audience is served by choosing one — so the panel says
+         the one thing that is true for every case, and the diagnosis is a hover away. */
+      const why = (d && d.reason) || '';
+      const detail =
+        !d ? 'The index service did not answer.'
+        : /no index|not configured/i.test(why)
+          ? 'No index is configured, so nothing is being sampled.'
+        : /\b404\b/.test(why)
+          ? 'The index service is running a build without the sampling routes. Restarting it ' +
+            'picks them up.'
+        : /unreachable|fetch failed/i.test(why)
+          ? 'The index service could not be reached.'
+        : why
+          ? 'The index service answered: ' + why
+          : 'Nothing is being sampled for this term yet.';
+      return '<p class="ytc-sc__note" title="' + escapeHtml(detail) + '">' +
+        'Not enough data to display yet.</p>';
+    }
+    const pts = d.points || [];
+    if (pts.length < 2) {
+      /* Deliberately explicit rather than an empty chart. This is the one number on the panel
+         that cannot be measured from the page, and saying "come back" is the honest state —
+         a flat line drawn from one sample would be a shape with no meaning. */
+      return '<p class="ytc-sc__note" title="' + escapeHtml('Tracking ' + (d.videos || 0) +
+        ' videos for this term. A rate is the change between two readings, so the first ' +
+        'point appears once a second one has been taken.') + '">' +
+        'Not enough data to display yet.</p>';
+    }
+    const last = pts[pts.length - 1];
+    const first = pts[0];
+    const change = first.vph > 0
+      ? Math.round(((last.vph - first.vph) / first.vph) * 100) : null;
+    const dir = change == null ? '' : change > 0 ? '+' : '';
+    return '<div class="ytc-sc__chart" title="Views per hour across the ' + (d.videos || 0) +
+        ' videos tracked for this term, measured as the change between samples \u2014 not ' +
+        'views divided by age, which falls with age whatever the audience does.">' +
+        '<div class="ytc-sc__chead"><b>' + F.formatVph(last.vph) + '/h</b>' +
+          (change == null ? '' : '<i class="' +
+            (change >= 0 ? 'ytc-onum--great' : 'ytc-onum--poor') + '">' +
+            dir + change + '%</i>') +
+        '</div>' +
+        sparkline(pts) +
+        '<div class="ytc-sc__cfoot"><span>' + pts.length + ' samples</span>' +
+          '<span>now</span></div>' +
+      '</div>';
+  }
+
+  /* Which channels own this search, from the sample already in hand.
+
+     The statistics say what a typical result looks like; this says who keeps producing them.
+     One channel holding six of twenty results is a different proposition from twenty channels
+     holding one each, and no average shows the difference. */
+  const CHAN_SORT = { by: 'views' };          // views | results
+
+  function topChannels(rows) {
+    const by = new Map();
+    for (const r of rows) {
+      const name = (r.channel || '').trim();
+      if (!name) continue;
+      let c = by.get(name);
+      if (!c) { c = { name, results: 0, views: 0, subs: null, avatar: '' }; by.set(name, c); }
+      c.results++;
+      if (r.views != null) c.views += r.views;
+      // Subscriber counts arrive per card; whichever lands first stands for the channel.
+      if (c.subs == null && r.subs != null) c.subs = r.subs;
+      if (!c.avatar && r.avatar) c.avatar = r.avatar;
+    }
+    const list = Array.from(by.values());
+    list.sort((a, b) => (CHAN_SORT.by === 'results'
+      ? b.results - a.results || b.views - a.views
+      : b.views - a.views || b.results - a.results));
+    return list;
+  }
+
+  function channelsBody(rows) {
+    const list = topChannels(rows);
+    if (!list.length) {
+      return '<p class="ytc-sc__note">No channel names read from these results yet.</p>';
+    }
+    const top = list.slice(0, 8);
+    const most = Math.max.apply(null, top.map((c) => (CHAN_SORT.by === 'results'
+      ? c.results : c.views))) || 1;
+    return '<div class="ytc-sc__chead">' +
+        '<span>' + list.length + ' channels</span>' +
+        '<button type="button" class="ytc-sc__csort" title="' +
+          escapeHtml('Sort by total views across this page, or by how many of the results ' +
+            'the channel holds.') + '">\u21c5 ' +
+          (CHAN_SORT.by === 'results' ? 'results' : 'views') + '</button>' +
+      '</div>' +
+      top.map((c) => {
+        const share = Math.max(4, Math.round(
+          ((CHAN_SORT.by === 'results' ? c.results : c.views) / most) * 100));
+        const sub = [
+          c.subs == null ? '' : F.compact(c.subs) + ' subs',
+          c.results + (c.results === 1 ? ' result' : ' results')
+        ].filter(Boolean).join(' \u00b7 ');
+        return '<div class="ytc-sc__chan" title="' + escapeHtml(c.name + ' \u2014 ' + sub +
+            ', ' + (c.views ? F.compact(c.views) + ' views' : 'views unread') +
+            ' across this page') + '">' +
+          (c.avatar
+            ? '<img class="ytc-sc__cav" src="' + escapeHtml(c.avatar) + '" alt="" ' +
+              'loading="lazy">'
+            : '<span class="ytc-sc__cav ytc-sc__cav--none">' + scIcon('people') + '</span>') +
+          '<span class="ytc-sc__cmeta">' +
+            '<span class="ytc-sc__cname">' + escapeHtml(c.name) + '</span>' +
+            '<span class="ytc-sc__csub">' + escapeHtml(sub) + '</span>' +
+            '<span class="ytc-sc__cbar"><i style="width:' + share + '%"></i></span>' +
+          '</span>' +
+          '<b class="ytc-sc__cnum">' +
+            (CHAN_SORT.by === 'results'
+              ? c.results + '\u00d7'
+              : (c.views ? F.compact(c.views) : '\u2014')) + '</b>' +
+        '</div>';
+      }).join('');
+  }
+
+  function companionHtml(st, stScore) {
+    const dash = '—';
+    const num = (v) => (v == null ? dash : F.compact(Math.round(v)) || String(Math.round(v)));
+    const aPct = attentionPct(stScore.attentionPerVideo);
+    const aBand = aPct == null ? null : bandFor(aPct);
+    const cBand = stScore.competition == null ? null : bandFor(stScore.competition);
+    const outOf = ' / ' + st.n;
+
+    /* Worth targeting = plenty of attention, and not already crowded with strong videos aimed
+       at the same phrase. So the score rewards one and penalises the other in equal measure.
+       It is a composite of two things measured on this page, not a figure from a search
+       dataset — which is why both halves sit directly underneath it, where anyone can see
+       exactly what moved the number. */
+    /* Withheld rather than guessed when the page has nothing to do with the phrase. A term
+       nothing targets would otherwise score highest of all — zero competition reads as a wide
+       open field — when what it actually means is that these results were padding and the
+       page cannot speak to the term either way. Saying so is the useful answer; 75/HIGH would
+       have been a confident one and wrong. */
+    /* Weighted 65/35 toward demand, matched to the reference tool: solving its published
+       score against its own two bars lands on 65/35, where an even split would have given 55
+       for a term it calls 68. Competition therefore costs about half what it used to.
+
+       Worth knowing what that trades away: at this weighting a term held by million-
+       subscriber incumbents scores close to one held by nobody, so the score leans towards
+       "is anyone watching" and away from "could I win it". The competition bar underneath is
+       where that question still gets answered honestly. */
+    const DEMAND_W = 0.65;
+    const score = (aPct == null || stScore.competition == null)
+      ? null : Math.round(aPct * DEMAND_W + (100 - stScore.competition) * (1 - DEMAND_W));
+    const sBand = score == null ? null : bandFor(score);
+
+    const keywordBody =
+      gauge(score, sBand,
+        /* Always shown, not only in edge cases, because it is always true: this score has no
+           demand term in it. Two of the sampled searches proved the omission cannot be
+           patched over from the page — "nolan wells update today" and "nolan wells gym" have
+           the same 0/20 targeting and the same padded results, and one is searched constantly
+           while the other is searched by nobody. A reader comparing two terms needs to know
+           the number cannot tell them apart. */
+        'Scores the results on this page. Search demand is not in it \u2014 YouTube ' +
+        'publishes none, so a term nobody looks up can still score well here.' +
+        /* These qualify the score, so they read the score's own slice — not the statistics
+           block's, which keeps growing underneath and would report a different denominator
+           than the number it is standing next to. */
+        (!stScore.relevant
+          // The threshold is a share, not zero, so the copy has to be too — it read
+          // "No result ... (2 / 20)", contradicting itself on the same line.
+          ? ' ' + (stScore.inTitle
+              ? 'Only ' + stScore.inTitle + ' / ' + stScore.n + ' results target it'
+              : 'Nothing in the scored results targets it') +
+            ', so these are mostly videos YouTube reached for rather than competitors.'
+          : '') +
+        (stScore.n && stScore.subsKnown < stScore.n * SC_THIN
+          ? ' Provisional \u2014 ' + stScore.subsKnown + ' of ' + stScore.n +
+            ' channels looked up so far.' : '')) +
+      meterRow('Attention', aPct,
+        stScore.attentionPerVideo == null ? 'no matching videos'
+          : F.formatVph(stScore.attentionPerVideo) + '/h ' + (aBand ? '· ' + aBand.label : ''),
+        (stScore.attentionPerVideo == null
+          ? 'No result whose title carries this term, so there is nothing being watched for ' +
+            'it here to measure. The page is padding — videos YouTube reached for when the ' +
+            'query matched nothing.'
+          : 'Views per hour for a video that actually uses this term \u2014 across the ' +
+            stScore.attentiveCount + ' of ' + stScore.n + ' results whose titles carry it, ' +
+            'weighted by how much of the term each one carries. Per video rather than ' +
+            'totalled, so it does not climb as more results load. Not search volume: ' +
+            'YouTube publishes none, so nothing here models it.')) +
+      meterRow('Competition', stScore.competition,
+        stScore.competition == null ? 'no matching videos'
+          : (cBand ? cBand.label : '') + ' · ' + stScore.competition + '/100',
+        (stScore.competition == null
+          ? 'No result whose title carries this term, so there is no contest here to measure. '
+            + 'The page is padding, and the size of videos that are not competing for the '
+            + 'term says nothing about how hard it is to take.'
+          : 'How contested the term looks, from what the ' + stScore.attentiveCount +
+        ' results carrying it already have: median ' +
+        (stScore.medSubs == null ? 'unknown' : F.compact(stScore.medSubs)) +
+        ' subscribers and median ' +
+        (stScore.medViews == null ? 'unknown' : F.compact(stScore.medViews)) + ' views. ' +
+        'Exact-title matches (' + stScore.inTitle + ' / ' + stScore.n + ') count for little, ' +
+        'because a search returns titles matching the query whether or not it is contested.'),
+        stScore.competition == null ? null : bandFor(100 - stScore.competition).tier);
+
+    const statsBody =
+      '<div class="ytc-sc__card">' +
+        '<div class="ytc-sc__termrow"><span>Search term</span>' +
+          '<b>\u201c' + escapeHtml(st.term) + '\u201d</b></div>' +
+        '<div class="ytc-sc__stats">' +
+          statCell('eye', 'Highest views', num(st.topViews),
+            'The most-viewed of the ' + st.counted + ' results whose view count was read.') +
+          statCell('trend', 'Avg views', num(st.avgViews),
+            'Mean across ' + st.counted + ' results.') +
+          statCell('people', 'Avg subscribers', st.avgSubs == null ? dash : num(st.avgSubs),
+            st.subsKnown + outOf + ' channels looked up so far. Scroll the list to fill in ' +
+            'the rest \u2014 lookups run only for cards near the viewport.',
+            st.subsKnown < st.n ? 'from ' + st.subsKnown + ' of ' + st.n : '') +
+          statCell('clock', 'Avg age', st.avgAge == null ? dash
+            : (st.avgAge < 1 ? 'today' : Math.round(st.avgAge) + ' days'),
+            'Mean age of the results, from the dates on the cards.') +
+        '</div>' +
+        '<div class="ytc-sc__mini">' +
+          miniStat('title', 'In title', st.inTitle + outOf,
+            'Results whose title contains every significant word of the term.') +
+          miniStat('doc', 'In description', st.inDesc + outOf,
+            'Results whose description snippet contains them. YouTube renders a snippet for ' +
+            'only some results, so this reads low when it is absent rather than missing.') +
+          miniStat('cal', 'Last 7 days', st.fresh + outOf,
+            'How much of this page is recent \u2014 a term the feed is actively refreshing.') +
+          /* Costs a megabyte-plus page per video, so it is a button until it is a number. */
+          (st.capState === 'done'
+            ? miniStat('cc', 'Captions', st.capHits + ' / ' + st.capChecked,
+                'Results whose transcript says the term. Titles miss this: a video can spend ' +
+                'minutes on a subject without naming it in the title, and those are real ' +
+                'competitors the other counts here cannot see. Now counted as relevant, so ' +
+                'the score above reads them too.')
+            : st.capState === 'running'
+              ? miniStat('cc', 'Captions', 'reading\u2026',
+                  'Fetching each result\u2019s transcript. Roughly a megabyte per video and ' +
+                  'one at a time, so it does not trip the rate limit the other lookups share.')
+              : st.capState === 'failed'
+                ? miniStat('cc', 'Captions', 'unavailable',
+                    'The transcripts could not be read. Videos with captions turned off, or ' +
+                    'YouTube rate limiting the run.')
+                : '<button type="button" class="ytc-sc__capbtn" title="' +
+                  escapeHtml('Reads each result\u2019s transcript to find the term where the ' +
+                    'title does not say it. Costs roughly a megabyte per video, so it runs ' +
+                    'only when asked \u2014 results are cached for a week.') +
+                  '">' + scIcon('cc') + '<span>Check captions</span></button>') +
+        '</div>' +
+      '</div>';
+
+    return '<div class="ytc-sc__head">' +
+        '<img class="ytc-sc__logo" src="' +
+          escapeHtml(chrome.runtime.getURL('icons/icon32.png')) + '" alt="">' +
+        '<b>Search companion</b>' +
+        '<button type="button" class="ytc-sc__fold" aria-label="Collapse">' +
+          '<span class="ytc-sc__chev">▾</span></button>' +
+      '</div>' +
+      '<div class="ytc-sc__body">' +
+        scSection('score', 'Keyword score', keywordBody) +
+        scSection('vph', 'Velocity over time', seriesHtml(st.term)) +
+        scSection('stats', 'Search term statistics', statsBody) +
+        scSection('channels', 'Top channels for this search', channelsBody(st.rows || [])) +
+        '<p class="ytc-sc__foot">Statistics cover all ' + st.n + ' results loaded so far and ' +
+          'grow as you scroll. The score above reads a fixed first ' + stScore.n + ', so it ' +
+          'holds still and stays comparable between searches. Everything here is counted, ' +
+          'not modelled.</p>' +
+      '</div>';
+  }
+
+  /* YouTube's search page is a two-column renderer, but the second column arrives empty — no
+     secondaryContents in the payload — and an empty one is not merely zero-width: it may be
+     hidden outright, and its parent is not necessarily laid out as a row at all. Waiting for
+     that column to cooperate is what left the panel floating over the results.
+
+     So the column is built rather than borrowed. The renderer is made a flex row, #primary is
+     told it may shrink, and our own column goes in beside it. Every property is set inline so
+     it can be recognised and taken back off when the feature is switched off, and the whole
+     thing is checked by measurement afterwards: if the column still has no width, the panel
+     floats rather than disappearing. */
+  const SC_COL_W = 330;
+
+  function searchRenderer() {
+    return document.querySelector('ytd-two-column-search-results-renderer') ||
+      document.querySelector('ytd-search #container');
+  }
+
+  function buildColumn() {
+    const wrap = searchRenderer();
+    if (!wrap) return null;
+    const primary = wrap.querySelector('#primary') || wrap.firstElementChild;
+    if (!primary || primary.classList.contains('ytc-sc__col')) return null;
+
+    let col = wrap.querySelector(':scope > .ytc-sc__col');
+    if (!col) {
+      col = document.createElement('div');
+      col.className = 'ytc-sc__col';
+      primary.insertAdjacentElement('afterend', col);
+    }
+    if (wrap.dataset.ytcCol !== '1') {
+      wrap.dataset.ytcCol = '1';
+      wrap.style.display = 'flex';
+      wrap.style.alignItems = 'flex-start';
+      /* The quietest way to break position:sticky is an ancestor that clips its overflow —
+         the element simply scrolls away with no error and no clue. This is the one ancestor
+         we own, so it is made explicitly visible rather than left to whatever YouTube's
+         stylesheet says today. */
+      wrap.style.overflow = 'visible';
+      /* Without min-width:0 a flex item refuses to shrink below its content, so the results
+         column would keep its full width and push ours off the edge instead of sharing. */
+      primary.style.minWidth = '0';
+      primary.style.flex = '1 1 auto';
+      primary.dataset.ytcPrimary = '1';
+    }
+    return col;
+  }
+
+  function closeColumn() {
+    document.querySelectorAll('[data-ytc-col="1"]').forEach((wrap) => {
+      wrap.removeAttribute('data-ytc-col');
+      wrap.style.display = '';
+      wrap.style.alignItems = '';
+      wrap.style.overflow = '';
+    });
+    document.querySelectorAll('[data-ytc-primary="1"]').forEach((el) => {
+      el.removeAttribute('data-ytc-primary');
+      el.style.minWidth = '';
+      el.style.flex = '';
+    });
+    document.querySelectorAll('.ytc-sc__col').forEach((n) => n.remove());
+  }
+
+  /* Collapsing replaced closing, and it fixes the trap rather than papering over it. A closed
+     panel left nothing on screen, so the state could not be undone from the page — reloading,
+     the one thing anyone tries, changed nothing because the flag outlived it. Collapsed keeps
+     its own header and chevron in view, so the way back is always the thing you are looking
+     at. That is what makes it safe to remember: a preference is only safe to persist when the
+     control that reverses it stays visible. Permanently off is the popup's job. */
+  const SC_FOLD = 'ytcCompanionFold';
+
+  function scFolded() {
+    try { return sessionStorage.getItem(SC_FOLD) === '1'; } catch (e) { return false; }
+  }
+  function scFold(v) {
+    try { sessionStorage.setItem(SC_FOLD, v ? '1' : '0'); } catch (e) { /* private mode */ }
+  }
+
+  // Left behind by the version that hid the whole panel; clear it so it cannot resurrect.
+  try { sessionStorage.removeItem('ytcCompanion'); } catch (e) { /* private mode */ }
+
+  /* Sticky by hand.
+
+     position:sticky is the right tool and this used it twice — once on the panel, once on the
+     column. Both failed, and the reason it is worth abandoning rather than debugging further
+     is the failure mode: any ancestor that clips its overflow disables sticky silently. No
+     error, no warning, the element simply scrolls away. On a page whose ancestor chain is
+     rewritten by someone else on their schedule, a mechanism that can be switched off from
+     six levels up without telling anyone is the wrong mechanism, however correct it is when
+     it works.
+
+     Measuring the column and pinning the panel to the viewport does not care what any
+     ancestor does. The column keeps its place in the flow and its width; only the panel is
+     lifted out, and only while it would otherwise have scrolled past the top. */
+  const STICK_TOP = 60;      // just clears YouTube's 56px masthead
+  let stickRaf = 0;
+
+  function positionPanel() {
+    stickRaf = 0;
+    const panel = document.querySelector('.ytc-sc');
+    const col = panel && panel.closest('.ytc-sc__col');
+    if (!panel || !col) return;                  // floating fallback pins itself
+    const r = col.getBoundingClientRect();
+    /* Read off the column, never the panel: once the panel is pinned it leaves the flow and
+       the column collapses, so measuring the panel would feed its own position back in and
+       flip between the two states on every frame. The column's own top depends on nothing but
+       the page scroll. */
+    if (r.top <= STICK_TOP) {
+      panel.style.position = 'fixed';
+      panel.style.top = STICK_TOP + 'px';
+      panel.style.left = Math.round(r.left) + 'px';
+      panel.style.width = Math.round(r.width) + 'px';
+    } else if (panel.style.position) {
+      panel.style.position = '';
+      panel.style.top = '';
+      panel.style.left = '';
+      panel.style.width = '';
+    }
+  }
+
+  function queueStick() {
+    if (stickRaf) return;
+    stickRaf = requestAnimationFrame(positionPanel);
+  }
+
+  // Passive: this only reads geometry, so it must never hold up the page's own scrolling.
+  window.addEventListener('scroll', queueStick, { passive: true });
+  window.addEventListener('resize', queueStick, { passive: true });
+
+  function ensureCompanion() {
+    const term = searchTerm();
+    const wanted = settings.showCompanion !== false && !!term;
+    let panel = document.querySelector('.ytc-sc');
+    if (!wanted) {
+      if (panel) panel.remove();
+      closeColumn();
+      return;
+    }
+
+    const all = collectScrolled();
+    if (!all.length) return;                // nothing read yet; try again next scan
+    loadPageResults(term);
+    /* Everything the page has, including results it lists but has not drawn. */
+    const rows = mergePageResults(all) || all;
+    const st = searchStats(rows, term);
+    /* The score reads a fixed slice of the same rows, so it holds still while the statistics
+       above it keep filling in. */
+    const pinned = pinnedRows(rows, term);
+    PANEL_ROWS.term = term;
+    PANEL_ROWS.rows = pinned;
+    const stScore = pinned.length === rows.length ? st : searchStats(pinned, term);
+
+    /* Registering the term and asking for its series, once per keyword per page. The ids are
+       the ones already on screen, so this costs nothing to gather — and pinning the set here
+       rather than letting the server re-search is what stops ranking churn being read as a
+       change in velocity. */
+    if (SERIES.keyword !== term) {
+      SERIES.keyword = term;
+      SERIES.asked = false;
+      SERIES.data = null;
+    }
+    if (!SERIES.asked && rows.length >= 5) {
+      SERIES.asked = true;
+      const ids = rows.map((r) => r.id).filter(Boolean).slice(0, 50);
+      sendMessage({ type: 'ytc-keyword-seen', keyword: term, videos: ids }, () => {
+        if (chrome.runtime.lastError || SERIES.keyword !== term) return;
+        sendMessage({ type: 'ytc-keyword-series', keyword: term }, (res) => {
+          if (chrome.runtime.lastError || SERIES.keyword !== term) return;
+          SERIES.data = res || { ok: false };
+          ensureCompanion();
+        });
+      });
+    }
+    const html = companionHtml(st, stScore);
+
+    if (!panel) {
+      panel = document.createElement('aside');
+      panel.className = 'ytc-sc';
+      /* Capture, because scroll does not bubble — but it is still dispatched down the
+         ancestor chain in the capture phase, so one listener on the panel survives every
+         repaint that replaces the body. Binding to the body itself would need re-binding on
+         each render, which is the kind of thing that quietly stops happening. */
+      let scrollIdle = 0;
+      panel.addEventListener('scroll', (e) => {
+        const box = e.target;
+        if (!box.classList || !box.classList.contains('ytc-sc__body')) return;
+        box.classList.add('is-scrolling');
+        clearTimeout(scrollIdle);
+        scrollIdle = setTimeout(() => box.classList.remove('is-scrolling'), 900);
+      }, true);
+
+      panel.addEventListener('click', (e) => {
+        if (e.target.closest && e.target.closest('.ytc-sc__csort')) {
+          CHAN_SORT.by = CHAN_SORT.by === 'views' ? 'results' : 'views';
+          ensureCompanion();
+          return;
+        }
+        if (e.target.closest && e.target.closest('.ytc-sc__capbtn')) {
+          const term = searchTerm();
+          if (term && PANEL_ROWS.term === term) runCaptionCheck(term, PANEL_ROWS.rows);
+          return;
+        }
+        const sec = e.target.closest && e.target.closest('.ytc-sc__sechead');
+        if (sec) {
+          const box = sec.closest('.ytc-sc__sec');
+          const key = box && box.dataset.sec;
+          if (key) {
+            if (SC_SHUT.has(key)) SC_SHUT.delete(key); else SC_SHUT.add(key);
+            box.classList.toggle('shut', SC_SHUT.has(key));
+          }
+          return;
+        }
+        if (!e.target.closest('.ytc-sc__fold')) return;
+        const folded = !panel.classList.contains('ytc-sc--folded');
+        panel.classList.toggle('ytc-sc--folded', folded);
+        scFold(folded);
+        paintFold(panel);
+        positionPanel();
+      });
+    }
+
+    /* Checked by measurement, not by the selector matching: an element that is present but
+       lays out to nothing would take the panel down with it, and the fallback exists so the
+       feature degrades to awkward rather than to invisible. */
+    const col = buildColumn();
+    if (col) {
+      if (panel.parentElement !== col) col.appendChild(panel);
+      if (!col.offsetWidth) {           // the row did not take — go back to floating
+        closeColumn();
+        document.body.appendChild(panel);
+      }
+    } else if (panel.parentElement !== document.body) {
+      document.body.appendChild(panel);
+    }
+    panel.classList.toggle('ytc-sc--float', panel.parentElement === document.body);
+
+    // Same guard the stats card uses: only touch the DOM when something actually changed.
+    if (panel.dataset.sig !== html) {
+      panel.dataset.sig = html;
+      panel.innerHTML = html;
+    }
+    panel.classList.toggle('ytc-sc--folded', scFolded());
+    paintFold(panel);
+    positionPanel();
+  }
+
+  // The chevron points the way it will move: down to open, up to close.
+  function paintFold(panel) {
+    const btn = panel.querySelector('.ytc-sc__fold');
+    if (!btn) return;
+    const folded = panel.classList.contains('ytc-sc--folded');
+    btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
+    btn.title = folded ? 'Expand' : 'Collapse';
   }
 
   function ensureFilterButton() {

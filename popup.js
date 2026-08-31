@@ -11,6 +11,7 @@
      they simply have no control here any more. */
   const TOGGLES = ['csvHeader', 'numericViews', 'absoluteDate', 'quoteTitle', 'showButtons',
     'toast', 'showSubs', 'showRatio', 'showMoney', 'showStats', 'showSimilar', 'showFilter',
+    'showCompanion',
     'showThumb',
     'showTranscript',
     'transcriptTimestamps', 'transcriptSave'];

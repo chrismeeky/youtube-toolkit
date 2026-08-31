@@ -187,6 +187,16 @@ html[dark] .ytc-btn:hover { color: #fff; }
 .ytc-ratio--ok    { background: #d9822b; }   /* >= 1x   beat the sub count */
 .ytc-ratio--low   { background: #e2551f; }   /* >= 0.5x soft */
 .ytc-ratio--poor  { background: #c62828; }   
+/* Views vs subscribers, beside the outlier. Geometry matches .ytc-ratio exactly so the pair
+   sit as one unit; the colour comes from the .ytc-out-- ladder above, so filled reads as
+   "against the channel's average" and outlined as "against its subscribers". */
+.ytc-vsub {
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
 /* retry / empty affordances */
 .ytc-subs--failed { cursor: pointer; }
 .ytc-subs--failed .ytc-subs__n {
@@ -365,6 +375,32 @@ html[dark] .ytc-spin { border-color: rgba(255, 255, 255, .25); border-top-color:
   color: var(--yt-spec-text-secondary, #606060);
   opacity: .8;
 }
+/* Sized to the figure it stands in for, and inline so the cell keeps the height it will
+   have once the number lands — a placeholder that resizes on arrival is the layout jump it
+   exists to prevent. Shares the analytics panel's sweep so the two loading states read as
+   one thing rather than two different waits. */
+.ytc-cs__skel {
+  display: inline-block;
+  width: 42px;
+  height: 14px;
+  vertical-align: -2px;
+  border-radius: 4px;
+  background: linear-gradient(90deg,
+    var(--yt-spec-10-percent-layer, rgba(0,0,0,.07)) 25%,
+    rgba(0,0,0,.03) 37%,
+    var(--yt-spec-10-percent-layer, rgba(0,0,0,.07)) 63%);
+  background-size: 400% 100%;
+  animation: ytc-an-sweep 1.4s ease infinite;
+}
+html[dark] .ytc-cs__skel {
+  background: linear-gradient(90deg,
+    rgba(255,255,255,.08) 25%, rgba(255,255,255,.14) 37%, rgba(255,255,255,.08) 63%);
+  background-size: 400% 100%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ytc-cs__skel { animation: none; }
+}
+
 html[dark] .ytc-cs { border-color: rgba(255,255,255,.15); background: rgba(255,255,255,.04); }
 html[dark] .ytc-cs__cell { background: rgba(255,255,255,.06); }
 html[dark] .ytc-cs__label, html[dark] .ytc-cs__note { color: #aaa; }
@@ -781,7 +817,9 @@ html[dark] .ytc-fm__chip.on { background: #f1f1f1; color: #0f0f0f; border-color:
   position: fixed; inset: 0; z-index: 2800; background: rgba(0,0,0,.6);
 }
 .ytc-fm {
-  position: fixed; z-index: 2801; inset: 5vh 5vw; display: flex; flex-direction: column;
+  /* Roomier than it was: eleven presets and six sliders down the side need the height, and
+     the result rows carry more badges than they used to. */
+  position: fixed; z-index: 2801; inset: 3vh 3vw; display: flex; flex-direction: column;
   border-radius: 14px; overflow: hidden;
   background: var(--yt-spec-base-background, #fff);
   color: var(--yt-spec-text-primary, #0f0f0f);
@@ -799,10 +837,75 @@ html[dark] .ytc-fm__chip.on { background: #f1f1f1; color: #0f0f0f; border-color:
   font-size: 24px; line-height: 1; color: var(--yt-spec-text-secondary, #606060);
 }
 .ytc-fm__body { display: flex; min-height: 0; flex: 1 1 auto; }
+/* Scrolls on its own, independently of the results: the preset list plus an open drawer is
+   taller than most windows, and the two panes should not drag each other around. */
 .ytc-fm__side {
-  flex: 0 0 240px; padding: 18px 20px; overflow-y: auto;
+  flex: 0 0 300px; padding: 18px 20px; overflow-y: auto; overscroll-behavior: contain;
   border-right: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
 }
+/* ---- presets ---- */
+.ytc-fm__sec {
+  display: flex; align-items: center; width: 100%;
+  margin: 4px 0 10px; padding: 0; border: 0; background: none; color: inherit;
+  font: 500 11px/1 Roboto, Arial, sans-serif; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-fm__sec--btn { cursor: pointer; margin-top: 20px; padding: 6px 0; }
+.ytc-fm__caret { margin-left: auto; font-size: 11px; transition: transform .15s ease; }
+.ytc-fm__sec--btn.open .ytc-fm__caret { transform: rotate(180deg); }
+.ytc-fm__chips { display: flex; flex-direction: column; gap: 6px; }
+/* A row, not a chip: the label alone was ambiguous once there were eleven of them, and the
+   line underneath is what makes "Underdogs" and "Hidden outliers" tell each other apart. */
+.ytc-fm__chip {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  padding: 9px 12px; border-radius: 10px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12));
+  background: transparent; color: inherit; font-family: Roboto, Arial, sans-serif;
+}
+.ytc-fm__chip:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05)); }
+.ytc-fm__chip b { display: block; font: 500 13px/1.3 Roboto, Arial, sans-serif; }
+.ytc-fm__chip i {
+  display: block; margin-top: 2px; font-style: normal; font-size: 11.5px; line-height: 1.35;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-fm__chip.on { background: #0f0f0f; border-color: #0f0f0f; color: #fff; }
+.ytc-fm__chip.on i { color: rgba(255,255,255,.72); }
+/* Cut list. The one at the boundary is clipped and faded out rather than hidden: a row half
+   in view reads as "the list continues", where a clean edge reads as "the list ends" — and
+   the whole point of cutting it is to keep Custom filters and Reset on screen below. */
+.ytc-fm__chips:not(.ytc-fm__chips--all) .ytc-fm__chip--extra { display: none; }
+.ytc-fm__chips:not(.ytc-fm__chips--all) .ytc-fm__chip--peek {
+  max-height: 30px;
+  padding-top: 9px; padding-bottom: 0;
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(to bottom, #000 8px, transparent 28px);
+  mask-image: linear-gradient(to bottom, #000 8px, transparent 28px);
+}
+.ytc-fm__more-presets {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  width: 100%; margin-top: 8px; padding: 7px 0; cursor: pointer;
+  border: 0; background: none; border-radius: 8px;
+  font: 500 12px/1 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-fm__more-presets:hover {
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05));
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+.ytc-fm__more-presets .ytc-fm__caret { margin-left: 0; transition: transform .15s ease; }
+.ytc-fm__more-presets.open .ytc-fm__caret { transform: rotate(180deg); }
+html[dark] .ytc-fm__more-presets { color: #aaa; }
+html[dark] .ytc-fm__more-presets:hover { background: rgba(255,255,255,.08); color: #f1f1f1; }
+.ytc-fm__drawer { padding-top: 4px; }
+/* Explicit, because the drawer is toggled through the hidden attribute and a page-level rule
+   that sets display on everything would otherwise win over the UA default. */
+.ytc-fm__drawer[hidden] { display: none; }
+html[dark] .ytc-fm__sec, html[dark] .ytc-fm__chip i { color: #aaa; }
+html[dark] .ytc-fm__chip { border-color: rgba(255,255,255,.2); }
+html[dark] .ytc-fm__chip:hover { background: rgba(255,255,255,.08); }
+html[dark] .ytc-fm__chip.on { background: #f1f1f1; border-color: #f1f1f1; color: #0f0f0f; }
+html[dark] .ytc-fm__chip.on i { color: rgba(0,0,0,.62); }
 .ytc-fm__lbl {
   display: block; margin: 16px 0 7px; font-size: 12px; font-weight: 500;
   color: var(--yt-spec-text-secondary, #606060);
@@ -830,7 +933,12 @@ html[dark] .ytc-fm__chip.on { background: #f1f1f1; color: #0f0f0f; border-color:
 .ytc-fm__sort span { margin-left: 6px; font-size: 9px; opacity: .35; }
 .ytc-fm__sort.on { border-color: currentColor; }
 .ytc-fm__sort.on span { opacity: 1; color: #0f9d58; }
-.ytc-fm__results { flex: 1 1 auto; overflow-y: auto; padding: 8px 12px 20px; }
+/* Scroll chaining is contained because the page lock comes off while a batch is loading —
+   without this, reaching the end of the list during that window would carry on scrolling the
+   YouTube page behind the veil. */
+.ytc-fm__results {
+  flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 8px 12px 20px;
+}
 .ytc-fm__row {
   display: flex; gap: 14px; padding: 10px 8px; border-radius: 10px; text-decoration: none;
   color: inherit;
@@ -862,6 +970,150 @@ html[dark] .ytc-fm__age { border-color: rgba(255,255,255,.2); }
 }
 .ytc-fm__ratio { padding: 1px 7px; border-radius: 9px; font-weight: 600; font-size: 12px; }
 .ytc-fm__none { padding: 28px 12px; color: var(--yt-spec-text-secondary, #606060); }
+/* ---- load more ---- */
+/* Sits inside the scrolling list rather than pinned under it, because in the default view it
+   is the sentinel: reaching it is what asks for the next batch. Given a settled height so the
+   list does not shorten when it swaps between the spinner, the note and the button. */
+.ytc-fm__more {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; min-height: 96px; margin: 12px 8px 0; padding: 20px 16px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+  border-radius: 12px; text-align: center;
+}
+.ytc-fm__note {
+  max-width: 460px; font-size: 12px; line-height: 1.5;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+/* Bigger than the badge spinner this class was sized for — at 9px it reads as a speck in a
+   box this size rather than as something happening. */
+.ytc-fm__more .ytc-spin { width: 18px; height: 18px; border-width: 2px; }
+/* The one filled control in the modal: it is the only thing here that fetches rather than
+   filters, and it has to be findable at the end of a long list. */
+.ytc-fm__more-btn {
+  cursor: pointer; font: 500 13px/1 Roboto, Arial, sans-serif;
+  border: 1px solid #0f0f0f; background: #0f0f0f; color: #fff;
+  border-radius: 16px; padding: 10px 18px;
+}
+.ytc-fm__more-btn:hover { opacity: .85; }
+
+/* ---- split button ---- */
+/* One control, two jobs: the action and how far it runs. Joined rather than placed side by
+   side, so it reads as a single button with a choice attached rather than two buttons whose
+   relationship has to be guessed. */
+.ytc-fm__split { position: relative; display: inline-flex; }
+.ytc-fm__split .ytc-fm__more-btn {
+  border-radius: 16px 0 0 16px; border-right-color: rgba(255,255,255,.25);
+}
+.ytc-fm__split-caret {
+  cursor: pointer; padding: 10px 12px; border-radius: 0 16px 16px 0;
+  border: 1px solid #0f0f0f; border-left: 0; background: #0f0f0f; color: #fff;
+  font-size: 10px; line-height: 1;
+}
+.ytc-fm__split-caret:hover { opacity: .85; }
+.ytc-fm__split-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 5; min-width: 210px;
+  padding: 6px; border-radius: 12px; text-align: left;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+  background: var(--yt-spec-base-background, #fff);
+  box-shadow: 0 8px 28px rgba(0,0,0,.16);
+}
+.ytc-fm__split-menu button {
+  display: block; width: 100%; padding: 8px 10px; cursor: pointer; text-align: left;
+  border: 0; border-radius: 8px; background: none; color: inherit;
+  font-family: Roboto, Arial, sans-serif;
+}
+.ytc-fm__split-menu button:hover {
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06));
+}
+.ytc-fm__split-menu button.on { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.08)); }
+.ytc-fm__split-menu b { display: block; font: 500 13px/1.3 Roboto, Arial, sans-serif; }
+.ytc-fm__split-menu i {
+  display: block; font-style: normal; font-size: 11.5px;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+
+/* ---- load progress ---- */
+/* A sibling of the results list, not a child of it: flex:0 0 auto here is what keeps it out
+   of the scrolling box, so a run that adds four hundred rows cannot carry its own Stop button
+   off the bottom of the screen. */
+.ytc-fm__loadbar {
+  display: flex; align-items: center; gap: 16px; flex: 0 0 auto;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.03));
+}
+.ytc-fm__loadbar[hidden] { display: none; }
+.ytc-fm__loadbar .ytc-fm__prog { flex: 1 1 auto; max-width: none; }
+.ytc-fm__loadbar .ytc-fm__prog-head b { font-size: 20px; }
+.ytc-fm__loadbar .ytc-fm__stop { flex: 0 0 auto; }
+html[dark] .ytc-fm__loadbar {
+  border-color: rgba(255,255,255,.12); background: rgba(255,255,255,.05);
+}
+.ytc-fm__prog { width: 100%; max-width: 460px; }
+.ytc-fm__prog-head { display: flex; align-items: baseline; gap: 10px; }
+.ytc-fm__prog-head b {
+  font: 400 26px/1 Roboto, Arial, sans-serif; font-variant-numeric: tabular-nums;
+}
+.ytc-fm__prog-head span {
+  margin-left: auto; font-size: 12px; color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-fm__prog-track {
+  display: block; height: 6px; margin-top: 8px; border-radius: 3px; overflow: hidden;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.08));
+}
+/* While results are still arriving the bar is full and only the sheen moves — there is no
+   total to be a fraction of, and a bar creeping toward an invented finish line would be
+   asserting one. It becomes a real measure only once the run starts running dry, where it
+   tracks something that genuinely does have an end. */
+.ytc-fm__prog-track--live i { opacity: .55; }
+.ytc-fm__prog-track i {
+  display: block; height: 100%; border-radius: 3px; background: #0f9d58;
+  background-image: linear-gradient(90deg, rgba(255,255,255,0) 0%,
+    rgba(255,255,255,.45) 50%, rgba(255,255,255,0) 100%);
+  background-size: 60% 100%; background-repeat: no-repeat;
+  animation: ytc-fm-sheen 1.1s linear infinite;
+  transition: width .35s ease;
+}
+@keyframes ytc-fm-sheen {
+  0% { background-position: -60% 0; }
+  100% { background-position: 160% 0; }
+}
+/* Draining rather than filling, and amber rather than green: the bar is counting down to
+   stopping, so it must not look like the progress bar it sits in the place of. */
+.ytc-fm__prog--paused .ytc-fm__prog-track i {
+  background: #d9822b; animation: none; transition: width 1s linear;
+}
+/* Tabular so the row does not twitch as the seconds tick from 10 to 9 to 8. */
+.ytc-fm__left { font-weight: 500; font-variant-numeric: tabular-nums; }
+.ytc-fm__go {
+  cursor: pointer; padding: 8px 16px; border-radius: 16px;
+  border: 1px solid #0f0f0f; background: #0f0f0f; color: #fff;
+  font: 500 13px/1 Roboto, Arial, sans-serif;
+}
+.ytc-fm__go:hover { opacity: .85; }
+html[dark] .ytc-fm__go { background: #f1f1f1; color: #0f0f0f; border-color: #f1f1f1; }
+.ytc-fm__prog-acts { display: flex; gap: 8px; }
+.ytc-fm__stop {
+  cursor: pointer; padding: 8px 16px; border-radius: 16px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.16));
+  background: transparent; color: inherit; font: 500 13px/1 Roboto, Arial, sans-serif;
+}
+.ytc-fm__stop:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06)); }
+@media (prefers-reduced-motion: reduce) {
+  .ytc-fm__prog-track i { animation: none; }
+}
+html[dark] .ytc-fm__split-caret { background: #f1f1f1; color: #0f0f0f; border-color: #f1f1f1; }
+html[dark] .ytc-fm__split .ytc-fm__more-btn { border-right-color: rgba(0,0,0,.25); }
+html[dark] .ytc-fm__split-menu { background: #282828; border-color: rgba(255,255,255,.14); }
+html[dark] .ytc-fm__split-menu i, html[dark] .ytc-fm__prog-head span { color: #aaa; }
+html[dark] .ytc-fm__split-menu button:hover,
+html[dark] .ytc-fm__split-menu button.on { background: rgba(255,255,255,.1); }
+html[dark] .ytc-fm__prog-track { background: rgba(255,255,255,.12); }
+html[dark] .ytc-fm__stop { border-color: rgba(255,255,255,.2); }
+html[dark] .ytc-fm__stop:hover { background: rgba(255,255,255,.08); }
+html[dark] .ytc-fm__more { border-color: rgba(255,255,255,.12); }
+html[dark] .ytc-fm__note { color: #aaa; }
+html[dark] .ytc-fm__more-btn { background: #f1f1f1; color: #0f0f0f; border-color: #f1f1f1; }
 html[dark] .ytc-fm { background: #212121; color: #f1f1f1; }
 html[dark] .ytc-fm__head, html[dark] .ytc-fm__side,
 html[dark] .ytc-fm__sorts { border-color: rgba(255,255,255,.12); }
@@ -1008,3 +1260,321 @@ html[dark] .ytc-an__skel {
 @media (prefers-reduced-motion: reduce) {
   .ytc-an__skel { animation: none; }
 }
+
+
+/* ---- search companion ---------------------------------------------------- */
+/* Fixed rather than placed in YouTube's own grid. The search page has no sidebar container
+   to join, and the one thing this panel must not do is fight the results column for width
+   every time YouTube re-skins it. Below the masthead, above the results, out of the flow. */
+/* Embedded in YouTube's own second column, not floated over it: it scrolls with the results,
+   displaces nothing, and cannot cover what the reader came to read. Sticky so it stays with
+   them down a long results page, and capped in height so a tall panel scrolls inside itself
+   rather than running off the bottom. */
+/* Flat, with a hairline. A drop shadow lifts the panel off the page and reads as an overlay
+   floating above the results — the opposite of the point, which is that it belongs to the
+   page. A one-pixel border in YouTube's own divider colour does the separating instead. */
+.ytc-sc {
+  width: 100%; margin: 0;
+  max-height: calc(100vh - 88px);
+  display: flex; flex-direction: column;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+  border-radius: 12px;
+  background: var(--yt-spec-base-background, #fff);
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  font-family: Roboto, Arial, sans-serif;
+}
+/* Last resort only, when the column cannot be found at all. Nothing hides the panel on width
+   any more: a CSS rule that removed it left nothing on screen to say why or how to get it
+   back, which reads as the feature being broken rather than as a fit decision. */
+/* Last resort only, when the column cannot be built at all. It keeps a shadow because there
+   it genuinely is floating over the page, and pretending otherwise would be worse. */
+.ytc-sc--float {
+  position: fixed; top: 72px; right: 16px; z-index: 2400; width: 402px;
+  max-height: calc(100vh - 96px);
+  box-shadow: 0 4px 24px rgba(0,0,0,.18);
+}
+
+/* Collapsed keeps the header — and therefore the way back — on screen. That is what makes it
+   safe to remember the state at all. */
+.ytc-sc--folded { max-height: none; }
+.ytc-sc--folded .ytc-sc__body { display: none; }
+.ytc-sc--folded .ytc-sc__head { border-bottom: 0; }
+.ytc-sc__fold {
+  margin-left: auto; border: 0; background: none; cursor: pointer; padding: 4px;
+  line-height: 1; color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-sc__chev { display: block; font-size: 13px; transition: transform .15s ease; }
+.ytc-sc--folded .ytc-sc__chev { transform: rotate(-90deg); }
+html[dark] .ytc-sc__fold { color: #aaa; }
+.ytc-sc__head {
+  display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+}
+.ytc-sc__head b { font: 400 18px/1.2 Roboto, Arial, sans-serif; }
+.ytc-sc__logo { width: 24px; height: 24px; border-radius: 6px; flex: 0 0 auto; }
+/* min-height:0 is what actually lets this scroll: a flex item defaults to min-height:auto,
+   so the body would grow to its content and push past the panel's max-height instead of
+   scrolling within it. */
+.ytc-sc__body {
+  padding: 0 16px; overflow-y: auto; overscroll-behavior: contain;
+  flex: 1 1 auto; min-height: 0;
+  /* Overlay behaviour: the gutter is reserved but the thumb is invisible until the panel is
+     being scrolled or pointed at. Hiding it by setting the width to zero would be the obvious
+     way and the wrong one — the content would reflow by six pixels every time it appeared.
+     Only the colour changes, so nothing moves. */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color .25s ease;
+}
+.ytc-sc__body::-webkit-scrollbar { width: 6px; }
+.ytc-sc__body::-webkit-scrollbar-track { background: transparent; }
+.ytc-sc__body::-webkit-scrollbar-thumb {
+  background: transparent; border-radius: 3px; transition: background .25s ease;
+}
+/* Shown while scrolling (the class is added in content.js and removed after a pause), and on
+   hover, so it can still be grabbed with the pointer without scrolling first. */
+.ytc-sc__body:hover, .ytc-sc__body.is-scrolling {
+  scrollbar-color: rgba(0,0,0,.22) transparent;
+}
+.ytc-sc__body:hover::-webkit-scrollbar-thumb,
+.ytc-sc__body.is-scrolling::-webkit-scrollbar-thumb { background: rgba(0,0,0,.22); }
+.ytc-sc__body::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,.34); }
+html[dark] .ytc-sc__body:hover, html[dark] .ytc-sc__body.is-scrolling {
+  scrollbar-color: rgba(255,255,255,.26) transparent;
+}
+html[dark] .ytc-sc__body:hover::-webkit-scrollbar-thumb,
+html[dark] .ytc-sc__body.is-scrolling::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.26);
+}
+/* ---- statistics card ---- */
+.ytc-sc__card {
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+  border-radius: 12px; padding: 14px;
+}
+.ytc-sc__termrow {
+  display: flex; align-items: baseline; gap: 8px; padding-bottom: 12px; margin-bottom: 12px;
+  border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+}
+.ytc-sc__termrow span {
+  font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-sc__termrow b { font: 400 15px/1.2 Roboto, Arial, sans-serif; }
+.ytc-sc__ico {
+  width: 16px; height: 16px; flex: 0 0 auto;
+  fill: none; stroke: currentColor; stroke-width: 1.4;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.ytc-sc__badge {
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 34px; height: 34px; border-radius: 10px;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05));
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-sc__statmeta { min-width: 0; }
+.ytc-sc__statmeta span {
+  display: block; font-size: 12px; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-sc__statmeta b {
+  display: block; margin-top: 3px; font: 400 18px/1.15 Roboto, Arial, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+/* Two per row, icon beside the figure rather than above it, so four fit without scrolling. */
+.ytc-sc__mini {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px;
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+}
+.ytc-sc__minirow {
+  display: flex; align-items: center; gap: 7px; min-width: 0;
+  font-size: 12.5px; color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-sc__minirow span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Sits in the mini-stat grid exactly where the Captions figure will be, so the row does not
+   reflow when the button turns into a number. */
+.ytc-sc__capbtn {
+  display: flex; align-items: center; gap: 7px; min-width: 0; width: 100%;
+  padding: 0; border: 0; background: none; cursor: pointer; text-align: left;
+  font: 400 12.5px/1.2 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-call-to-action, #065fd4);
+}
+.ytc-sc__capbtn:hover { text-decoration: underline; }
+html[dark] .ytc-sc__capbtn { color: #3ea6ff; }
+.ytc-sc__minirow b {
+  margin-left: auto; font-weight: 400; font-variant-numeric: tabular-nums;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+html[dark] .ytc-sc__card, html[dark] .ytc-sc__termrow, html[dark] .ytc-sc__mini {
+  border-color: rgba(255,255,255,.12);
+}
+html[dark] .ytc-sc__badge { background: rgba(255,255,255,.08); color: #aaa; }
+html[dark] .ytc-sc__termrow span, html[dark] .ytc-sc__statmeta span,
+html[dark] .ytc-sc__minirow { color: #aaa; }
+html[dark] .ytc-sc__minirow b { color: #f1f1f1; }
+.ytc-sc__meter { margin-bottom: 14px; }
+.ytc-sc__mhead { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+.ytc-sc__mhead b { font-weight: 400; color: var(--yt-spec-text-secondary, #606060); }
+.ytc-sc__mval { margin-left: auto; font-style: normal; font-weight: 500; font-size: 13px; }
+.ytc-sc__track {
+  display: block; height: 6px; margin-top: 6px; border-radius: 3px;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.08));
+}
+.ytc-sc__fill { display: block; height: 100%; border-radius: 3px; background: #909090; }
+/* The same ladder the outlier pills use, so a colour means the same thing everywhere. */
+.ytc-sc__fill--great { background: #0f9d58; }
+.ytc-sc__fill--good  { background: #5c9e14; }
+.ytc-sc__fill--ok    { background: #d9822b; }
+.ytc-sc__fill--low   { background: #e2551f; }
+.ytc-sc__fill--poor  { background: #c62828; }
+/* ---- sections ---- */
+/* No position:sticky here. It was tried on the panel and then on the column, and both failed
+   the same silent way: any ancestor that clips its overflow disables sticky with no error to
+   find. The column now only holds the width and the place in the flow — positionPanel() in
+   content.js pins the panel by measurement, which no ancestor can switch off. */
+.ytc-sc__col { flex: 0 0 402px; max-width: 402px; align-self: flex-start; }
+.ytc-sc__sec { border-top: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1)); }
+.ytc-sc__body > .ytc-sc__sec:first-child { border-top: 0; }
+.ytc-sc__sechead {
+  display: flex; align-items: center; width: 100%; padding: 14px 0 10px;
+  border: 0; background: none; cursor: pointer; text-align: left;
+  color: var(--yt-spec-text-secondary, #606060);
+  font: 400 15px/1.2 Roboto, Arial, sans-serif;
+}
+.ytc-sc__sechead b { font-weight: 400; }
+.ytc-sc__sechead .ytc-sc__chev { margin-left: auto; opacity: .55; }
+.ytc-sc__sec.shut .ytc-sc__secbody { display: none; }
+.ytc-sc__sec.shut .ytc-sc__chev { transform: rotate(-90deg); }
+.ytc-sc__secbody { padding-bottom: 14px; }
+
+/* ---- gauge ---- */
+.ytc-sc__gauge { position: relative; text-align: center; padding: 4px 0 12px; }
+.ytc-sc__gsvg { display: block; width: 168px; max-width: 100%; margin: 0 auto; }
+.ytc-sc__gtrack, .ytc-sc__garc {
+  fill: none; stroke-width: 6.5; stroke-linecap: round;
+}
+.ytc-sc__gtrack { stroke: var(--yt-spec-10-percent-layer, rgba(0,0,0,.09)); }
+/* Same five hues as every other score in the extension, so a colour keeps its meaning. */
+.ytc-sc__garc--great { stroke: #0f9d58; }
+.ytc-sc__garc--good  { stroke: #5c9e14; }
+.ytc-sc__garc--ok    { stroke: #d9822b; }
+.ytc-sc__garc--low   { stroke: #e2551f; }
+.ytc-sc__garc--poor  { stroke: #c62828; }
+/* Pulled up into the arc's opening rather than positioned absolutely, so it stays centred
+   whatever width the column ends up with. */
+.ytc-sc__gnum {
+  margin-top: -40px; font: 400 44px/1 Roboto, Arial, sans-serif;
+  font-variant-numeric: tabular-nums; letter-spacing: -.01em;
+}
+.ytc-sc__glabel {
+  margin-top: 8px; font-size: 14px; color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-sc__gband { margin-top: 4px; font: 500 13px/1 Roboto, Arial, sans-serif; letter-spacing: .04em; }
+/* The caveats moved into the gauge's tooltip; this is all that is left on screen of them —
+   enough to say there is something to read, small enough not to compete with the score. */
+.ytc-sc__ginfo {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-left: 5px; vertical-align: -2px;
+  border: 1px solid currentColor; border-radius: 50%;
+  font-size: 9px; line-height: 1; opacity: .5; cursor: help;
+}
+.ytc-sc__gauge:hover .ytc-sc__ginfo { opacity: .9; }
+.ytc-sc__partial {
+  display: block; margin-top: 2px; font-style: normal; font-size: 11px;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-sc__partial { color: #aaa; }
+/* Both of these swapped `color: inherit` for an explicit secondary colour when the type scale
+   was set, which silently opts them out of the panel's dark foreground. */
+html[dark] .ytc-sc__sechead, html[dark] .ytc-sc__mhead b { color: #aaa; }
+html[dark] .ytc-sc__glabel { color: #aaa; }
+html[dark] .ytc-sc__gtrack { stroke: rgba(255,255,255,.14); }
+html[dark] .ytc-sc__sec { border-color: rgba(255,255,255,.12); }
+.ytc-sc__stats { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 12px; }
+.ytc-sc__stat { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ytc-sc__foot {
+  margin: 12px 0 0; font-size: 10.5px; line-height: 1.4;
+  color: var(--yt-spec-text-secondary, #606060); opacity: .85;
+}
+html[dark] .ytc-sc { background: #212121; color: #f1f1f1; border-color: rgba(255,255,255,.14); }
+html[dark] .ytc-sc__head { border-color: rgba(255,255,255,.12); }
+/* Narrowed deliberately. These used to name a close button, a small uppercase label and a
+   filled stat box; the redesign turned .ytc-sc__sec into the whole section wrapper and
+   .ytc-sc__stat into a transparent row, so the old selectors would have painted #aaa over
+   every figure inside a section and put a filled background behind rows that no longer have
+   one. Dark mode is where that kind of leftover hides longest, because it only shows in the
+   theme you are not looking at. */
+html[dark] .ytc-sc__foot { color: #aaa; }
+html[dark] .ytc-sc__track { background: rgba(255,255,255,.12); }
+
+/* ---- top channels ---- */
+.ytc-sc__chead {
+  display: flex; align-items: center; margin-bottom: 10px;
+  font-size: 11.5px; color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-sc__csort {
+  margin-left: auto; padding: 2px 6px; cursor: pointer;
+  border: 0; border-radius: 6px; background: none; color: inherit;
+  font: 400 11.5px/1 Roboto, Arial, sans-serif;
+}
+.ytc-sc__csort:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06)); }
+/* Avatar, then name over its subline, then the figure — the same left-badge/right-value
+   shape the statistics cells use, so the two blocks read as one panel. */
+.ytc-sc__chan { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.ytc-sc__cav {
+  flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%; object-fit: cover;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06));
+}
+.ytc-sc__cav--none {
+  display: flex; align-items: center; justify-content: center;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-sc__cmeta { flex: 1 1 auto; min-width: 0; }
+.ytc-sc__cname {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px;
+}
+.ytc-sc__csub {
+  display: block; margin-top: 1px; font-size: 11.5px;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-sc__cnum {
+  flex: 0 0 auto; font: 400 14px/1 Roboto, Arial, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.ytc-sc__cbar {
+  display: block; height: 3px; margin-top: 5px; border-radius: 2px;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.08));
+}
+.ytc-sc__cbar i { display: block; height: 100%; border-radius: 2px; background: #909090; }
+html[dark] .ytc-sc__chead, html[dark] .ytc-sc__csub,
+html[dark] .ytc-sc__cav--none { color: #aaa; }
+html[dark] .ytc-sc__cav { background: rgba(255,255,255,.08); }
+html[dark] .ytc-sc__csort:hover { background: rgba(255,255,255,.08); }
+html[dark] .ytc-sc__cbar { background: rgba(255,255,255,.12); }
+
+/* ---- velocity sparkline ---- */
+.ytc-sc__chart {
+  padding: 10px 12px; border-radius: 8px;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.04));
+}
+.ytc-sc__chead { display: flex; align-items: baseline; gap: 8px; }
+.ytc-sc__chead b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.ytc-sc__chead i { margin-left: auto; font-style: normal; font-weight: 700; font-size: 12px; }
+/* Stretched to the panel width; the stroke is kept honest with non-scaling-stroke so a wide
+   box does not draw a hairline and a narrow one a slab. */
+.ytc-sc__spark { display: block; width: 100%; height: 46px; margin: 6px 0 4px; }
+.ytc-sc__sparkline { stroke: #3ea6ff; stroke-width: 2; stroke-linejoin: round; }
+.ytc-sc__sparkfill { fill: rgba(62,166,255,.14); stroke: none; }
+.ytc-sc__cfoot {
+  display: flex; justify-content: space-between; font-size: 10.5px;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-sc__note {
+  margin: 0; padding: 10px 12px; border-radius: 8px; font-size: 11.5px; line-height: 1.45;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.04));
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-sc__chart, html[dark] .ytc-sc__note { background: rgba(255,255,255,.06); }
+html[dark] .ytc-sc__cfoot, html[dark] .ytc-sc__note { color: #aaa; }

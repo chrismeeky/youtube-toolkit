@@ -46,6 +46,9 @@ chrome.commands.onCommand.addListener(async (command) => {
 const TTL_OK = 7 * 24 * 60 * 60 * 1000;   // counts barely move, and YouTube rounds them
 const TTL_HIDDEN = 12 * 60 * 60 * 1000;   // channel hides its count: no point retrying soon
 const TTL_TRANSIENT = 2 * 60 * 1000;      // throttled or offline: worth retrying shortly
+/* The count landed but /about never did, so the totals were never on offer. Keep the count —
+   it is correct — and come back for the totals well before the count itself goes stale. */
+const TTL_NO_TOTALS = 20 * 60 * 1000;
 
 const MAX_ROUNDS = 3;                      // whole-chain retries before giving up
 const BACKOFF = [700, 1800];               // waits between rounds, plus jitter
@@ -66,7 +69,8 @@ const GAP_MS = 150;
 /* Bump whenever a cached value's MEANING changes, not just its shape. Similar-channel
    results are cached for a week, so six rounds of query fixes were invisible to anyone who
    had already opened the panel once — they kept seeing results built by the old logic. */
-const CACHE_VERSION = 14; // analytics now sourced from the API, not the videos grid
+const CACHE_VERSION = 15; // niche no longer cached from a single-title guess
+                          // (14: analytics sourced from the API, not the videos grid)
 
 const MAX_BYTES = 3000000;      // some channel pages bury the count deep in ytInitialData
 /* The /about cap is its own number because the lifetime totals sit at the very END of the
@@ -216,17 +220,23 @@ async function fetchSubscribers(key) {
   }
   const notes = [];
   let stats = null;
+  /* Whether the /about attempt got far enough to answer the question at all. Without it a
+     lookup that fell through to the plain channel tab — which never carries the totals — was
+     indistinguishable from one that read /about in full and found none there, and both were
+     cached as "this channel publishes no totals" for twelve hours. */
+  let aboutRead = false;
   for (const a of attempts(key)) {
     const out = await fetchOnce(key, a.url, a.credentials, a.cap, a.wantStats);
     // Only /about carries the totals, so a later attempt that finds the count must not
     // discard what the first attempt already learned.
+    if (a.wantStats && out.text) aboutRead = true;
     if (out.stats && !stats) stats = out.stats;
-    if (out.text) { noteResult(true); return { ...out, stats: out.stats || stats }; }
+    if (out.text) { noteResult(true); return { ...out, stats: out.stats || stats, aboutRead }; }
     notes.push((a.credentials === 'omit' ? 'plain' : a.url.includes('/about') ? 'about' : 'cookies') +
       ': ' + out.reason);
   }
   noteResult(false);
-  return { text: null, reason: notes.join(' | '), stats };
+  return { text: null, reason: notes.join(' | '), stats, aboutRead };
 }
 
 async function readCache(key) {
@@ -234,7 +244,15 @@ async function readCache(key) {
   const store = await chrome.storage.local.get(id);
   const hit = store[id];
   if (!hit || hit.v !== CACHE_VERSION) return null;
-  const ttl = hit.text ? (hit.stats ? TTL_OK : TTL_HIDDEN) : failTtl(hit.reason);
+  /* A count with no lifetime totals has two very different causes and they were sharing one
+     twelve-hour TTL. Read /about in full and found none: the channel does not publish them,
+     so there is no point asking again soon. Never got through to /about and took the count
+     off another tab, which never carries them: that is a transient miss, and holding it for
+     half a day is what left the Outlier cell empty for the rest of the day on a channel whose
+     totals were there all along. */
+  const ttl = hit.text
+    ? (hit.stats ? TTL_OK : (hit.aboutRead ? TTL_HIDDEN : TTL_NO_TOTALS))
+    : failTtl(hit.reason);
   return Date.now() - hit.t > ttl ? null : hit;
 }
 
@@ -269,6 +287,7 @@ async function getSubscribers(key, force) {
         text: out.text || null,
         reason: out.reason || '',
         stats: out.stats || null,
+        aboutRead: !!out.aboutRead,
         t: Date.now(),
         v: CACHE_VERSION
       };
@@ -609,6 +628,33 @@ async function similarFromIndex(base, key, titles, about, opts) {
 
 /* Hand channels to the index without waiting. Never allowed to delay or break the answer
    being returned now — a failed ingest costs the corpus one row, not the user their panel. */
+/* Cached briefly rather than not at all: the panel re-renders on every scan, and the series
+   only moves when the sampler runs. Short, because the whole point is that it is live. */
+const TTL_SERIES = 5 * 60 * 1000;
+
+async function keywordSeries(keyword, hours) {
+  const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+  if (!base) return { ok: false, reason: 'no index' };
+  const id = 'kw:' + keyword + ':' + (hours || 168);
+  const store = await chrome.storage.local.get(id);
+  const hit = store[id];
+  if (hit && hit.v === CACHE_VERSION && Date.now() - hit.t <= TTL_SERIES) return hit;
+  try {
+    const res = await fetch(base.replace(/\/$/, '') + '/keyword-series', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword, hours: hours || 168 })
+    });
+    if (!res.ok) return { ok: false, reason: 'series ' + res.status };
+    const out = await res.json();
+    const entry = Object.assign({}, out, { t: Date.now(), v: CACHE_VERSION });
+    await chrome.storage.local.set({ [id]: entry });
+    return entry;
+  } catch (e) {
+    return { ok: false, reason: 'series unreachable' };
+  }
+}
+
 function pushToIndex(base, pairs) {
   if (!base || !pairs || !pairs.length) return;
   fetch(base.replace(/\/$/, '') + '/ingest', {
@@ -708,7 +754,18 @@ async function getNiche(key, opts) {
     });
     if (!res.ok) return { ok: false, reason: 'niche ' + res.status };
     const out = await res.json();
+    /* Only an answer built from the channel's own stored vector is worth keeping. A hit on a
+       channel that is not indexed yet was classified from a single video title — the same
+       thin signal the refusal below refuses to cache, and no sounder for having cleared the
+       floor instead of falling under it. Titles scatter badly within one channel: on a
+       boxing channel "KNOCKOUT POWER" reads as combat sports, "ANARCHY IN ATLANTA" as legal
+       commentary and "The Food Stamps King Fights For Glory" as challenges. Caching whichever
+       one happened to be opened first pinned that guess to the channel for thirty days, long
+       after ingestion had built the real vector — which is how a boxing channel came to be
+       priced as basketball. Return it, because a provisional rate beats the flat band, but do
+       not store it. */
     if (out && out.ok) {
+      if (!out.indexed) return out;
       const entry = Object.assign({}, out, { t: Date.now(), v: CACHE_VERSION });
       await chrome.storage.local.set({ [id]: entry });
       return entry;
@@ -864,6 +921,69 @@ async function downloadThumbnail(video) {
 
 /* Fallback only: the content script tries first from the page's own origin, which InnerTube
    accepts. This path exists for when that isn't possible. */
+/* ---------------------------------------------------------------- captions */
+
+/* Whether a video's transcript mentions a term.
+ *
+ * The reference tool reports this as "Captions n/20" and it is the relevance signal titles
+ * cannot give: a video called "Nolan Wells: New Developments" may spend four minutes on the
+ * preliminary autopsy report without either word reaching its title. On a long-tail search
+ * that is the difference between four real results and a page written off as padding.
+ *
+ * It is expensive and so it is never automatic. Captions are only reachable from a real
+ * session — the InnerTube player endpoint answers a server with a stripped response carrying
+ * no caption tracks at all — so each video costs a ~1.3MB watch page, about 27MB for a sample
+ * of twenty. That is a cost the reader chooses per keyword, not one every search pays.
+ *
+ * The transcript is cached rather than the answer, so asking about a second term on the same
+ * results costs nothing. Truncated because the cache is shared with everything else the
+ * extension stores and a long interview transcript is a quarter of a megabyte on its own. */
+const TTL_CAPTIONS = 7 * 24 * 60 * 60 * 1000;   // a video's words do not change
+const CAPTION_CHARS = 60000;                    // ~10k words: far past where a term would sit
+const CAPTION_MAX = 25;                         // ceiling per request, whatever is asked for
+
+async function captionText(id) {
+  const key = 'cap:' + id;
+  const store = await chrome.storage.local.get(key);
+  const hit = store[key];
+  if (hit && hit.v === CACHE_VERSION && Date.now() - hit.t <= TTL_CAPTIONS) return hit.text;
+
+  let text = '';
+  try {
+    const out = await F.loadTranscript(id, fetch);
+    if (out && out.ok) {
+      text = (out.segments || []).map((seg) => seg.text || '').join(' ')
+        .replace(/\s+/g, ' ').trim().slice(0, CAPTION_CHARS).toLowerCase();
+    }
+  } catch (e) { /* a video without captions is an answer, not a failure */ }
+  // Stored even when empty: "this one has no usable transcript" is worth not re-fetching.
+  await chrome.storage.local.set({ [key]: { text, t: Date.now(), v: CACHE_VERSION } });
+  return text;
+}
+
+/* Whole words, matching how the panel counts a title — "wells" must not be found inside
+   "farewells", or the count would flatter every term with a common syllable in it. */
+function captionsMention(text, words) {
+  if (!text || !words.length) return false;
+  const hay = ' ' + text.replace(/[^\p{L}\p{N}]+/gu, ' ').trim() + ' ';
+  return words.every((w) => hay.indexOf(' ' + w + ' ') >= 0);
+}
+
+async function captionMatches(ids, words) {
+  const wanted = (ids || []).filter((v) => typeof v === 'string').slice(0, CAPTION_MAX);
+  const hits = [];
+  let withCaptions = 0;
+  /* Serial on purpose. Each of these is a megabyte-plus page, and the subscriber lookups run
+     through their own queue on the same connection — firing twenty at once is how the
+     rate-limit breaker trips and every other feature goes dark with it. */
+  for (const id of wanted) {
+    const text = await captionText(id);
+    if (text) withCaptions++;
+    if (captionsMention(text, words)) hits.push(id);
+  }
+  return { ok: true, checked: wanted.length, withCaptions, hits };
+}
+
 async function transcriptFor(id) {
   const out = await F.loadTranscript(id, fetch);
   return out;
@@ -918,6 +1038,26 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
+  /* Free again: the ids come off a search page the user opened anyway, so registering a
+     keyword costs no fetch here and no search scraping on the server. */
+  if (msg.type === 'ytc-keyword-seen' && msg.keyword) {
+    const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+    if (base) {
+      fetch(base.replace(/\/$/, '') + '/keyword-seen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyword: msg.keyword, videos: (msg.videos || []).slice(0, 50) })
+      }).catch(() => { /* the panel is unaffected either way */ });
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.type === 'ytc-keyword-series' && msg.keyword) {
+    keywordSeries(msg.keyword, msg.hours)
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
   if (msg.type === 'ytc-expand' && msg.key) {
     expandNiche(msg.key, msg.videos || [])
       .then(sendResponse)
@@ -952,6 +1092,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     });
     return true;
   }
+  if (msg.type === 'ytc-captions' && Array.isArray(msg.videos)) {
+    captionMatches(msg.videos, msg.words || [])
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String(e) }));
+    return true;
+  }
   if (msg.type === 'ytc-transcript') {
     transcriptFor(msg.id)
       .then(sendResponse)
@@ -973,7 +1119,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       // monetization and similar-channel entries unreachable from the popup that claims
       // to clear the cache.
       const keys = Object.keys(all).filter((k) =>
-        k.startsWith('subs:') || k.startsWith('mon:') || k.startsWith('sim:'));
+        k.startsWith('subs:') || k.startsWith('mon:') || k.startsWith('sim:') ||
+        k.startsWith('kw:') || k.startsWith('cap:'));
       chrome.storage.local.remove(keys).then(() => sendResponse({ cleared: keys.length }));
     });
     return true;

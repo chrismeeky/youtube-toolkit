@@ -31,7 +31,7 @@ import base64
 import importlib.util
 import json
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 import re
 import shutil
@@ -1049,6 +1049,196 @@ def _iso_duration_seconds(iso):
     return total or None
 
 
+# ─── velocity sampling ───────────────────────────────────────────────────────
+#
+# The cards on a search page carry views and an age, and dividing one by the other gives a
+# LIFETIME AVERAGE — not a current rate. It falls as a video gets older no matter what the
+# audience does, because the denominator keeps growing, so charting it against publish date
+# draws the same decaying curve for a topic that is exploding and one that is dead.
+#
+# Real velocity is the difference between two counts taken at two known times. That is all
+# this section does: pin a set of videos to a keyword, record what their counts were, and
+# subtract. Which also means it needs no history to get started — unlike a per-video "first
+# 24 hours" curve, where the first sample has to land at upload, two samples an hour apart
+# are already a real data point for a keyword.
+
+SAMPLE_BATCH = 50          # ids per statistics call; the API charges one unit either way
+KEYWORD_SET_TTL_H = 24     # how long a resolved video set stands before it is re-read
+
+# Its own flag rather than INGEST_READY, which also demands an OpenAI key: sampling view
+# counts embeds nothing, and an operator with a YouTube key but no OpenAI credit should still
+# get velocity. Reading a series back needs neither — only the database.
+SAMPLE_READY = bool(INDEX_READY and YT_KEY)
+
+
+def _sb_get(path, timeout=20):
+    """A GET against PostgREST, with the one retry the rest of this file uses."""
+    req = urllib.request.Request(
+        SUPABASE_URL + path,
+        headers={"apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY})
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as res:
+                return json.loads(res.read().decode("utf-8", "replace") or "[]")
+        except Exception as e:
+            if attempt == 2:
+                print("  _sb_get(%s) failed: %s: %s" % (path, type(e).__name__, e), flush=True)
+                return None
+            time.sleep(0.4)
+    return None
+
+
+def track_keyword(keyword, video_ids):
+    """Pin the videos that represent a keyword.
+
+    The ids come from the extension, off a search page the user opened anyway — the same
+    division of labour the channel index already uses. A server running the search itself
+    would get the bot interstitial, and would be guessing at the ranking the user actually
+    saw.
+    """
+    keyword = (keyword or "").strip().lower()
+    ids = [v for v in (video_ids or []) if isinstance(v, str) and len(v) == 11][:SAMPLE_BATCH]
+    if not SAMPLE_READY or not keyword or not ids:
+        return {"ok": False, "reason": "keyword and video ids required"}
+
+    # Still inside the current window: keep the existing set rather than starting a rival one,
+    # or the series would be spliced together from two different populations.
+    fresh = _sb_get(
+        "/rest/v1/keyword_videos?select=resolved_at&keyword=eq."
+        + urllib.parse.quote(keyword) + "&order=resolved_at.desc&limit=1")
+    if fresh:
+        try:
+            seen = datetime.fromisoformat(
+                fresh[0]["resolved_at"].replace("Z", "+00:00"))
+            age_h = (datetime.now(timezone.utc) - seen).total_seconds() / 3600
+            if age_h < KEYWORD_SET_TTL_H:
+                return {"ok": True, "reused": True, "videos": len(ids)}
+        except Exception:
+            pass
+
+    now = datetime.now(timezone.utc).isoformat()
+    _supabase("/rest/v1/keyword_videos?on_conflict=keyword,video_id,resolved_at",
+              [{"keyword": keyword, "video_id": v, "resolved_at": now, "rank": i}
+               for i, v in enumerate(ids)],
+              prefer="resolution=merge-duplicates")
+    _supabase("/rest/v1/tracked_videos?on_conflict=id",
+              [{"id": v} for v in ids], prefer="resolution=ignore-duplicates")
+    # Sample immediately: the second point needs a first one, and taking it now rather than
+    # waiting for the next cron means the series starts from when the keyword was asked about.
+    sample_videos(ids)
+    return {"ok": True, "reused": False, "videos": len(ids)}
+
+
+def sample_videos(ids=None, limit=500):
+    """Record what a batch of videos' view counts are right now."""
+    if not SAMPLE_READY:
+        return {"ok": False, "reason": "not configured"}
+
+    if ids is None:
+        stale = _sb_get("/rest/v1/tracked_videos?select=id"
+                        "&order=last_sampled.asc.nullsfirst&limit=%d" % limit) or []
+        ids = [r["id"] for r in stale]
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return {"ok": True, "sampled": 0}
+
+    now = datetime.now(timezone.utc).isoformat()
+    rows, seen = [], 0
+    for i in range(0, len(ids), SAMPLE_BATCH):
+        chunk = ids[i:i + SAMPLE_BATCH]
+        url = ("%s/videos?part=statistics&id=%s&maxResults=%d&key=%s"
+               % (YT_API, ",".join(chunk), SAMPLE_BATCH, YT_KEY))
+        try:
+            out = _get_json(url)
+        except Exception as e:
+            print("  sample_videos batch failed: %s: %s" % (type(e).__name__, e), flush=True)
+            continue
+        for item in out.get("items") or []:
+            vid = item.get("id")
+            count = ((item.get("statistics") or {}).get("viewCount"))
+            if not vid or count is None:
+                continue          # private, deleted, or counts hidden — no row is honest here
+            rows.append({"video_id": vid, "sampled_at": now, "views": int(count)})
+            seen += 1
+
+    if rows:
+        _supabase("/rest/v1/video_samples?on_conflict=video_id,sampled_at", rows,
+                  timeout=60, prefer="resolution=merge-duplicates")
+        _supabase("/rest/v1/tracked_videos?on_conflict=id",
+                  [{"id": r["video_id"], "last_sampled": now} for r in rows],
+                  timeout=60, prefer="resolution=merge-duplicates")
+    return {"ok": True, "sampled": seen, "asked": len(ids)}
+
+
+def keyword_series(keyword, hours=168, buckets=24):
+    """Views per hour for a keyword over time, from the differences between samples.
+
+    Only videos present in BOTH ends of a step contribute to it. A video that entered the set
+    late, or whose sample failed, would otherwise arrive as a spike the size of its entire
+    view count — the series would show a surge that is really just bookkeeping.
+    """
+    keyword = (keyword or "").strip().lower()
+    if not INDEX_READY or not keyword:
+        return {"ok": False, "reason": "keyword required"}
+
+    kv = _sb_get("/rest/v1/keyword_videos?select=video_id,resolved_at&keyword=eq."
+                 + urllib.parse.quote(keyword) + "&order=resolved_at.desc&limit=200")
+    if not kv:
+        return {"ok": True, "points": [], "reason": "not tracked yet"}
+    newest = kv[0]["resolved_at"]
+    ids = sorted({r["video_id"] for r in kv if r["resolved_at"] == newest})
+    if not ids:
+        return {"ok": True, "points": []}
+
+    since = (datetime.now(timezone.utc)
+             - timedelta(hours=hours)).isoformat()
+    quoted = ",".join('"%s"' % v for v in ids)
+    samples = _sb_get(
+        "/rest/v1/video_samples?select=video_id,sampled_at,views"
+        "&video_id=in.(" + urllib.parse.quote(quoted) + ")"
+        "&sampled_at=gte." + urllib.parse.quote(since) +
+        "&order=sampled_at.asc&limit=20000") or []
+    # Group by the instant they were taken: the sampler writes one timestamp per run, so a run
+    # is a column of counts across the whole set.
+    runs = {}
+    for r in samples:
+        runs.setdefault(r["sampled_at"], {})[r["video_id"]] = int(r["views"])
+    stamps = sorted(runs)
+
+    # Runs, not rows. Counting rows passes trivially the moment more than one video is
+    # tracked — twelve videos sampled once is twelve rows and still no elapsed time to divide
+    # by — so the answer came back as an empty series with no reason given rather than as the
+    # honest "nothing to compare against yet".
+    if len(stamps) < 2:
+        return {"ok": True, "points": [], "videos": len(ids),
+                "samples": len(stamps), "reason": "needs a second sample"}
+
+    points = []
+    for a, b in zip(stamps, stamps[1:]):
+        ta = datetime.fromisoformat(a.replace("Z", "+00:00"))
+        tb = datetime.fromisoformat(b.replace("Z", "+00:00"))
+        gap_h = (tb - ta).total_seconds() / 3600
+        if gap_h <= 0:
+            continue
+        both = runs[a].keys() & runs[b].keys()
+        if not both:
+            continue
+        # Counts do go down — YouTube prunes views it decides were not real. That is a
+        # correction, not negative watching, so it contributes nothing rather than a dip.
+        gained = sum(max(0, runs[b][v] - runs[a][v]) for v in both)
+        points.append({"at": b, "vph": round(gained / gap_h, 1),
+                       "videos": len(both), "gap_h": round(gap_h, 2)})
+
+    if len(points) > buckets:
+        # Thin evenly rather than dropping the tail, so the shape survives and the last point
+        # is still the most recent one.
+        step = len(points) / float(buckets)
+        points = [points[min(len(points) - 1, int(i * step))] for i in range(buckets)]
+
+    return {"ok": True, "keyword": keyword, "videos": len(ids),
+            "resolved_at": newest, "points": points}
+
+
 def record_edges(source_handle, target_handles, video_ids=None, source_id=None):
     """Store co-recommendation edges the extension observed on a watch page.
 
@@ -1651,6 +1841,31 @@ class Handler(BaseHTTPRequestHandler):
                 return
             out["ok"] = True
             self._send(200, out)
+            return
+
+        if path == "/keyword-seen":
+            if not INDEX_READY:
+                self._send(200, {"ok": False, "reason": "channel index not configured"})
+                return
+            self._send(200, track_keyword(str(body.get("keyword") or ""),
+                                          body.get("videos") or []))
+            return
+
+        if path == "/keyword-series":
+            if not INDEX_READY:
+                self._send(200, {"ok": False, "reason": "channel index not configured"})
+                return
+            self._send(200, keyword_series(str(body.get("keyword") or ""),
+                                           int(body.get("hours") or 168)))
+            return
+
+        # Driven by cron, not by the extension: one call takes a column of counts across
+        # everything being followed. Sampling costs one quota unit per fifty videos.
+        if path == "/sample":
+            if not INDEX_READY:
+                self._send(200, {"ok": False, "reason": "channel index not configured"})
+                return
+            self._send(200, sample_videos(limit=int(body.get("limit") or 500)))
             return
 
         if path == "/edges":

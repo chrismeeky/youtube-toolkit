@@ -19,6 +19,7 @@
     showStats: true,              // views/hour, engagement and an earnings estimate
     showSimilar: true,            // "Similar channels" button on channel pages
     showFilter: true,             // "Filter" button over search results, home and channel grids
+    showCompanion: true,          // search-term panel beside search results
     showThumb: true,              // thumbnail download button
     /* Reads YouTube's own transcript panel in the page — no helper, no server, nothing to
        block. The InnerTube and yt-dlp routes it replaced are dead; see transcriptViaPanel. */
