@@ -28,6 +28,7 @@ import sys
 sys.dont_write_bytecode = True
 
 import base64
+import concurrent.futures
 import importlib.util
 import json
 import math
@@ -117,7 +118,7 @@ def embed(text):
 def indexed_channel(handle):
     """Look up a channel by handle. Case-insensitively — the YouTube API returns customUrl
     lowercased, so what is stored rarely matches what appears in the address bar."""
-    query = ("/rest/v1/channels?select=id,handle,title,embedding"
+    query = ("/rest/v1/channels?select=id,handle,title,embedding,topic_coherence"
              "&handle=ilike." + urllib.parse.quote(handle) + "&limit=1")
     req = urllib.request.Request(
         SUPABASE_URL + query,
@@ -422,8 +423,17 @@ def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity, ch
     want = (handle or "").lstrip("@").lower()
     out = [r for r in (rows or [])
            if (r.get("handle") or "").lstrip("@").lower() != want]
+    # A channel that covers several unrelated subjects has an average vector sitting between
+    # all of them, near none. The neighbours it returns are then arbitrary, and the only
+    # honest thing to do is say so rather than rank noise — @valorreviews produced six
+    # unrelated channels at a confident-looking 0.55-0.61 this way. Only meaningful when the
+    # stored vector was used: page text embedded on the fly has no coherence measurement.
+    coherence = known.get("topic_coherence") if known else None
+    scattered = bool(used_stored and coherence is not None
+                     and coherence < COHERENCE_FLOOR)
     # "indexed" means the stored vector was used, not merely that a row exists.
-    return {"ok": True, "indexed": used_stored, "channels": out}
+    return {"ok": True, "indexed": used_stored, "scattered": scattered,
+            "coherence": coherence, "channels": out}
 
 
 def _clamp(query, name, default, low, high):
@@ -459,6 +469,12 @@ MIN_INDEX_SUBS = 100
 # when the truth was "indexed, but not close". A scored 50% match the reader can judge beats
 # silence they cannot.
 DEFAULT_FLOOR = 0.35   # see background.js: 0.45 hid genuine neighbours scoring 0.449
+
+# Below this, a channel's own videos disagree with each other so much that its average vector
+# points nowhere and its neighbours are noise wearing a confident number. Drawn between two
+# measured populations that do not overlap: a topically mixed channel's videos agreed at 0.250
+# (max 0.452), a single-subject channel's at 0.674 (min 0.571).
+COHERENCE_FLOOR = float(os.environ.get("COHERENCE_FLOOR") or 0.45)
 INGEST_READY = bool(INDEX_READY and OPENAI_KEY and YT_KEY)
 
 
@@ -577,7 +593,8 @@ def clean_description(desc):
 
 
 def recent_uploads(playlist_id, want=15):
-    """Recent uploads: cadence, last upload, and the titles that go into the embedding.
+    """Recent uploads: cadence, last upload, the titles that go into the embedding, and the
+    video ids the transcript fallback samples when there is no description to embed.
 
     One quota unit per channel. seed.py has always done this; ingest did not, so channels
     that arrived through user activity had no Uploads/mo or Last upload and a thinner
@@ -588,20 +605,23 @@ def recent_uploads(playlist_id, want=15):
     try:
         data = _get_json(url)
     except Exception:
-        return [], None, None
-    titles, newest, oldest = [], None, None
+        return [], None, None, []
+    titles, newest, oldest, videos = [], None, None, []
     for item in data.get("items") or []:
         snip = item.get("snippet") or {}
         title = (snip.get("title") or "").strip()
         if title and title.lower() not in ("private video", "deleted video"):
             titles.append(title)
+            vid = ((snip.get("resourceId") or {}).get("videoId") or "").strip()
+            if vid:
+                videos.append({"id": vid, "title": title})
         stamp = snip.get("publishedAt")
         if stamp:
             if newest is None or stamp > newest:
                 newest = stamp
             if oldest is None or stamp < oldest:
                 oldest = stamp
-    return titles, newest, oldest
+    return titles, newest, oldest, videos
 
 
 def uploads_per_month(count, oldest, newest):
@@ -1088,6 +1108,17 @@ def _sb_get(path, timeout=20):
     return None
 
 
+def _sb_patch(path, payload, timeout=30):
+    """An in-place column update. Upsert would work, but writing only the columns that changed
+    keeps a half-finished enrichment from resetting anything else on the row."""
+    req = urllib.request.Request(
+        SUPABASE_URL + path, data=json.dumps(payload).encode(), method="PATCH",
+        headers={"apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY,
+                 "Content-Type": "application/json", "Prefer": "return=minimal"})
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        res.read()
+
+
 def track_keyword(keyword, video_ids):
     """Pin the videos that represent a keyword.
 
@@ -1355,7 +1386,8 @@ def ingest_channels(pairs):
         snip = ch.get("snippet") or {}
         uploads = (((ch.get("contentDetails") or {}).get("relatedPlaylists") or {})
                    .get("uploads"))
-        titles, newest, oldest = recent_uploads(uploads) if uploads else ([], None, None)
+        titles, newest, oldest, _vids = (recent_uploads(uploads) if uploads
+                                         else ([], None, None, []))
         # Titles as well as the description: a channel whose description is a business email
         # has nothing else saying what it is about. seed.py embeds both; this now matches.
         text = "\n".join(x for x in [snip.get("title") or "",
@@ -1397,12 +1429,207 @@ def ingest_channels(pairs):
             "uploads_per_mo": uploads_per_month(len(titles), oldest, newest),
             "embedding": vec,
             "embed_source": text[:500],
+            # enriched_at stays null: a channel with no description is thereby queued for the
+            # transcript pass, which /enrich drains. Ingest itself never fetches captions —
+            # one channel is minutes of yt-dlp, which no HTTP request should be holding open.
+            "embed_basis": "titles",
         })
 
     if rows:
         _supabase("/rest/v1/channels?on_conflict=id", rows, timeout=60,
                   prefer="resolution=merge-duplicates,return=minimal")
     return {"ok": True, "added": len(rows), "skipped": len(wanted) - len(rows)}
+
+
+# ─── transcript fallback ─────────────────────────────────────────────────────
+#
+# For the ~7% of indexed channels whose description is empty, the vector is built from the
+# channel title plus recent video titles — and on a shorts channel those titles are hashtag
+# soup. What is actually said in the videos is far more discriminating: embedded on its own, a
+# $40-trillion-debt short lands on "economics" at 0.527 where its title managed 0.174.
+
+TRANSCRIPT_SAMPLE = _int("TRANSCRIPT_SAMPLE", 8)      # usable transcripts wanted per channel
+TRANSCRIPT_MIN_VIDEOS = _int("TRANSCRIPT_MIN_VIDEOS", 4)   # below this, don't trust the mean
+TRANSCRIPT_MIN_WORDS = _int("TRANSCRIPT_MIN_WORDS", 25)    # shorter than this is not speech
+TRANSCRIPT_WORD_CAP = _int("TRANSCRIPT_WORD_CAP", 700)     # per video, to bound token spend
+# Caption fetches are independent of each other and almost entirely spent waiting on YouTube,
+# so they overlap well: measured serially a channel took 2-7 minutes, which is six hours for a
+# 107-channel backfill. Held at or below MAX_CONCURRENCY, because fetch_cached takes a slot
+# from the same semaphore that guards the transcript route and gives up after 30s of waiting —
+# more workers than slots would simply time each other out.
+TRANSCRIPT_WORKERS = max(1, min(_int("TRANSCRIPT_WORKERS", 4), MAX_CONCURRENCY))
+ENRICH_BATCH = _int("ENRICH_BATCH", 25)
+
+ENRICH_LOCK = threading.Lock()
+ENRICH_STATE = {"running": False, "started": None, "last": None}
+
+
+def _mean_vector(vectors):
+    """The centroid, renormalised. Each video counts once, however long it ran."""
+    n = len(vectors)
+    mean = [sum(v[i] for v in vectors) / n for i in range(len(vectors[0]))]
+    norm = math.sqrt(sum(x * x for x in mean)) or 1.0
+    return [x / norm for x in mean]
+
+
+def _coherence(vectors):
+    """Mean pairwise cosine among a channel's own videos: does it have one subject at all?
+
+    This is the number that makes the transcript pass worth running even when it cannot help.
+    A vector averaged over unrelated videos is not merely weak, it is confidently wrong-shaped,
+    and nothing downstream can tell that from a good one. This can.
+    """
+    total = pairs = 0.0
+    for i in range(len(vectors)):
+        for j in range(i + 1, len(vectors)):
+            total += _cosine(vectors[i], vectors[j])
+            pairs += 1
+    return (total / pairs) if pairs else None
+
+
+def transcript_profile(videos):
+    """A channel vector built from what its videos say, plus how much they agree.
+
+    Videos are embedded one at a time and averaged, never concatenated. Concatenation weights a
+    channel by whoever talked longest: on @valorreviews one 455-word explainer was 44% of the
+    collected words and pulled the whole channel to "economics" at 0.511 while every other
+    topic fell below 0.09 — a sharp answer, and the wrong one. Averaging gives each video a
+    single vote.
+
+    Very short tracks are dropped. Under ~25 words a caption file is music cues and filler
+    ("Woah. Okay.") that embeds somewhere arbitrary and only blurs the mean.
+    """
+    # Fetched in parallel, then walked in the original order. Both halves matter: order keeps
+    # the sample weighted towards recent uploads, and taking whichever finished first would
+    # quietly bias every channel towards its videos with the smallest caption files.
+    #
+    # In waves of TRANSCRIPT_SAMPLE rather than one pass over twice that many. Most channels
+    # caption everything, so the first wave is usually the whole job; fetching the spares
+    # up front would double both the wall clock and the requests YouTube sees, every time,
+    # to cover the minority of channels that need them.
+    candidates = [v for v in videos[:TRANSCRIPT_SAMPLE * 2] if v.get("id")]
+    picked, used, seen = [], [], 0
+    while seen < len(candidates) and len(picked) < TRANSCRIPT_SAMPLE:
+        wave = candidates[seen:seen + TRANSCRIPT_SAMPLE]
+        seen += len(wave)
+        fetched = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=TRANSCRIPT_WORKERS) as pool:
+            futures = {pool.submit(fetch_cached, v["id"]): v["id"] for v in wave}
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    fetched[futures[future]] = future.result()[0]
+                except Exception:
+                    fetched[futures[future]] = None
+        for v in wave:
+            if len(picked) >= TRANSCRIPT_SAMPLE:
+                break
+            segments = fetched.get(v["id"])
+            if not segments:
+                continue
+            words = " ".join(s.get("text") or "" for s in segments).split()
+            if len(words) < TRANSCRIPT_MIN_WORDS:
+                continue
+            picked.append(((v.get("title") or "") + ". "
+                           + " ".join(words[:TRANSCRIPT_WORD_CAP])).strip())
+            used.append(v["id"])
+
+    # Two or three videos is not a channel, it is an anecdote; the coherence figure computed
+    # from that few pairs is too unstable to gate anything on.
+    if len(picked) < TRANSCRIPT_MIN_VIDEOS:
+        return None
+    vectors = embed_many(picked)
+    if len(vectors) != len(picked):
+        return None
+    return {"vector": _mean_vector(vectors), "coherence": _coherence(vectors),
+            "videos": used, "text": " \u00b7 ".join(t[:120] for t in picked)}
+
+
+def enrich_channel(row):
+    """Rebuild one description-less channel's vector from its captions."""
+    cid = row.get("id") or ""
+    # A channel's uploads playlist is its id with the UC prefix swapped for UU, so the video
+    # list costs one quota unit and no extra channels.list call to find the playlist.
+    if not cid.startswith("UC"):
+        return None
+    videos = recent_uploads("UU" + cid[2:], want=TRANSCRIPT_SAMPLE * 2)[3]
+    return transcript_profile(videos) if videos else None
+
+
+def enrich_channels(limit=None):
+    """Drain the queue of channels whose description says nothing about them.
+
+    A batch, not part of /ingest, because it is slow in a way an HTTP request cannot absorb:
+    measured here, one caption fetch took 6.6s for a short and 40.3s for a long-form video, so
+    a single channel runs to minutes. enriched_at is stamped either way — a channel whose
+    videos have no captions must not come back round the queue forever.
+    """
+    if not INGEST_READY:
+        return {"ok": False, "reason": "ingest not configured"}
+    want = max(1, min(int(limit or ENRICH_BATCH), 200))
+    # "Blank" is not only NULL and "". Eight rows hold a single newline — @valorreviews among
+    # them, the channel this whole path exists for — so a description.eq. test walks straight
+    # past them, and btrim's default strips spaces but not newlines, which makes the miss
+    # invisible in a count. Ask the question that actually matters instead: does this text
+    # contain any non-whitespace character at all? 110 rows, against 102 for the naive test.
+    # [^[:space:]] rather than \S because the pattern has to survive a URL.
+    blank = "description.not.match." + urllib.parse.quote("[^[:space:]]", safe="")
+    rows = _sb_get("/rest/v1/channels?select=id,title,handle"
+                   "&or=(description.is.null," + blank + ")"
+                   "&enriched_at=is.null&limit=%d" % want)
+    if rows is None:
+        return {"ok": False, "reason": "could not read the enrichment queue"}
+
+    done = skipped = scattered = 0
+    for row in rows:
+        try:
+            profile = enrich_channel(row)
+        except Exception as e:
+            print("  enrich %s failed: %s: %s" % (row.get("id"), type(e).__name__, e),
+                  flush=True)
+            profile = None
+        patch = {"enriched_at": datetime.now(timezone.utc).isoformat()}
+        if profile:
+            patch.update({
+                "embedding": profile["vector"],
+                "topic_coherence": round(profile["coherence"], 4),
+                "embed_basis": "transcripts",
+                "embed_source": profile["text"][:500],
+            })
+            done += 1
+            if profile["coherence"] < COHERENCE_FLOOR:
+                scattered += 1
+        else:
+            skipped += 1
+        try:
+            _sb_patch("/rest/v1/channels?id=eq." + urllib.parse.quote(row["id"]), patch)
+        except Exception as e:
+            print("  enrich write %s failed: %s" % (row.get("id"), e), flush=True)
+    # scattered is reported rather than hidden: it is the share of the batch that gained an
+    # honest "no single subject" marker, which is a result, not a failure.
+    return {"ok": True, "considered": len(rows), "rebuilt": done,
+            "no_captions": skipped, "scattered": scattered}
+
+
+def start_enrich(limit=None):
+    """Run a batch in the background; /stats-style polling beats holding the socket open."""
+    with ENRICH_LOCK:
+        if ENRICH_STATE["running"]:
+            return {"ok": False, "reason": "an enrichment batch is already running"}
+        ENRICH_STATE["running"] = True
+        ENRICH_STATE["started"] = time.time()
+
+    def run():
+        try:
+            out = enrich_channels(limit)
+            ENRICH_STATE["last"] = out
+        except Exception as e:
+            ENRICH_STATE["last"] = {"ok": False,
+                                    "reason": "%s: %s" % (type(e).__name__, e)}
+        finally:
+            ENRICH_STATE["running"] = False
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"ok": True, "started": True}
 
 
 def record_sighting(channel_id, handle):
@@ -1878,6 +2105,15 @@ class Handler(BaseHTTPRequestHandler):
                                          str(body.get("sourceId") or "") or None))
             return
 
+        if path == "/enrich":
+            if not INGEST_READY:
+                self._send(200, {"ok": False, "reason": "ingest not configured"})
+                return
+            # Returns as soon as the batch is running: a full batch is tens of minutes of
+            # yt-dlp. Poll /health for the outcome.
+            self._send(200, start_enrich(body.get("limit")))
+            return
+
         if path == "/ingest":
             pairs = body.get("channels")
             if not isinstance(pairs, list) or not pairs:
@@ -1966,7 +2202,8 @@ class Handler(BaseHTTPRequestHandler):
                                              text=True, timeout=30).stdout.strip()
                 except Exception:
                     version = "unknown"
-            self._send(200, {"ok": bool(YTDLP), "ytdlp": version,
+            enrich = {"running": ENRICH_STATE["running"], "last": ENRICH_STATE["last"]}
+            self._send(200, {"ok": bool(YTDLP), "ytdlp": version, "enrich": enrich,
                              "cookies": bool(COOKIE_FILE), "proxy": bool(PROXY)})
             return
 

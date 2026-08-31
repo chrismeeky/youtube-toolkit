@@ -1649,7 +1649,16 @@
       note = 'Ranked by topic similarity against the channel index' +
         (res.indexed ? '' : ' \u2014 this channel is not indexed yet, so its own page text was used');
       const best = list.reduce((m, c) => Math.max(m, c.similarity || 0), 0);
-      if (best < WEAK_BELOW) {
+      /* Two different failures used to read as the same "weak matches" warning, and only one
+         of them is about the index. When the channel itself covers several unrelated subjects
+         its average vector points between all of them, so the list is noise however well the
+         index is seeded — and the percentages are the misleading part, because they stay
+         confident while meaning nothing. Say which failure this is; it is the actionable
+         difference between "seed this niche" and "there is nothing to seed against". */
+      if (res.scattered) {
+        note = '<b>This channel covers several unrelated subjects,</b> so there is no single ' +
+          'topic to match it on and the ranking below is only loosely meaningful. ' + note;
+      } else if (best < WEAK_BELOW) {
         note = '<b>Weak matches (best ' + Math.round(best * 100) + '%).</b> ' +
           'This niche is thinly indexed \u2014 the closest channels found are only loosely ' +
           'related. ' + note;

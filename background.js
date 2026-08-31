@@ -830,6 +830,13 @@ async function getSimilarChannels(key, titles, about, force, opts) {
         })),
         source: 'index',
         indexed: !!out.indexed,
+        /* The index's own verdict on whether this channel has a single subject at all. A
+           channel that does not — a shorts feed running military, pranks and economics in the
+           same week — sits between all of them and none, so its neighbours are arbitrary no
+           matter how confident their percentages look. Passed through rather than acted on
+           here: the panel is where it can be explained. */
+        scattered: !!out.scattered,
+        coherence: typeof out.coherence === 'number' ? out.coherence : null,
         queries: [],
         reason: '',
         t: Date.now(),
