@@ -1644,7 +1644,13 @@
       }).join('') + '</div>';
     }
 
-    let note;
+    /* A caveat about the whole list goes above the list, not under it. The descriptive note
+       sits at the foot of the table, which is the right place for "here is how this was
+       ranked" and the wrong place for "do not trust what you are about to read": at fifty
+       rows the reader meets the confident percentages and never reaches the sentence
+       explaining them. Same reason the load control was moved to the top of the filter
+       modal. */
+    let note, warn = '';
     if (fromIndex) {
       note = 'Ranked by topic similarity against the channel index' +
         (res.indexed ? '' : ' \u2014 this channel is not indexed yet, so its own page text was used');
@@ -1656,12 +1662,13 @@
          confident while meaning nothing. Say which failure this is; it is the actionable
          difference between "seed this niche" and "there is nothing to seed against". */
       if (res.scattered) {
-        note = '<b>This channel covers several unrelated subjects,</b> so there is no single ' +
-          'topic to match it on and the ranking below is only loosely meaningful. ' + note;
+        warn = '<b>This channel covers several unrelated subjects.</b> There is no single ' +
+          'topic to rank against, so the matches below are only loosely meaningful \u2014 ' +
+          'whatever their percentages say.';
       } else if (best < WEAK_BELOW) {
-        note = '<b>Weak matches (best ' + Math.round(best * 100) + '%).</b> ' +
+        warn = '<b>Weak matches (best ' + Math.round(best * 100) + '%).</b> ' +
           'This niche is thinly indexed \u2014 the closest channels found are only loosely ' +
-          'related. ' + note;
+          'related.';
       }
     } else {
       note = 'Channels ranking for this channel\'s own topics: ' +
@@ -1677,7 +1684,9 @@
       }
     }
 
-    host.innerHTML = controls + body + '<p class="ytc-t__note">' + note + '</p>';
+    host.innerHTML = controls +
+      (warn ? '<p class="ytc-t__warn">' + warn + '</p>' : '') +
+      body + '<p class="ytc-t__note">' + note + '</p>';
     wireSimilarControls(host, res);
     maybeExpandNiche(res);
     /* Re-rendering (a chip, a sort) drops the old placeholders, so anything still queued

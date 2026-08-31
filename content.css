@@ -544,8 +544,25 @@ html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
   color: var(--yt-spec-text-secondary, #606060);
 }
 
+/* The caveat that sits above the table. Deliberately not the same grey as the footnote: it
+   qualifies every number underneath it, so it has to survive being skimmed past on the way
+   to the first row. Amber rather than red — the list is unreliable, not broken. */
+.ytc-t__warn {
+  margin: 12px 12px 0; padding: 10px 12px;
+  font: 400 12px/1.5 Roboto, Arial, sans-serif;
+  color: #7a4b00; background: #fff4e0;
+  border: 1px solid rgba(191,120,0,.28); border-left: 3px solid #bf7800;
+  border-radius: 8px;
+}
+.ytc-t__warn b { font-weight: 500; color: #5c3800; }
+
 html[dark] .ytc-t__title, html[dark] .ytc-t__name, html[dark] .ytc-t__c,
 html[dark] .ytc-t__h--on, html[dark] .ytc-t__h:hover { color: #f1f1f1; }
+html[dark] .ytc-t__warn {
+  color: #f0d9b0; background: rgba(191,120,0,.14);
+  border-color: rgba(255,183,77,.32); border-left-color: #ffb74d;
+}
+html[dark] .ytc-t__warn b { color: #ffd699; }
 html[dark] .ytc-t__count, html[dark] .ytc-t__handle, html[dark] .ytc-t__note,
 html[dark] .ytc-t__row--head, html[dark] .ytc-t__pic--none { color: #aaa; }
 html[dark] .ytc-t__btn { color: #f1f1f1; border-color: rgba(255,255,255,.2); }
