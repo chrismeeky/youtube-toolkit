@@ -1296,11 +1296,36 @@
     { key: 'newfast', label: 'High views, new channel',
       test: (c) => c.avgViews >= 50000 && (daysSince(c.publishedAt) || 1e9) <= 365 },
     { key: 'big', label: 'Above 50k avg views', test: (c) => c.avgViews >= 50000 },
+    /* Audience size, where "Above 50k avg views" is reach per video. The two come apart often
+       enough to be worth separating: a small channel with one runaway video clears the views
+       chip, and a large channel posting to a fraction of its subscribers clears this one. */
+    { key: 'popular', label: 'Popular', test: (c) => c.subscribers >= 100000 },
+    /* Monetization is not on the row — it costs three watch page reads per channel, so it is
+       normally filled in only for rows on screen. This chip therefore works in two stages:
+       newMonCandidate is free and narrows 50 channels to the handful worth asking about, and
+       selecting the chip forces the verdict for exactly those. Without the pre-filter the
+       sweep would be 150 page reads; with it, usually under a dozen. */
+    { key: 'newmon', label: 'Newly monetized',
+      test: (c) => newMonCandidate(c) && MON_STATE.get(c.handle) === 'likely-monetized' },
     { key: 'new', label: 'New channels',
       test: (c) => (daysSince(c.publishedAt) || 1e9) <= 180 },
     { key: 'active', label: 'Active this month',
       test: (c) => (daysSince(c.lastUpload) === null ? 1e9 : daysSince(c.lastUpload)) <= 31 }
   ];
+
+  /* Old enough to have crossed the subscriber gate, young enough that crossing it must have
+     been recent — a channel cannot have been monetized for longer than it has existed. Six
+     months, as asked. Both figures come with the row, so this costs nothing to evaluate. */
+  const NEWMON_MAX_AGE = 180;
+  function newMonCandidate(c) {
+    return (c.subscribers || 0) >= YPP_MIN_SUBS &&
+      (daysSince(c.publishedAt) === null ? 1e9 : daysSince(c.publishedAt)) <= NEWMON_MAX_AGE;
+  }
+
+  /* handle -> verdict, for this page view. Filled by the lazy per-row hydration as well as by
+     the sweep, so scrolling the list makes the chip cheaper without anyone asking it to. */
+  const MON_STATE = new Map();
+  const MON_SWEEP = { running: false, done: 0, total: 0 };
 
   const ROW_MONEY = {
     'likely-monetized': { label: 'Monetized', cls: 'ytc-mon--yes',
@@ -1390,6 +1415,7 @@
       moneyBusy++;
       sendMessage({ type: 'ytc-monetization', key }, (entry) => {
         moneyBusy--;
+        if (!chrome.runtime.lastError && entry && entry.state) MON_STATE.set(key, entry.state);
         if (!chrome.runtime.lastError && el.isConnected) {
           const m = ROW_MONEY[(entry && entry.state)] || ROW_MONEY.unknown;
           el.className = 'ytc-mon ' + m.cls;
@@ -1400,6 +1426,52 @@
         pumpRowMoney();
       });
     }
+  }
+
+  /* Resolve every candidate the chip depends on. Two at a time, matching the per-row
+     hydration, so a sweep and a scroll cannot together stampede the service worker's breaker.
+     Cached verdicts return immediately and cost nothing, so re-selecting the chip is free. */
+  function sweepMonetization(rows, onChange) {
+    const pending = rows.filter((c) => newMonCandidate(c) &&
+      (c.handle || '').startsWith('@') && !MON_STATE.has(c.handle));
+    if (!pending.length || MON_SWEEP.running) return false;
+    MON_SWEEP.running = true;
+    MON_SWEEP.total = pending.length;
+    MON_SWEEP.done = 0;
+    let live = 0;
+    /* Finishing is checked in two places — after the last response, and after a step that
+       starts nothing — so it needs a latch. Without one the final redraw runs twice, which on
+       a fifty-row table is a whole second rebuild for nothing. */
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      MON_SWEEP.running = false;
+      onChange();
+    };
+    const step = () => {
+      while (live < 2 && pending.length) {
+        const c = pending.shift();
+        live++;
+        sendMessage({ type: 'ytc-monetization', key: c.handle }, (entry) => {
+          live--;
+          MON_SWEEP.done++;
+          if (!chrome.runtime.lastError && entry && entry.state) {
+            MON_STATE.set(c.handle, entry.state);
+          } else {
+            // Never leave a handle unresolved: an unrecorded failure would restart the sweep
+            // on the next redraw and check it again, forever.
+            MON_STATE.set(c.handle, 'unknown');
+          }
+          if (!live && !pending.length) finish();
+          else onChange();
+          step();
+        });
+      }
+      if (!live && !pending.length) finish();
+    };
+    step();
+    return true;
   }
 
   let moneyIO = null;
@@ -1537,6 +1609,13 @@
     /* Chips only where the numbers behind them exist. The search fallback returns names, not
        stats, so a chip row there would filter on fields that are all undefined. */
     const chip = (fromIndex && SIM_CHIPS.find((x) => x.key === simFilter.chip)) || SIM_CHIPS[0];
+    /* Selecting the chip is what pays for the verdicts; nothing is fetched until then. The
+       redraw on each result is what turns the count from a spinner into a number. */
+    const unchecked = !fromIndex ? 0 : all.filter((c) =>
+      newMonCandidate(c) && (c.handle || '').startsWith('@') && !MON_STATE.has(c.handle)).length;
+    if (fromIndex && chip.key === 'newmon' && unchecked) {
+      sweepMonetization(all, () => renderSimilar(res));
+    }
     const list = fromIndex ? all.filter(chip.test) : all;
 
     const count = !all.length ? '' :
@@ -1547,10 +1626,21 @@
       '<div class="ytc-chips">' + SIM_CHIPS.map((x) => {
         // A chip that would empty the table is still shown, but says so rather than lying.
         const n = all.filter(x.test).length;
+        /* This one chip cannot count itself without fetching. Showing 0 would grey it out and
+           read as "none here", which is a claim we have not checked; a spinner says the honest
+           thing, which is that we do not know yet. */
+        const waiting = x.key === 'newmon' && unchecked;
+        const count = waiting
+          ? '<span class="ytc-chip__n"><span class="ytc-spin"></span></span>'
+          : (x.key === 'all' ? '' : ' <span class="ytc-chip__n">' + n + '</span>');
         return '<button type="button" class="ytc-chip' +
-          (x.key === chip.key ? ' ytc-chip--on' : '') + (n ? '' : ' ytc-chip--empty') +
-          '" data-chip="' + x.key + '">' + escapeHtml(x.label) +
-          (x.key === 'all' ? '' : ' <span class="ytc-chip__n">' + n + '</span>') +
+          (x.key === chip.key ? ' ytc-chip--on' : '') +
+          (n || waiting ? '' : ' ytc-chip--empty') +
+          '" data-chip="' + x.key + '"' +
+          (x.key === 'newmon' ? ' title="' + escapeHtml('Channels past 1,000 subscribers and ' +
+            'under six months old, confirmed to be running ads. Selecting this checks each ' +
+            'candidate\u2019s recent videos, which takes a moment.') + '"' : '') +
+          '>' + escapeHtml(x.label) + count +
         '</button>';
       }).join('') + '</div>';
 
@@ -1578,8 +1668,16 @@
     /* Filtered to nothing is a different state from found nothing, and saying so keeps the
        chips on screen so there is a way back out. */
     if (!list.length) {
-      host.innerHTML = controls + '<p class="ytc-t__note">No channels here match \u201c' +
-        escapeHtml(chip.label) + '\u201d. ' + all.length + ' found in total.</p>';
+      const searching = chip.key === 'newmon' && (MON_SWEEP.running || unchecked);
+      host.innerHTML = controls + '<p class="ytc-t__note">' +
+        (searching
+          ? '<span class="ytc-spin"></span> Checking recent videos for ads on ' +
+            MON_SWEEP.total + ' candidate' + (MON_SWEEP.total === 1 ? '' : 's') +
+            (MON_SWEEP.total ? ' \u2014 ' + MON_SWEEP.done + ' of ' + MON_SWEEP.total +
+              ' done' : '') + '\u2026'
+          : 'No channels here match \u201c' + escapeHtml(chip.label) + '\u201d. ' +
+            all.length + ' found in total.') +
+      '</p>';
       wireSimilarControls(host, res);
       return;
     }
@@ -1684,7 +1782,15 @@
       }
     }
 
-    host.innerHTML = controls +
+    /* Progress sits above the table, not in the footnote: rows appear one at a time as
+       verdicts land, and a list that is still filling in looks identical to a finished one
+       from the top of the page. */
+    const progress = (chip.key === 'newmon' && (MON_SWEEP.running || unchecked))
+      ? '<p class="ytc-t__note"><span class="ytc-spin"></span> Checking recent videos for ' +
+        'ads \u2014 ' + MON_SWEEP.done + ' of ' + MON_SWEEP.total + ' candidates done' +
+        '\u2026</p>'
+      : '';
+    host.innerHTML = controls + progress +
       (warn ? '<p class="ytc-t__warn">' + warn + '</p>' : '') +
       body + '<p class="ytc-t__note">' + note + '</p>';
     wireSimilarControls(host, res);
