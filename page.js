@@ -113,6 +113,16 @@
     return null;
   }
 
+  /* The channel avatar, straight off the renderer. Search cards paint an avatar only for
+     some results, so reading it from the DOM leaves every channel the page has not drawn
+     yet with a placeholder — which is what the companion's channel list was showing. This
+     costs nothing: the payload is already being walked. */
+  function channelAvatar(v) {
+    const link = (v.channelThumbnailSupportedRenderers || {}).channelThumbnailWithLinkRenderer;
+    const thumbs = ((link || {}).thumbnail || {}).thumbnails;
+    return (Array.isArray(thumbs) && thumbs.length && thumbs[0].url) || '';
+  }
+
   function searchResults() {
     const data = window.ytInitialData;
     if (!data || !/^\/results/.test(location.pathname)) return null;
@@ -129,6 +139,7 @@
           views: exactViews(v),
           published: runs(v.publishedTimeText),
           channel: runs(v.ownerText) || runs(v.longBylineText),
+          avatar: channelAvatar(v),
           shorts: false
         });
       }
@@ -140,7 +151,7 @@
         out.push({
           id: r.videoId, title: runs(r.headline),
           views: exactViews({ viewCountText: r.viewCountText }),
-          published: '', channel: '', shorts: true
+          published: '', channel: '', avatar: '', shorts: true
         });
       }
       if (Array.isArray(node)) {
@@ -163,7 +174,7 @@
       // Bumped when the payload shape changes, so the content script can tell a stale
       // MAIN-world injection (which survives an extension reload in an open tab) from a
       // genuine read failure.
-      v: 3,
+      v: 4,
       apiKey: cfg ? cfg.get('INNERTUBE_API_KEY') || '' : '',
       clientVersion: cfg ? cfg.get('INNERTUBE_CLIENT_VERSION') || '' : '',
       visitorData: cfg ? cfg.get('VISITOR_DATA') || '' : '',

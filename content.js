@@ -4783,12 +4783,18 @@
       if (card) {
         /* Exact counts beat the card's abbreviated text: "1.7M" parses back as 1,700,000 and
            averaging rounded numbers is how the figures drifted between reads. */
-        return p.views != null ? Object.assign({}, card, { views: p.views }) : card;
+        const patch = {};
+        if (p.views != null) patch.views = p.views;
+        /* Search cards paint an avatar for some results and not others, so a drawn card is
+           no guarantee of one. The payload carries it for every result, so fill the gap
+           rather than leaving the channel list on its placeholder icon. */
+        if (!card.avatar && p.avatar) patch.avatar = p.avatar;
+        return Object.keys(patch).length ? Object.assign({}, card, patch) : card;
       }
       const ageDays = daysSince(F.relativeToISO(p.published, now));
       return {
         card: null, tools: '', title: p.title, url: '', id: p.id,
-        channel: p.channel, views: p.views, subs: null,
+        channel: p.channel, avatar: p.avatar || '', views: p.views, subs: null,
         ratio: null, subRatio: null,
         vph: p.views != null && ageDays ? p.views / (ageDays * 24) : null,
         ageDays: ageDays, chanAge: '', shorts: p.shorts, thumb: '', date: p.published
