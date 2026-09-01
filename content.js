@@ -1893,14 +1893,27 @@
     const rowH = (sample && sample.getBoundingClientRect().height) || SIM_ROW_H;
 
     let startY = 0, dragging = false, moved = false, shown = 0;
+    let frame = 0, latestY = 0;
 
-    const paint = (n) => {
-      shown = Math.max(0, Math.min(n, hidden.length));
-      hidden.forEach((el, i) => {
+    const apply = (n) => {
+      n = Math.max(0, Math.min(n, hidden.length));
+      if (n === shown) return;
+      /* Where the handle sits before the list changes height. Rows are inserted above it, so
+         without correcting for this the handle dives away from the cursor the moment it
+         starts working — the reader is left chasing it down the page. */
+      const before = grab.getBoundingClientRect().top;
+
+      /* Only the rows between the old and new positions change state. Retagging all of them
+         was the stutter: ninety-three elements times three class operations, on an event that
+         fires faster than the screen redraws. */
+      for (let i = Math.min(n, shown); i <= Math.max(n, shown) && i < hidden.length; i++) {
+        const el = hidden[i];
         el.classList.remove('ytc-t__row--extra', 'ytc-t__row--peek');
-        if (i > shown) el.classList.add('ytc-t__row--extra');
-        else if (i === shown) el.classList.add('ytc-t__row--peek');
-      });
+        if (i > n) el.classList.add('ytc-t__row--extra');
+        else if (i === n) el.classList.add('ytc-t__row--peek');
+      }
+      shown = n;
+
       if (label) {
         const left = hidden.length - shown;
         label.textContent = left
@@ -1908,6 +1921,11 @@
           : 'Hide lower-confidence matches';
       }
       grab.classList.toggle('open', shown >= hidden.length);
+
+      // Take the page with it, so the handle stays put under the cursor and the rows unroll
+      // above it rather than the whole list jumping.
+      const after = grab.getBoundingClientRect().top;
+      if (Math.abs(after - before) > 0.5) window.scrollBy(0, after - before);
     };
 
     grab.addEventListener('pointerdown', (e) => {
@@ -1918,18 +1936,28 @@
       e.preventDefault();
     });
 
+    /* Coalesced onto the frame. A trackpad emits pointermove far faster than the screen
+       redraws, and doing layout work per event means doing it several times for one painted
+       frame — which is exactly what dropped frames look like. */
     grab.addEventListener('pointermove', (e) => {
       if (!dragging) return;
-      const dy = e.clientY - startY;
-      // A few pixels of travel is a click with a shaky hand, not a drag.
-      if (!moved && Math.abs(dy) < 4) return;
-      moved = true;
-      paint(Math.round(dy / rowH));
+      latestY = e.clientY;
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (!dragging) return;
+        const dy = latestY - startY;
+        // A few pixels of travel is a click with a shaky hand, not a drag.
+        if (!moved && Math.abs(dy) < 4) return;
+        moved = true;
+        apply(Math.round(dy / rowH));
+      });
     });
 
     const end = () => {
       if (!dragging) return;
       dragging = false;
+      if (frame) { cancelAnimationFrame(frame); frame = 0; }
       grab.classList.remove('ytc-t__grab--drag');
       // A click reveals everything; a drag keeps exactly what was pulled into view.
       simFilter.reveal = moved ? already + shown
