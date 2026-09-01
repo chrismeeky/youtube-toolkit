@@ -1262,7 +1262,8 @@
     return { channelId: channelId, title: title || '', subscribers: subscribers };
   }
 
-  const simFilter = { smallOnly: false, sort: 'similarity', desc: true, open: false, chip: 'all' };
+  const simFilter = { smallOnly: false, sort: 'similarity', desc: true, open: false,
+    chip: 'all', showAll: false };
 
   /* Below this, the list is treated as a failure: the note says so, and the extension goes
      looking for more channels in the niche.
@@ -1273,6 +1274,9 @@
      with nothing in it sits below: aviation before it was walked returned true-crime
      channels at 0.59, and the old threshold called that a good answer and stayed quiet. */
   const WEAK_BELOW = 0.65;
+  /* Never fold the table away to nothing. In a thinly indexed niche every match can sit under
+     the confidence line, and an empty table under a chip reporting matches reads as a bug. */
+  const TRUST_MIN_ROWS = 5;
 
   /* Ad monetization needs 1,000 subscribers. Below that the question "is it monetized" has no
      answer worth giving, which is the same gate the channel badge uses. */
@@ -1618,9 +1622,37 @@
     }
     const list = fromIndex ? all.filter(chip.test) : all;
 
+    /* Confidence, not quantity, decides what is on screen. The fetch now asks for everything
+       above the similarity floor, which in a well-populated niche is a hundred channels — and
+       a hundred rows ordered by a score that has quietly stopped meaning anything by row
+       forty is worse than fifty, not better. So the tail below the same threshold the "weak
+       matches" warning already uses is folded away behind a reveal, and the reader is told it
+       exists rather than being handed it as though it were equally trustworthy.
+
+       Membership is decided by similarity alone, never by the sort column: sorting by
+       subscribers must not promote a 0.36 match into the trusted block. Each block is then
+       sorted independently, so revealing the tail appends rather than reshuffling what was
+       already read. */
+    let trusted = list, untrusted = [];
+    if (fromIndex) {
+      trusted = list.filter((c) => (c.similarity || 0) >= WEAK_BELOW);
+      untrusted = list.filter((c) => (c.similarity || 0) < WEAK_BELOW);
+      /* A niche where nothing clears the bar would otherwise render an empty table under a
+         chip claiming matches. Promote the best few so there is always something to read. */
+      if (trusted.length < TRUST_MIN_ROWS && untrusted.length) {
+        const need = Math.min(TRUST_MIN_ROWS - trusted.length, untrusted.length);
+        const best = new Set(untrusted.slice()
+          .sort((a, b) => (b.similarity || 0) - (a.similarity || 0)).slice(0, need));
+        trusted = trusted.concat(untrusted.filter((c) => best.has(c)));
+        untrusted = untrusted.filter((c) => !best.has(c));
+      }
+    }
+    const revealed = !!simFilter.showAll;
+    const shownCount = revealed ? list.length : trusted.length;
+
     const count = !all.length ? '' :
-      ' <span class="ytc-t__count">(' + list.length +
-      (list.length === all.length ? '' : ' of ' + all.length) + ')</span>';
+      ' <span class="ytc-t__count">(' + shownCount +
+      (shownCount === all.length ? '' : ' of ' + all.length) + ')</span>';
 
     const chips = !fromIndex ? '' :
       '<div class="ytc-chips">' + SIM_CHIPS.map((x) => {
@@ -1704,7 +1736,12 @@
             arrow + '</span></button>';
         }).join('') + '</div>';
 
-      const rows = sorted.map((c) => {
+      /* Both blocks take the same comparator, so the chosen column still orders what is on
+         screen — confidence is simply the outer sort. */
+      const cmp = (a, b) => (col.get(b) - col.get(a)) * dir;
+      const shownRows = trusted.slice().sort(cmp);
+      const hiddenRows = untrusted.slice().sort(cmp);
+      const rowFor = (c) => {
         const handle = c.handle || c.title || '';
         const img = c.avatar
           ? '<img class="ytc-t__pic" src="' + escapeHtml(c.avatar) + '" alt="" loading="lazy">'
@@ -1725,8 +1762,32 @@
             '<span class="ytc-t__c' + (c2.cls ? ' ' + c2.cls : '') + '">' +
             c2.cell(c) + '</span>').join('') +
         '</a>';
-      }).join('');
-      body = '<div class="ytc-t">' + head + rows + '</div>';
+      };
+
+      /* The row at the boundary is clipped and faded rather than hidden. A row half in view
+         reads as "the list continues"; a clean edge reads as "the list ends", which is the
+         one thing this must not say. */
+      const rows = shownRows.map(rowFor).join('') +
+        hiddenRows.map((c, i) => {
+          if (revealed) return rowFor(c);
+          const cls = i === 0 ? ' ytc-t__row--peek' : ' ytc-t__row--extra';
+          return rowFor(c).replace('class="ytc-t__row"', 'class="ytc-t__row' + cls + '"');
+        }).join('');
+
+      const grab = !hiddenRows.length ? '' :
+        '<button type="button" class="ytc-t__grab' + (revealed ? ' open' : '') +
+          '" aria-expanded="' + (revealed ? 'true' : 'false') + '" title="' +
+          escapeHtml('Matches below ' + Math.round(WEAK_BELOW * 100) + '% similarity. They ' +
+            'are real results, but the score stops separating them from coincidence around ' +
+            'here.') + '">' +
+          '<span class="ytc-t__grip"></span>' +
+          '<span class="ytc-t__grabtext">' + (revealed ? 'Hide' : 'Show') + ' ' +
+            hiddenRows.length + ' lower-confidence match' +
+            (hiddenRows.length === 1 ? '' : 'es') + '</span>' +
+        '</button>';
+
+      body = '<div class="ytc-t' + (revealed ? '' : ' ytc-t--cut') + '">' + head + rows +
+        '</div>' + grab;
     } else {
       body = '<div class="ytc-t">' + list.map((c) => {
         const handle = c.handle || c.title || '';
@@ -1812,11 +1873,23 @@
     const refresh = host.querySelector('.ytc-t__refresh');
     if (refresh) refresh.addEventListener('click', () => askSimilar(true));
 
+    const grab = host.querySelector('.ytc-t__grab');
+    if (grab) {
+      grab.addEventListener('click', (e) => {
+        e.preventDefault();
+        simFilter.showAll = !simFilter.showAll;
+        renderSimilar(res);
+      });
+    }
+
     // Chips re-filter what is already here, so they redraw rather than refetch.
     host.querySelectorAll('.ytc-chip').forEach((b) => {
       b.addEventListener('click', (e) => {
         e.preventDefault();
         simFilter.chip = b.dataset.chip;
+        // The tail belongs to the previous filter; carrying the reveal across would drop the
+        // reader into a different list already expanded.
+        simFilter.showAll = false;
         renderSimilar(res);
       });
     });

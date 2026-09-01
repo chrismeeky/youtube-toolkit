@@ -585,10 +585,12 @@ async function similarFromIndex(base, key, titles, about, opts) {
     title: (opts && opts.title) || '',
     about: about || '',
     videoTitles: (titles || []).slice(0, 10),
-    /* 50, not 25. The filter chips narrow this set client-side, and a chip like "new channels"
-       has nothing to bite on if the fetch already cut the list short. Costs one DB query
-       either way. */
-    limit: 50,
+    /* 100, not 50: the ceiling the match_channels RPC enforces anyway, as
+       `limit greatest(1, least(match_count, 100))`, so this asks for everything the database
+       will give. The chips narrow the set client-side and the panel hides the low-confidence
+       tail behind a reveal, so a short fetch only ever means a chip with nothing to bite on.
+       Costs one DB query whatever the number. */
+    limit: 100,
     minSubs: (opts && opts.minSubs) || null,
     maxSubs: (opts && opts.maxSubs) || null,
     /* 0.35, not 0.45. Two horror-film channels scored 0.449 against each other and were

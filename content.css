@@ -539,6 +539,46 @@ html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
   color: var(--yt-spec-text-primary, #0f0f0f); white-space: nowrap;
 }
 .ytc-t__sim { font-weight: 700; color: #0f9d58; }
+/* Cut list. The row at the boundary is clipped and faded rather than removed: a row half in
+   view reads as "the list continues", where a clean edge reads as "the list ends" — and what
+   is below the edge here is not nothing, it is the matches whose score has stopped
+   distinguishing them from coincidence. */
+.ytc-t--cut .ytc-t__row--extra { display: none; }
+.ytc-t--cut .ytc-t__row--peek {
+  max-height: 30px; overflow: hidden; pointer-events: none;
+  -webkit-mask-image: linear-gradient(to bottom, #000 6px, transparent 29px);
+  mask-image: linear-gradient(to bottom, #000 6px, transparent 29px);
+}
+
+/* The reveal reads as a drag handle rather than a link, because the gesture it stands for is
+   "pull the list open". It is a button, not a drag target — the grip is the affordance, the
+   click is the whole interaction. */
+.ytc-t__grab {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  width: 100%; margin: 2px 0 0; padding: 8px 0 10px; cursor: pointer;
+  border: 0; background: none;
+  font: 500 12px/1 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+  user-select: none;
+}
+/* Clicks land on the button whatever they hit, so the handler never has to walk up from a
+   child to find out what was pressed. */
+.ytc-t__grabtext, .ytc-t__grip { pointer-events: none; }
+.ytc-t__grip {
+  display: block; width: 34px; height: 4px; border-radius: 999px;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.16));
+  transition: background .15s ease, width .15s ease;
+}
+.ytc-t__grab:hover { color: var(--yt-spec-text-primary, #0f0f0f); }
+.ytc-t__grab:hover .ytc-t__grip {
+  width: 46px; background: var(--yt-spec-text-secondary, #909090);
+}
+.ytc-t__grab:focus-visible { outline: 2px solid #3ea6ff; outline-offset: -2px; border-radius: 8px; }
+html[dark] .ytc-t__grab { color: #aaa; }
+html[dark] .ytc-t__grab:hover { color: #f1f1f1; }
+html[dark] .ytc-t__grip { background: rgba(255,255,255,.18); }
+html[dark] .ytc-t__grab:hover .ytc-t__grip { background: rgba(255,255,255,.45); }
+
 .ytc-t__note {
   margin: 14px 12px 0; font: 400 12px/1.5 Roboto, Arial, sans-serif;
   color: var(--yt-spec-text-secondary, #606060);
