@@ -1265,6 +1265,9 @@ html[dark] .ytc-fm__chipwrap.on .ytc-fm__chip i { color: rgba(0,0,0,.62); }
 }
 .ytc-fm__side .ytc-fm__lbl:first-child { margin-top: 0; }
 .ytc-fm__seg { display: flex; gap: 6px; }
+/* At the top of the sidebar it is its own section rather than a field inside the drawer, so
+   it carries the gap that the drawer's first .ytc-fm__lbl used to provide. */
+.ytc-fm__seg--top { margin-bottom: 18px; flex-wrap: wrap; }
 .ytc-fm__seg button, .ytc-fm__reset, .ytc-fm__sort {
   cursor: pointer; font: 500 13px/1 Roboto, Arial, sans-serif;
   border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12));
@@ -1279,10 +1282,68 @@ html[dark] .ytc-fm__chipwrap.on .ytc-fm__chip i { color: rgba(0,0,0,.62); }
 }
 .ytc-fm__reset { margin-top: 22px; width: 100%; }
 .ytc-fm__main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
-.ytc-fm__sorts {
-  display: flex; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; padding: 14px 20px;
+/* The rail: one row of chips that scrolls sideways, with an arrow at whichever end has more
+   to show. The border sits here rather than on the scroller, so it stays put while the chips
+   move under it. */
+.ytc-fm__sortbar {
+  position: relative; flex: 0 0 auto;
   border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
 }
+.ytc-fm__sorts {
+  display: flex; gap: 8px; flex-wrap: nowrap; padding: 14px 20px;
+  overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain;
+  /* Tabbing to an off-screen chip scrolls it in natively; this keeps it clear of the arrow
+     that would otherwise be sitting on top of it. */
+  scroll-padding-left: 44px; scroll-padding-right: 44px;
+  /* The arrows are the control here, and a scrollbar under a single row of chips reads as a
+     second one. Trackpads and touch still scroll it directly. */
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.ytc-fm__sorts::-webkit-scrollbar { display: none; }
+/* Chips size to their text and stay on the line; without this they compress to fit and the
+   labels ellipsis away, which is the failure the rail exists to avoid. */
+.ytc-fm__sort { flex: 0 0 auto; white-space: nowrap; }
+.ytc-fm__srail {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; padding: 0; cursor: pointer;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12));
+  border-radius: 50%; color: inherit;
+  background: var(--yt-spec-base-background, #fff);
+}
+.ytc-fm__srail svg { width: 16px; height: 16px; }
+.ytc-fm__srail:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06)); }
+.ytc-fm__srail--prev { left: 8px; }
+.ytc-fm__srail--next { right: 8px; }
+/* A chip cut off at a hard edge looks like a chip with a missing word. The fade says the row
+   continues, and it is painted on the rail so it does not scroll away with the chips.
+   pointer-events off, or it would swallow clicks on the chip underneath it. */
+.ytc-fm__sortbar::before, .ytc-fm__sortbar::after {
+  content: ''; position: absolute; top: 0; bottom: 1px; width: 56px;
+  pointer-events: none; opacity: 0; transition: opacity .12s; z-index: 1;
+}
+.ytc-fm__sortbar::before {
+  left: 0;
+  background: linear-gradient(to right, var(--yt-spec-base-background, #fff), transparent);
+}
+.ytc-fm__sortbar::after {
+  right: 0;
+  background: linear-gradient(to left, var(--yt-spec-base-background, #fff), transparent);
+}
+.ytc-fm__sortbar--prev::before, .ytc-fm__sortbar--next::after { opacity: 1; }
+/* Above the rows, not under them. A list that is still filling in looks identical to a
+   finished one from the top, and by the time a footnote is reached the reader has already
+   drawn a conclusion from a short list. Same reasoning as the similar-channels sweep. */
+.ytc-fm__progress {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0; padding: 10px 20px;
+  font: 400 12px/1.4 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+  background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, .04));
+  border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .1));
+}
+html[dark] .ytc-fm__progress { color: #aaa; background: rgba(255, 255, 255, .06); }
+
 .ytc-fm__sort span { margin-left: 6px; font-size: 9px; opacity: .35; }
 .ytc-fm__sort.on { border-color: currentColor; }
 .ytc-fm__sort.on span { opacity: 1; color: #0f9d58; }
@@ -1469,7 +1530,15 @@ html[dark] .ytc-fm__note { color: #aaa; }
 html[dark] .ytc-fm__more-btn { background: #f1f1f1; color: #0f0f0f; border-color: #f1f1f1; }
 html[dark] .ytc-fm { background: #212121; color: #f1f1f1; }
 html[dark] .ytc-fm__head, html[dark] .ytc-fm__side,
-html[dark] .ytc-fm__sorts { border-color: rgba(255,255,255,.12); }
+html[dark] .ytc-fm__sortbar { border-color: rgba(255,255,255,.12); }
+html[dark] .ytc-fm__srail { background: #212121; border-color: rgba(255,255,255,.16); }
+html[dark] .ytc-fm__srail:hover { background: rgba(255,255,255,.12); }
+html[dark] .ytc-fm__sortbar::before {
+  background: linear-gradient(to right, #212121, rgba(33,33,33,0));
+}
+html[dark] .ytc-fm__sortbar::after {
+  background: linear-gradient(to left, #212121, rgba(33,33,33,0));
+}
 html[dark] .ytc-fm__count, html[dark] .ytc-fm__lbl, html[dark] .ytc-fm__x,
 /* A channel name that will preview on hover says so. The row itself is one big link to the
    video, so without this the name looks like the rest of the row's metadata and nobody would

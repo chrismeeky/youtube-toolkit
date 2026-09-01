@@ -4343,7 +4343,13 @@
        subscriber count and wrong for a multiplier: it collapses 0.5x to 1x and 1.5x to 2x,
        which are three of the handful of thresholds anyone actually wants here. */
     ratio:    { top: 100, dp: 1, fmt: (v) => v + '\u00d7 avg' },
-    subratio: { top: 100, dp: 1, fmt: (v) => v + '\u00d7 subs' }
+    subratio: { top: 100, dp: 1, fmt: (v) => v + '\u00d7 subs' },
+    /* Twenty years, because that is roughly how old the oldest channels on YouTube are and
+       the log curve spends its resolution at the young end regardless — which is the end
+       anyone filtering on this cares about. Read off the channel's about page, so it lands
+       with the subscriber count rather than with the card. */
+    chanage:  { top: 7300, fmt: (v) => (v <= 0 ? 'new' : ageLabel(
+                 new Date(Date.now() - v * 86400000).toISOString())) }
   };
 
   function valToPos(val, spec) {
@@ -4357,7 +4363,7 @@
     return spec.dp ? Number(v.toFixed(spec.dp)) : Math.round(v);
   }
 
-  const RANGE_KEYS = ['views', 'subs', 'vph', 'ratio', 'subratio', 'age'];
+  const RANGE_KEYS = ['views', 'subs', 'vph', 'ratio', 'subratio', 'age', 'chanage'];
 
   const FILTER_STATE = {
     kind: 'all',                    // all | shorts | long
@@ -4367,6 +4373,7 @@
     vph: [0, RANGE_MAX],
     ratio: [0, RANGE_MAX],
     subratio: [0, RANGE_MAX],
+    chanage: [0, RANGE_MAX],
     sort: 'ratio',                  // ratio | subratio | vph | subs | views | date
     desc: true,
     preset: 'all',
@@ -4654,6 +4661,10 @@
            subscriber count, so this costs nothing. Absent when the page did not yield it. */
         chanAge: card.dataset.ytcJoined
           ? ageLabel(new Date(Number(card.dataset.ytcJoined)).toISOString()) : '',
+        /* The same fact as chanAge, as a number. That one is a label for reading; a range
+           slider and a sort both need something to compare. */
+        chanAgeDays: card.dataset.ytcJoined
+          ? daysSince(new Date(Number(card.dataset.ytcJoined)).toISOString()) : null,
         /* From the card's own markup. findUrl deliberately rewrites /shorts/ID to
            /watch?v=ID so the two forms of one video compare equal, which meant testing the
            url for "/shorts/" could never match and every short read as long form. */
@@ -4698,7 +4709,7 @@
     /* Which row field each range asks about. Kept as one table so a new slider needs a spec,
        a field here, and nothing else. */
     const FIELD = { subs: 'subs', views: 'views', age: 'ageDays', vph: 'vph',
-                    ratio: 'ratio', subratio: 'subRatio' };
+                    ratio: 'ratio', subratio: 'subRatio', chanage: 'chanAgeDays' };
 
     const bands = RANGE_KEYS.map((k) => [FIELD[k], band(k)]).filter((b) => b[1].active);
 
@@ -4714,7 +4725,12 @@
 
     const key = { ratio: (r) => r.ratio, subratio: (r) => r.subRatio, vph: (r) => r.vph,
                   subs: (r) => r.subs, views: (r) => r.views,
-                  date: (r) => (r.ageDays == null ? null : -r.ageDays) };
+                  date: (r) => (r.ageDays == null ? null : -r.ageDays),
+                  /* Negated like the upload date, so the arrow means the same thing in both:
+                     pointing down puts the newest first. Sorting a column called "age" so
+                     that the biggest number came first would read as correct and be the
+                     opposite of what anyone hunting young channels wants. */
+                  chanage: (r) => (r.chanAgeDays == null ? null : -r.chanAgeDays) };
     const get = key[f.sort] || key.ratio;
     const dir = f.desc ? 1 : -1;
     return kept.sort((a, b) => {
@@ -4733,7 +4749,8 @@
     { key: 'views', label: 'Video views' },
     { key: 'vph', label: 'Views per hour' },
     { key: 'ratio', label: 'Views vs channel average' },
-    { key: 'subratio', label: 'Views vs subscribers' }
+    { key: 'subratio', label: 'Views vs subscribers' },
+    { key: 'chanage', label: 'Channel age' }
   ];
 
   const AGE_CHOICES = [
@@ -4778,6 +4795,7 @@
     if (FM) {
       if (FM.io) FM.io.disconnect();
       if (FM.rowIo) FM.rowIo.disconnect();
+      if (FM.sortRail) FM.sortRail.disconnect();
       if (FM.refresh) clearInterval(FM.refresh);
       if (FM.tick) clearInterval(FM.tick);
       if (FM.settle) clearTimeout(FM.settle);
@@ -5309,6 +5327,78 @@
     }, FM_REFRESH);
   }
 
+
+  /* ------------------------------------------- channel-age resolution progress */
+
+  /* Channel age is the one range whose value does not come off the card.
+
+     Views, subscribers and the ratios are all painted onto the card by the time it is on
+     screen; a channel's join date is read from its about page, which is fetched per channel
+     and queued two at a time. So the moment the Channel age slider is moved, most rows have
+     no value yet and are excluded — and the reader sees a list that has been cut down with no
+     indication that it is still filling in. Left alone it looks like the filter found five
+     channels, when it has really only asked about five so far.
+
+     The same problem the "newly monetized" chip has in the similar-channels panel, and the
+     same answer: say how many are resolved out of how many there are, and keep saying it
+     until the number stops moving. */
+  function chanAgeProgress(all) {
+    let known = 0;
+    let pending = 0;
+    const waiting = [];
+    for (const r of all || []) {
+      if (r.chanAgeDays != null) { known++; continue; }
+      const card = r.card;
+      if (!card || !card.isConnected) continue;
+      const key = findChannelKey(card);
+      if (!key) continue;                       // no channel: never going to have an age
+      const entry = subsByKey.get(key);
+      /* Answered already. A channel whose about page carried no join date is not pending —
+         it is unavailable, and counting it would leave the total one short forever. */
+      if (entry && entry.stats) continue;
+      pending++;
+      if (!requested.has(key)) waiting.push(card);
+    }
+    return { known, pending, total: known + pending, waiting };
+  }
+
+  /* Nudge a few of the unasked ones along.
+
+     Without this the indicator would be honest and useless: rows excluded by the filter are
+     not in the list, so the row observer never sees them and never asks, and the count would
+     sit still at whatever happened to be resolved when the slider moved. Capped per repaint
+     rather than fired all at once, because the lookup queue runs two at a time behind a
+     breaker that trips on four consecutive failures — dumping two hundred channels into it is
+     how a filter turns into a rate-limit. The repaint timer drains the rest. */
+  const CHANAGE_PRIME = 8;
+
+  function primeChanAge(waiting) {
+    for (const card of waiting.slice(0, CHANAGE_PRIME)) {
+      card.dataset.ytcNear = '1';
+      try { wantSubs(card); } catch (e) { /* one card must not stop the rest */ }
+    }
+  }
+
+  function chanAgeNoteHtml(all) {
+    // Only while that slider is actually doing something.
+    const [lo, hi] = FILTER_STATE.chanage;
+    if (lo <= 0 && hi >= RANGE_MAX) return '';
+    const p = chanAgeProgress(all);
+    if (!p.pending) return '';
+    primeChanAge(p.waiting);
+    /* Keep the repaint loop alive while there is anything left to resolve.
+
+       watchBadges stops itself after eight ticks with no badge changing, which is right when
+       the page has settled and wrong here: priming happens during a repaint, so a loop that
+       stopped would take the priming with it and freeze the count mid-way with cards still
+       unasked. Restarting it costs nothing — it clears its own interval first, and it will
+       stop again on its own once these land and nothing more is moving. */
+    if (FM && !FM.refresh) watchBadges();
+    return '<p class="ytc-fm__progress"><span class="ytc-spin"></span> ' +
+      'Resolving channel ages — ' + p.known + ' of ' + p.total + ' done. ' +
+      'Rows whose channel has not answered yet are not in this list.</p>';
+  }
+
   function paintFilterResults() {
     const box = document.querySelector('.ytc-fm__results');
     const count = document.querySelector('.ytc-fm__count');
@@ -5325,7 +5415,7 @@
        they were — a redraw that jumps back to the top loses their place every time a batch
        lands, which is precisely when it must not. */
     const keepTop = box.scrollTop;
-    box.innerHTML = (rows.length
+    box.innerHTML = chanAgeNoteHtml(all) + (rows.length
       ? rows.map(filterRow).join('')
       : '<p class="ytc-fm__none">Nothing on this page matches. Widen a range, or load more ' +
         'below \u2014 only what has loaded can be filtered.</p>') + moreBarHtml();
@@ -5623,7 +5713,11 @@
     if (use.apply) setDrawer(modal, true);
     renderPresets(modal);
     syncFilterControls(modal);
-    redraw();
+    /* paintFilterResults, not the `redraw` alias — that one is a closure inside
+       openFilterModal, and this function is not. Calling it from out here threw a
+       ReferenceError inside the click handler, which a listener swallows silently: every
+       preset chip looked dead, with the state already half-applied behind it. */
+    paintFilterResults();
   }
 
   function wirePresets(modal) {
@@ -5776,6 +5870,68 @@
     renderPresets(modal);
   }
 
+  /* The two ends of the sort rail. Hidden until the chips actually overflow, and each one
+     disappears again at the end it points to, so the arrows are never a control that does
+     nothing when pressed. */
+  function railButton(dir) {
+    const d = dir === 'prev' ? 'M10.5 3.5 6 8l4.5 4.5' : 'M5.5 3.5 10 8l-4.5 4.5';
+    return '<button type="button" class="ytc-fm__srail ytc-fm__srail--' + dir + '" hidden ' +
+      'aria-label="' + (dir === 'prev' ? 'Scroll sorts left' : 'Scroll sorts right') + '">' +
+      '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="' + d + '" fill="none" ' +
+      'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" ' +
+      'stroke-linejoin="round"/></svg></button>';
+  }
+
+  /* Which arrows apply, measured rather than assumed. A one-pixel slack absorbs the
+     fractional scrollLeft a zoomed page produces, which otherwise leaves the "next" arrow lit
+     at a rail that has already reached its end. */
+  function paintSortRail(modal) {
+    const box = modal.querySelector('.ytc-fm__sorts');
+    const bar = modal.querySelector('.ytc-fm__sortbar');
+    if (!box || !bar) return;
+    const max = box.scrollWidth - box.clientWidth;
+    const prev = box.scrollLeft > 1;
+    const next = box.scrollLeft < max - 1;
+    bar.querySelector('.ytc-fm__srail--prev').hidden = !prev;
+    bar.querySelector('.ytc-fm__srail--next').hidden = !next;
+    // The fades are on the rail, so they can sit over the chips without scrolling with them.
+    bar.classList.toggle('ytc-fm__sortbar--prev', prev);
+    bar.classList.toggle('ytc-fm__sortbar--next', next);
+  }
+
+  function wireSortRail(modal) {
+    const box = modal.querySelector('.ytc-fm__sorts');
+    if (!box) return;
+    modal.querySelectorAll('.ytc-fm__srail').forEach((b) => {
+      b.addEventListener('click', () => {
+        /* A page at a time, less a chip's worth of overlap — the chip that was at the edge
+           stays on screen, so there is always something in common between the two views to
+           read the movement against. */
+        const step = Math.max(120, Math.round(box.clientWidth * 0.8));
+        box.scrollBy({ left: b.classList.contains('ytc-fm__srail--prev') ? -step : step,
+                       behavior: 'smooth' });
+      });
+    });
+    box.addEventListener('scroll', () => paintSortRail(modal));
+    /* The modal is sized against the viewport, so the same chips overflow at one window width
+       and not at another. Observing the rail catches both that and a font that lands late. */
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(() => paintSortRail(modal));
+      ro.observe(box);
+      if (FM) FM.sortRail = ro;
+    }
+    /* Open on the sort that is actually in force. It defaults to the fifth chip, which is off
+       the end of the rail at most widths — leaving the reader looking at a bar whose lit chip
+       is out of sight. Set directly rather than scrolled to: this is the starting position,
+       not a movement, and animating it on open would read as the bar drifting by itself. */
+    const on = box.querySelector('.ytc-fm__sort.on');
+    if (on) {
+      const overshoot = on.offsetLeft + on.offsetWidth - box.clientWidth;
+      if (overshoot > 0) box.scrollLeft = overshoot + 20;
+    }
+    paintSortRail(modal);
+  }
+
   function openFilterModal() {
     closeFilterModal();
     // Transient chrome, not state: a menu or a half-typed name must not survive a reopen.
@@ -5800,6 +5956,18 @@
       '</div>' +
       '<div class="ytc-fm__body">' +
         '<div class="ytc-fm__side">' +
+          /* Above the presets, not inside Custom filters. Shorts and long form are a
+             different kind of question from the sliders: it is the first cut most people
+             make, it applies whatever preset is chosen, and burying it behind a collapsed
+             drawer meant reaching for it through two clicks every time. */
+          '<div class="ytc-fm__sec">Video type</div>' +
+          '<div class="ytc-fm__seg ytc-fm__seg--top">' +
+            ['all', 'shorts', 'long'].map((k) =>
+              '<button type="button" data-kind="' + k + '"' +
+              (FILTER_STATE.kind === k ? ' class="on"' : '') + '>' +
+              (k === 'all' ? 'All' : k === 'shorts' ? 'Shorts' : 'Long form') +
+              '</button>').join('') +
+          '</div>' +
           '<div class="ytc-fm__sec">Presets</div>' +
           '<div class="ytc-fm__chips"></div>' +
           '<button type="button" class="ytc-fm__more-presets">Show all presets' +
@@ -5811,20 +5979,13 @@
             (FILTER_STATE.custom ? 'true' : 'false') + '">Custom filters' +
             '<span class="ytc-fm__caret">\u25BE</span></button>' +
           '<div class="ytc-fm__drawer"' + (FILTER_STATE.custom ? '' : ' hidden') + '>' +
-            '<label class="ytc-fm__lbl">Video type</label>' +
-            '<div class="ytc-fm__seg">' +
-              ['all', 'shorts', 'long'].map((k) =>
-                '<button type="button" data-kind="' + k + '"' +
-                (FILTER_STATE.kind === k ? ' class="on"' : '') + '>' +
-                (k === 'all' ? 'All' : k === 'shorts' ? 'Shorts' : 'Long form') +
-                '</button>').join('') +
-            '</div>' +
             rangeControl('views', 'Views') +
             rangeControl('subs', 'Subscribers') +
             rangeControl('vph', 'Views per hour') +
             rangeControl('ratio', 'Views vs channel average') +
             rangeControl('subratio', 'Views vs subscribers') +
             rangeControl('age', 'Uploaded') +
+            rangeControl('chanage', 'Channel age') +
             /* Inside the drawer, under the sliders it saves. A preset is these values, so the
                control that captures them belongs at the end of them rather than beside Reset,
                where it would read as another way to clear things. */
@@ -5842,13 +6003,22 @@
           '<button type="button" class="ytc-fm__reset">Reset</button>' +
         '</div>' +
         '<div class="ytc-fm__main">' +
-          '<div class="ytc-fm__sorts">' +
-            FILTER_SORTS.map((c) =>
-              '<button type="button" class="ytc-fm__sort' +
-              (FILTER_STATE.sort === c.key ? ' on' : '') + '" data-sort="' + c.key + '">' +
-              c.label + '<span>' +
-              (FILTER_STATE.sort === c.key ? (FILTER_STATE.desc ? '\u25BC' : '\u25B2') : '\u25BC') +
-              '</span></button>').join('') +
+          /* One line that scrolls, not a block that grows. Seven sorts wrapped to a second
+             row at the widths this modal actually opens at, and that row pushed the results
+             down by its full height — a permanent cost paid so that the last two chips,
+             which most readers never touch, could be visible without a gesture. YouTube's
+             own filter bar answers this the same way, so the gesture is already familiar. */
+          '<div class="ytc-fm__sortbar">' +
+            railButton('prev') +
+            '<div class="ytc-fm__sorts" role="group" aria-label="Sort results">' +
+              FILTER_SORTS.map((c) =>
+                '<button type="button" class="ytc-fm__sort' +
+                (FILTER_STATE.sort === c.key ? ' on' : '') + '" data-sort="' + c.key + '">' +
+                c.label + '<span>' +
+                (FILTER_STATE.sort === c.key ? (FILTER_STATE.desc ? '\u25BC' : '\u25B2') : '\u25BC') +
+                '</span></button>').join('') +
+            '</div>' +
+            railButton('next') +
           '</div>' +
           '<div class="ytc-fm__loadbar" hidden></div>' +
           '<div class="ytc-fm__results"></div>' +
@@ -5877,6 +6047,7 @@
       if (real) real.click();
     });
     modal.querySelectorAll('.ytc-fm__range').forEach(paintRange);
+    wireSortRail(modal);
     paintFilterResults();
     watchBadges();
 

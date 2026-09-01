@@ -284,6 +284,22 @@ in the tab, so re-hovering is free. Turn it off in the popup.
 
 ## Similar channels & the channel index
 
+The filter modal's sliders cover views, subscribers, views per hour, views against the
+channel's average, views against its subscriber count, upload date and **channel age**. The
+last is read off the channel's about page, so it arrives with the subscriber count rather than
+with the card — a row whose channel has not been looked up yet has no value and drops out once
+that slider is moved, like every other range. It sorts too, negated like the upload date so the
+arrow means the same thing in both: pointing down puts the newest first.
+
+Channel age is the one range whose value is not already on the card. Views, subscribers and
+the ratios are painted on by the time a card is on screen; a join date is read from the
+channel's about page, fetched per channel and queued two at a time. So moving that slider
+excludes most rows at first, and the modal says so — a progress line above the list counts how
+many channels have answered out of how many there are, and quietly asks the unasked ones,
+eight per repaint so a filter cannot turn into a rate-limit. It disappears when nothing is
+left to resolve. Channels whose about page carries no join date are not counted as pending;
+they are unavailable, and counting them would leave the total one short forever.
+
 The **Similar Channels** tab on a channel page lists channels like the one you are looking
 at, with subscribers, average views, upload rate, age, last upload, and a monetization
 estimate — sortable, and filterable by preset ("Overperforming", "Low subs, high views",
