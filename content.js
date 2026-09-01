@@ -3958,7 +3958,13 @@
 
   let ownerQueue = new Map();     // video id -> Set of cards waiting on it
   let ownerTimer = null;
-  const ownerAsked = new Set();   // ids already sent this session, answered or not
+  /* Ids that are settled: the service answered, or it failed enough times to stop asking.
+     A transient failure deliberately does NOT land here. The index sleeps when idle and the
+     first request after that fails outright, so retiring an id on its first failure meant one
+     cold start permanently dashed every Short on the page for the rest of the session. */
+  const ownerDone = new Set();
+  const ownerTries = new Map();   // id -> failed attempts so far
+  const OWNER_MAX_TRIES = 3;
 
   function isShortCard(card) {
     return !!(card.matches('ytd-reel-item-renderer, ytm-shorts-lockup-view-model') ||
@@ -3971,8 +3977,8 @@
     const id = findUrl(card).id;
     if (!id) return false;
     if (card.dataset.ytcChan) return false;
-    // Asked once per session per id. A miss is a fact about the video, not about the moment.
-    if (ownerAsked.has(id) && !ownerQueue.has(id)) return false;
+    // Settled ids are not asked again. A miss is a fact about the video; a failure is not.
+    if (ownerDone.has(id) && !ownerQueue.has(id)) return false;
 
     if (!ownerQueue.has(id)) ownerQueue.set(id, new Set());
     ownerQueue.get(id).add(card);
@@ -3989,11 +3995,7 @@
     const ids = Array.from(pending.keys()).slice(0, OWNER_BATCH);
     // Anything over the batch ceiling goes back for the next pass rather than being dropped.
     for (const [id, cards] of pending) {
-      if (ids.indexOf(id) < 0) {
-        ownerQueue.set(id, cards);
-      } else {
-        ownerAsked.add(id);
-      }
+      if (ids.indexOf(id) < 0) ownerQueue.set(id, cards);
     }
     if (ownerQueue.size && !ownerTimer) {
       ownerTimer = setTimeout(flushOwnerLookups, OWNER_DEBOUNCE);
@@ -4002,8 +4004,20 @@
     sendMessage({ type: 'ytc-video-owners', videos: ids }, (res) => {
       if (chrome.runtime.lastError) return;
       const found = (res && res.videos) || {};
+      /* The service could not be reached at all: nothing here is a fact about any video, so
+         hold the ids back for another pass instead of dashing every card. */
+      const reachable = !!(res && res.ok);
       for (const id of ids) {
         const rec = found[id];
+        if (!reachable && !rec) {
+          const tries = (ownerTries.get(id) || 0) + 1;
+          ownerTries.set(id, tries);
+          if (tries < OWNER_MAX_TRIES) {
+            ownerQueue.set(id, pending.get(id) || new Set());
+            continue;
+          }
+        }
+        ownerDone.add(id);
         for (const card of pending.get(id) || []) {
           if (!card.isConnected) continue;
           if (!rec || !rec.channel) {
@@ -4024,6 +4038,10 @@
           delete card.dataset.ytcDetect;
           wantSubs(card);
         }
+      }
+      if (ownerQueue.size && !ownerTimer) {
+        // Backed off, not hammered: a sleeping index needs seconds, not another 250ms.
+        ownerTimer = setTimeout(flushOwnerLookups, 4000);
       }
     });
   }
@@ -4075,6 +4093,12 @@
 
     const key = findChannelKey(card);
     if (!key) {
+      /* A Short is asked for straight away rather than after the hydration retries. For every
+         other card a missing byline means "not painted yet" and waiting is the right move;
+         for a Short the byline is never coming, so the retries were ten seconds of waiting
+         for something that does not exist before the real lookup even started — long enough
+         that a page of Shorts looked simply broken. */
+      if (queueOwnerLookup(card)) { renderLoading(card, false); return; }
       // YouTube fills in card metadata after the card enters the viewport, so a missing
       // channel link usually means "not hydrated yet", not "no channel". Look again.
       const attempt = Number(card.dataset.ytcDetect || 0);
@@ -4083,10 +4107,6 @@
         setTimeout(() => { if (card.isConnected) wantSubs(card); }, DETECT_DELAYS[attempt]);
         return;
       }
-      /* Out of retries, and for a short that is not a timing problem: its lockup carries a
-         title and a view count and never a byline, so waiting longer cannot help. Ask by
-         video id instead — the one identifier the card does have. */
-      if (queueOwnerLookup(card)) { renderLoading(card, false); return; }
       renderEmpty(card, 'No channel link found on this card. Click to check again.');
       return;
     }

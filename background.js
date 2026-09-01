@@ -707,18 +707,38 @@ async function videoOwners(ids) {
   const write = {};
   for (let i = 0; i < missing.length; i += OWNER_MAX_BATCH) {
     const batch = missing.slice(i, i + OWNER_MAX_BATCH);
+    /* Two attempts, for the same reason similarFromIndex needs them: a free-tier instance
+       sleeps when idle, waking takes upwards of 50 seconds, and while it wakes the CORS
+       preflight fails outright — the browser blocks the request before it is sent, so the
+       fetch throws rather than returning a status and no timeout can help. The first attempt
+       is what wakes it; the second lands. Without this, the first Shorts page after an idle
+       spell resolved nothing and every Short on it fell back to a dash. */
     let got = null;
-    try {
-      const res = await fetch(base.replace(/\/$/, '') + '/video-owners', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videos: batch })
-      });
-      if (!res.ok) return { ok: false, reason: 'owners ' + res.status, videos: out };
-      got = await res.json();
-    } catch (e) {
-      return { ok: false, reason: 'owners unreachable', videos: out };
+    let failed = '';
+    for (const attempt of [1, 2]) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 90000);
+      try {
+        const res = await fetch(base.replace(/\/$/, '') + '/video-owners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ videos: batch }),
+          signal: controller.signal
+        });
+        // A status is a real answer — the URL or the token is wrong. Retrying cannot fix it.
+        if (!res.ok) return { ok: false, reason: 'owners ' + res.status, videos: out };
+        got = await res.json();
+        failed = '';
+        break;
+      } catch (e) {
+        failed = 'owners unreachable';
+        if (attempt === 2) break;
+        await new Promise((r) => setTimeout(r, 3000));
+      } finally {
+        clearTimeout(timer);
+      }
     }
+    if (failed) return { ok: false, reason: failed, videos: out };
     if (!got || !got.ok) return { ok: false, reason: (got && got.reason) || 'owners failed',
                                   videos: out };
     const found = got.videos || {};
