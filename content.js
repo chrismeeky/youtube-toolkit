@@ -1893,16 +1893,16 @@
     const rowH = (sample && sample.getBoundingClientRect().height) || SIM_ROW_H;
 
     let startY = 0, dragging = false, moved = false, shown = 0;
-    let frame = 0, latestY = 0;
+    let frame = 0, latestY = 0, pulled = 0;
 
     const apply = (n) => {
       n = Math.max(0, Math.min(n, hidden.length));
       if (n === shown) return;
-      /* Where the handle sits before the list changes height. Rows are inserted above it, so
-         without correcting for this the handle dives away from the cursor the moment it
-         starts working — the reader is left chasing it down the page. */
-      const before = grab.getBoundingClientRect().top;
-
+      /* Nothing here scrolls the page. The handle sits below the table, so rows inserted above
+         carry it down by exactly the height they add — which, at one row per row-height of
+         travel, is the same distance the finger moved. Left alone it tracks the finger for
+         free. An earlier version measured the handle and scrolled to hold it still, which
+         pinned it in place and made the drag feel detached from the list it was opening. */
       /* Only the rows between the old and new positions change state. Retagging all of them
          was the stutter: ninety-three elements times three class operations, on an event that
          fires faster than the screen redraws. */
@@ -1921,38 +1921,50 @@
           : 'Hide lower-confidence matches';
       }
       grab.classList.toggle('open', shown >= hidden.length);
-
-      // Take the page with it, so the handle stays put under the cursor and the rows unroll
-      // above it rather than the whole list jumping.
-      const after = grab.getBoundingClientRect().top;
-      if (Math.abs(after - before) > 0.5) window.scrollBy(0, after - before);
     };
 
     grab.addEventListener('pointerdown', (e) => {
       if (e.button) return;
-      dragging = true; moved = false; startY = e.clientY;
+      dragging = true; moved = false; startY = e.clientY; latestY = e.clientY; pulled = 0;
       grab.classList.add('ytc-t__grab--drag');
+      if (!frame) frame = requestAnimationFrame(tick);
       try { grab.setPointerCapture(e.pointerId); } catch (err) { /* not fatal */ }
       e.preventDefault();
     });
 
-    /* Coalesced onto the frame. A trackpad emits pointermove far faster than the screen
-       redraws, and doing layout work per event means doing it several times for one painted
-       frame — which is exactly what dropped frames look like. */
+    /* Pointermove only records where the finger is. The work happens on a frame loop, for two
+       reasons: a trackpad emits moves faster than the screen redraws, so doing layout per
+       event means doing it several times per painted frame; and at the bottom of the window
+       the finger stops moving entirely while the list must keep opening. */
     grab.addEventListener('pointermove', (e) => {
-      if (!dragging) return;
-      latestY = e.clientY;
-      if (frame) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        if (!dragging) return;
-        const dy = latestY - startY;
-        // A few pixels of travel is a click with a shaky hand, not a drag.
-        if (!moved && Math.abs(dy) < 4) return;
-        moved = true;
-        apply(Math.round(dy / rowH));
-      });
+      if (dragging) latestY = e.clientY;
     });
+
+    /* Ninety-three rows is some four thousand pixels of travel — several screens. So the drag
+       does not end at the bottom of the window: hold the finger there and the page scrolls
+       under it, faster the closer to the edge, and every pixel scrolled counts as pull. That
+       is the allowance that makes a long list openable by dragging at all. */
+    const EDGE = 96;          // px from the bottom where the page starts moving
+    const EDGE_MAX = 26;      // px per frame at the very edge
+    const tick = () => {
+      if (!dragging) { frame = 0; return; }
+      const dy = latestY - startY;
+      // A few pixels of travel is a click with a shaky hand, not a drag.
+      if (moved || Math.abs(dy) >= 4) {
+        moved = true;
+        const room = window.innerHeight - latestY;
+        if (room < EDGE) {
+          const speed = Math.max(1,
+            Math.round((1 - Math.max(room, 0) / EDGE) * EDGE_MAX));
+          window.scrollBy(0, speed);
+          // Counted whether or not the window could move: revealing rows is what makes the
+          // page taller, so at the very bottom the scroll only becomes possible afterwards.
+          pulled += speed;
+        }
+        apply(Math.round((dy + pulled) / rowH));
+      }
+      frame = requestAnimationFrame(tick);
+    };
 
     const end = () => {
       if (!dragging) return;
