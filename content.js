@@ -1263,7 +1263,10 @@
   }
 
   const simFilter = { smallOnly: false, sort: 'similarity', desc: true, open: false,
-    chip: 'all', showAll: false };
+    chip: 'all', reveal: 0 };
+  /* Row height in pixels, for turning a drag distance into a number of rows. Measured from
+     the rendered table when possible; this is only the value used before one exists. */
+  const SIM_ROW_H = 44;
 
   /* Below this, the list is treated as a failure: the note says so, and the extension goes
      looking for more channels in the niche.
@@ -1647,8 +1650,8 @@
         untrusted = untrusted.filter((c) => !best.has(c));
       }
     }
-    const revealed = !!simFilter.showAll;
-    const shownCount = revealed ? list.length : trusted.length;
+    const reveal = Math.max(0, Math.min(simFilter.reveal || 0, untrusted.length));
+    const shownCount = trusted.length + reveal;
 
     const count = !all.length ? '' :
       ' <span class="ytc-t__count">(' + shownCount +
@@ -1767,27 +1770,31 @@
       /* The row at the boundary is clipped and faded rather than hidden. A row half in view
          reads as "the list continues"; a clean edge reads as "the list ends", which is the
          one thing this must not say. */
+      /* Every hidden row is in the DOM from the start, classed rather than omitted, so a drag
+         can reveal them one at a time by touching classes instead of re-rendering a hundred
+         rows on every pointer move. */
       const rows = shownRows.map(rowFor).join('') +
         hiddenRows.map((c, i) => {
-          if (revealed) return rowFor(c);
-          const cls = i === 0 ? ' ytc-t__row--peek' : ' ytc-t__row--extra';
-          return rowFor(c).replace('class="ytc-t__row"', 'class="ytc-t__row' + cls + '"');
+          const cls = i < reveal ? '' : i === reveal ? ' ytc-t__row--peek' : ' ytc-t__row--extra';
+          return cls
+            ? rowFor(c).replace('class="ytc-t__row"', 'class="ytc-t__row' + cls + '"')
+            : rowFor(c);
         }).join('');
 
+      const left = hiddenRows.length - reveal;
       const grab = !hiddenRows.length ? '' :
-        '<button type="button" class="ytc-t__grab' + (revealed ? ' open' : '') +
-          '" aria-expanded="' + (revealed ? 'true' : 'false') + '" title="' +
-          escapeHtml('Matches below ' + Math.round(WEAK_BELOW * 100) + '% similarity. They ' +
-            'are real results, but the score stops separating them from coincidence around ' +
-            'here.') + '">' +
+        '<div class="ytc-t__grab' + (left ? '' : ' open') + '" role="button" tabindex="0"' +
+          ' aria-expanded="' + (left ? 'false' : 'true') + '" title="' +
+          escapeHtml('Drag down to reveal gradually, or click to show them all. Matches below '
+            + Math.round(WEAK_BELOW * 100) + '% similarity are real results, but the score ' +
+            'stops separating them from coincidence around here.') + '">' +
           '<span class="ytc-t__grip"></span>' +
-          '<span class="ytc-t__grabtext">' + (revealed ? 'Hide' : 'Show') + ' ' +
-            hiddenRows.length + ' lower-confidence match' +
-            (hiddenRows.length === 1 ? '' : 'es') + '</span>' +
-        '</button>';
+          '<span class="ytc-t__grabtext">' +
+            (left ? 'Show ' + left + ' lower-confidence match' + (left === 1 ? '' : 'es')
+                  : 'Hide lower-confidence matches') + '</span>' +
+        '</div>';
 
-      body = '<div class="ytc-t' + (revealed ? '' : ' ytc-t--cut') + '">' + head + rows +
-        '</div>' + grab;
+      body = '<div class="ytc-t">' + head + rows + '</div>' + grab;
     } else {
       body = '<div class="ytc-t">' + list.map((c) => {
         const handle = c.handle || c.title || '';
@@ -1862,6 +1869,91 @@
     hydrateRowMoney(host);
   }
 
+  /* Drag to reveal gradually, click to reveal the lot.
+     
+     The rows are already in the DOM, hidden by class, so a drag retags them instead of
+     re-rendering: a hundred-row rebuild per pointermove would stutter and would also destroy
+     the element the pointer is captured on. State is only written back on release, which is
+     what keeps the drag smooth and the re-render to exactly one.
+     
+     Pointer events rather than mouse, so a trackpad, a touchscreen and a pen all work from
+     one path, and setPointerCapture keeps the gesture alive when the pointer leaves the
+     handle — which it immediately does, because the handle moves down as rows appear. */
+  function wireGrab(host, grab, res) {
+    const table = host.querySelector('.ytc-t');
+    if (!table) return;
+    const hidden = Array.prototype.slice.call(
+      table.querySelectorAll('.ytc-t__row--peek, .ytc-t__row--extra'));
+    const already = simFilter.reveal || 0;
+    const total = already + hidden.length;
+    const label = grab.querySelector('.ytc-t__grabtext');
+
+    // Measure a real row rather than trusting the constant: density differs with zoom.
+    const sample = table.querySelector('.ytc-t__row:not(.ytc-t__row--head)');
+    const rowH = (sample && sample.getBoundingClientRect().height) || SIM_ROW_H;
+
+    let startY = 0, dragging = false, moved = false, shown = 0;
+
+    const paint = (n) => {
+      shown = Math.max(0, Math.min(n, hidden.length));
+      hidden.forEach((el, i) => {
+        el.classList.remove('ytc-t__row--extra', 'ytc-t__row--peek');
+        if (i > shown) el.classList.add('ytc-t__row--extra');
+        else if (i === shown) el.classList.add('ytc-t__row--peek');
+      });
+      if (label) {
+        const left = hidden.length - shown;
+        label.textContent = left
+          ? 'Show ' + left + ' lower-confidence match' + (left === 1 ? '' : 'es')
+          : 'Hide lower-confidence matches';
+      }
+      grab.classList.toggle('open', shown >= hidden.length);
+    };
+
+    grab.addEventListener('pointerdown', (e) => {
+      if (e.button) return;
+      dragging = true; moved = false; startY = e.clientY;
+      grab.classList.add('ytc-t__grab--drag');
+      try { grab.setPointerCapture(e.pointerId); } catch (err) { /* not fatal */ }
+      e.preventDefault();
+    });
+
+    grab.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const dy = e.clientY - startY;
+      // A few pixels of travel is a click with a shaky hand, not a drag.
+      if (!moved && Math.abs(dy) < 4) return;
+      moved = true;
+      paint(Math.round(dy / rowH));
+    });
+
+    const end = () => {
+      if (!dragging) return;
+      dragging = false;
+      grab.classList.remove('ytc-t__grab--drag');
+      // A click reveals everything; a drag keeps exactly what was pulled into view.
+      simFilter.reveal = moved ? already + shown
+        : (already >= total ? 0 : total);
+      renderSimilar(res);
+    };
+    grab.addEventListener('pointerup', end);
+    grab.addEventListener('pointercancel', end);
+
+    // Keyboard: the handle is a control, so it has to work without a pointer at all.
+    grab.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        simFilter.reveal = already >= total ? 0 : total;
+        renderSimilar(res);
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        simFilter.reveal = Math.max(0, Math.min(total,
+          already + (e.key === 'ArrowDown' ? 5 : -5)));
+        renderSimilar(res);
+      }
+    });
+  }
+
   function wireSimilarControls(host, res) {
     const small = host.querySelector('.ytc-t__small');
     if (small) {
@@ -1874,13 +1966,7 @@
     if (refresh) refresh.addEventListener('click', () => askSimilar(true));
 
     const grab = host.querySelector('.ytc-t__grab');
-    if (grab) {
-      grab.addEventListener('click', (e) => {
-        e.preventDefault();
-        simFilter.showAll = !simFilter.showAll;
-        renderSimilar(res);
-      });
-    }
+    if (grab) wireGrab(host, grab, res);
 
     // Chips re-filter what is already here, so they redraw rather than refetch.
     host.querySelectorAll('.ytc-chip').forEach((b) => {
@@ -1889,7 +1975,7 @@
         simFilter.chip = b.dataset.chip;
         // The tail belongs to the previous filter; carrying the reveal across would drop the
         // reader into a different list already expanded.
-        simFilter.showAll = false;
+        simFilter.reveal = 0;
         renderSimilar(res);
       });
     });

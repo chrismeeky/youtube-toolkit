@@ -543,8 +543,8 @@ html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
    view reads as "the list continues", where a clean edge reads as "the list ends" — and what
    is below the edge here is not nothing, it is the matches whose score has stopped
    distinguishing them from coincidence. */
-.ytc-t--cut .ytc-t__row--extra { display: none; }
-.ytc-t--cut .ytc-t__row--peek {
+.ytc-t__row--extra { display: none; }
+.ytc-t__row--peek {
   max-height: 30px; overflow: hidden; pointer-events: none;
   -webkit-mask-image: linear-gradient(to bottom, #000 6px, transparent 29px);
   mask-image: linear-gradient(to bottom, #000 6px, transparent 29px);
@@ -553,31 +553,64 @@ html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
 /* The reveal reads as a drag handle rather than a link, because the gesture it stands for is
    "pull the list open". It is a button, not a drag target — the grip is the affordance, the
    click is the whole interaction. */
+/* A resize handle, not a link. ns-resize is the cursor a reader already associates with
+   "pull this edge", and it is the single strongest signal that the thing is draggable — no
+   amount of styling substitutes for it. The rule above it draws the edge being pulled. */
 .ytc-t__grab {
-  display: flex; flex-direction: column; align-items: center; gap: 5px;
-  width: 100%; margin: 2px 0 0; padding: 8px 0 10px; cursor: pointer;
-  border: 0; background: none;
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  width: 100%; margin: 0; padding: 13px 0 11px;
+  cursor: ns-resize; border: 0; background: none;
   font: 500 12px/1 Roboto, Arial, sans-serif;
   color: var(--yt-spec-text-secondary, #606060);
-  user-select: none;
+  user-select: none; touch-action: none;
 }
-/* Clicks land on the button whatever they hit, so the handler never has to walk up from a
+/* The edge. Full width so it reads as the boundary of the list rather than a small button. */
+.ytc-t__grab::before {
+  content: ''; position: absolute; left: 0; right: 0; top: 0; height: 1px;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+  transition: background .15s ease;
+}
+/* Clicks land on the handle whatever they hit, so the handler never has to walk up from a
    child to find out what was pressed. */
 .ytc-t__grabtext, .ytc-t__grip { pointer-events: none; }
+/* Ribbed rather than plain: three stacked lines is the shorthand for a grip, and it survives
+   being 4px tall where a single bar just looks like a divider. */
 .ytc-t__grip {
-  display: block; width: 34px; height: 4px; border-radius: 999px;
-  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.16));
-  transition: background .15s ease, width .15s ease;
+  display: block; width: 40px; height: 8px;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--yt-spec-10-percent-layer, rgba(0,0,0,.22)) 0 2px,
+    transparent 2px 4px);
+  border-radius: 1px;
+  transition: width .15s ease, opacity .15s ease, background-image .15s ease;
 }
 .ytc-t__grab:hover { color: var(--yt-spec-text-primary, #0f0f0f); }
-.ytc-t__grab:hover .ytc-t__grip {
-  width: 46px; background: var(--yt-spec-text-secondary, #909090);
+.ytc-t__grab:hover::before,
+.ytc-t__grab--drag::before { background: var(--yt-spec-text-secondary, #909090); }
+.ytc-t__grab:hover .ytc-t__grip, .ytc-t__grab--drag .ytc-t__grip {
+  width: 56px;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--yt-spec-text-secondary, #909090) 0 2px,
+    transparent 2px 4px);
 }
+/* While dragging the label would otherwise flicker between counts under the cursor. */
+.ytc-t__grab--drag { cursor: grabbing; }
 .ytc-t__grab:focus-visible { outline: 2px solid #3ea6ff; outline-offset: -2px; border-radius: 8px; }
 html[dark] .ytc-t__grab { color: #aaa; }
 html[dark] .ytc-t__grab:hover { color: #f1f1f1; }
-html[dark] .ytc-t__grip { background: rgba(255,255,255,.18); }
-html[dark] .ytc-t__grab:hover .ytc-t__grip { background: rgba(255,255,255,.45); }
+html[dark] .ytc-t__grab::before { background: rgba(255,255,255,.12); }
+html[dark] .ytc-t__grip {
+  background-image: repeating-linear-gradient(
+    to bottom, rgba(255,255,255,.28) 0 2px, transparent 2px 4px);
+}
+html[dark] .ytc-t__grab:hover::before,
+html[dark] .ytc-t__grab--drag::before { background: rgba(255,255,255,.45); }
+html[dark] .ytc-t__grab:hover .ytc-t__grip, html[dark] .ytc-t__grab--drag .ytc-t__grip {
+  background-image: repeating-linear-gradient(
+    to bottom, rgba(255,255,255,.6) 0 2px, transparent 2px 4px);
+}
 
 .ytc-t__note {
   margin: 14px 12px 0; font: 400 12px/1.5 Roboto, Arial, sans-serif;
