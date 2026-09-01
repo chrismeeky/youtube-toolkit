@@ -260,6 +260,89 @@ html[dark] .ytc-subs--failed:hover .ytc-subs__n { color: #fff; border-color: #ff
 html[dark] .ytc-subs__n { background: rgba(255, 255, 255, .12); }
 html[dark] .ytc-spin { border-color: rgba(255, 255, 255, .25); border-top-color: #aaa; }
 
+/* Views of recent posts. One point per upload, positioned by publish date. */
+.ytc-an__chart {
+  margin: 12px 0 0; padding: 14px 16px 10px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1)); border-radius: 12px;
+  background: var(--yt-spec-general-background-a, #fff);
+}
+.ytc-an__charthead {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 10px;
+}
+.ytc-an__ranges { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05)); }
+.ytc-an__range {
+  border: 0; background: none; cursor: pointer; border-radius: 999px;
+  padding: 5px 12px; font: 500 12px/1 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-an__range:hover { color: var(--yt-spec-text-primary, #0f0f0f); }
+.ytc-an__range.on {
+  background: var(--yt-spec-general-background-a, #fff);
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  box-shadow: 0 1px 3px rgba(0,0,0,.14);
+}
+/* A range with no uploads is still offered — it is an answer about the channel, not a dead
+   control — but it says so before it is pressed. */
+.ytc-an__range.empty { opacity: .45; }
+
+.ytc-an__plot { position: relative; }
+.ytc-an__svg { display: block; width: 100%; height: 190px; overflow: visible; }
+.ytc-an__line { fill: none; stroke: #7c3aed; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.ytc-an__median {
+  stroke: #7c3aed; stroke-width: 1; stroke-dasharray: 4 4; opacity: .65;
+  vector-effect: non-scaling-stroke;
+}
+.ytc-an__pt {
+  fill: var(--yt-spec-general-background-a, #fff);
+  stroke: #7c3aed; stroke-width: 1.8; cursor: pointer;
+  vector-effect: non-scaling-stroke;
+  transition: r .12s ease;
+}
+.ytc-an__pt:hover, .ytc-an__pt.on { fill: #7c3aed; r: 6; }
+.ytc-an__medlabel {
+  position: absolute; right: 0; bottom: 26px;
+  font: 500 11.5px/1 Roboto, Arial, sans-serif; color: #7c3aed; opacity: .8;
+  pointer-events: none;
+}
+.ytc-an__tip {
+  position: absolute; z-index: 2; max-width: 230px; padding: 8px 10px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12)); border-radius: 8px;
+  background: var(--yt-spec-general-background-a, #fff);
+  box-shadow: 0 2px 10px rgba(0,0,0,.16);
+  font: 400 12px/1.45 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  pointer-events: none;
+}
+.ytc-an__tip b {
+  display: block; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ytc-an__tip span { display: block; color: var(--yt-spec-text-secondary, #606060); }
+.ytc-an__tip em { display: block; font-style: normal; font-weight: 500; color: #7c3aed; }
+.ytc-an__axis {
+  display: flex; justify-content: space-between; margin-top: 4px;
+  font: 400 11.5px/1 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+
+html[dark] .ytc-an__chart {
+  background: transparent; border-color: rgba(255,255,255,.12);
+}
+html[dark] .ytc-an__ranges { background: rgba(255,255,255,.08); }
+html[dark] .ytc-an__range { color: #aaa; }
+html[dark] .ytc-an__range:hover, html[dark] .ytc-an__range.on { color: #f1f1f1; }
+html[dark] .ytc-an__range.on { background: rgba(255,255,255,.16); box-shadow: none; }
+html[dark] .ytc-an__line, html[dark] .ytc-an__median { stroke: #b083f0; }
+html[dark] .ytc-an__pt { fill: #0f0f0f; stroke: #b083f0; }
+html[dark] .ytc-an__pt:hover, html[dark] .ytc-an__pt.on { fill: #b083f0; }
+html[dark] .ytc-an__medlabel, html[dark] .ytc-an__tip em { color: #b083f0; }
+html[dark] .ytc-an__tip {
+  background: #212121; border-color: rgba(255,255,255,.16); color: #f1f1f1;
+}
+html[dark] .ytc-an__tip span, html[dark] .ytc-an__axis { color: #aaa; }
+
 /* Monetization badge. Inferred from ad placements, so the palette is deliberately calmer
    than the ratio pill's — green/grey rather than the ratio scale, because "no ads found"
    is genuinely uncertain and should not read as a red verdict. */

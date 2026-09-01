@@ -2108,6 +2108,164 @@
     { days: Infinity, label: 'the whole sample', short: 'all uploads' }
   ];
 
+  /* Range buttons redraw the whole panel; the tooltip does not. Hovering a point must not
+     rebuild the analytics tab underneath the cursor, so the tip is moved and filled in place
+     and the SVG is left alone. */
+  function wireChart(host, res) {
+    const chart = host.querySelector('.ytc-an__chart');
+    if (!chart) return;
+
+    chart.querySelectorAll('.ytc-an__range').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        anChart.range = b.dataset.range;
+        renderAnalytics(res);
+      });
+    });
+
+    const plot = chart.querySelector('.ytc-an__plot');
+    const tip = chart.querySelector('.ytc-an__tip');
+    if (!plot || !tip) return;
+    const rangeKey = anChart.range || autoRange((res && res.videos) || []);
+    const range = CHART_RANGES.find((r) => r.key === rangeKey) || CHART_RANGES[3];
+    const pts = chartPoints((res && res.videos) || [], range.days);
+
+    const show = (dot) => {
+      const v = pts[Number(dot.dataset.i)];
+      if (!v) return;
+      const when = new Date(v.publishedAt).toLocaleDateString(undefined,
+        { year: 'numeric', month: 'short', day: 'numeric' });
+      tip.innerHTML = '<b>' + escapeHtml(v.title || 'Untitled') + '</b>' +
+        '<span>' + escapeHtml(when) + '</span>' +
+        '<em>' + F.compact(v.views) + ' views</em>';
+      tip.hidden = false;
+      /* Positioned from the dot's own box rather than the pointer, so the tip does not
+         jitter under a moving cursor, and flipped left near the right edge so it cannot be
+         clipped by the panel. */
+      const box = plot.getBoundingClientRect();
+      const d = dot.getBoundingClientRect();
+      const left = d.left - box.left + d.width / 2;
+      const flip = left > box.width * 0.6;
+      tip.style.left = flip ? 'auto' : left + 12 + 'px';
+      tip.style.right = flip ? (box.width - left + 12) + 'px' : 'auto';
+      tip.style.top = Math.max(0, d.top - box.top - 8) + 'px';
+      dot.classList.add('on');
+    };
+    const hide = (dot) => { tip.hidden = true; if (dot) dot.classList.remove('on'); };
+
+    chart.querySelectorAll('.ytc-an__pt').forEach((dot) => {
+      dot.addEventListener('mouseenter', () => show(dot));
+      dot.addEventListener('mouseleave', () => hide(dot));
+      // Touch has no hover: a tap shows the tip, and the next tap elsewhere clears it.
+      dot.addEventListener('click', (e) => { e.preventDefault(); show(dot); });
+    });
+    plot.addEventListener('mouseleave', () => hide(null));
+  }
+
+  /* Views of recent posts: one point per upload, at the date it went out.
+     
+     Plotting views against publish date is the one honest chart this data supports. It is not
+     a timeline of views received — no public page reports that, and an old video goes on
+     earning long after its point on this chart stops moving. It answers a narrower question:
+     how did each post do, and is the recent run above or below the channel's usual. */
+  const CHART_RANGES = [
+    { key: 'day', label: 'Day', days: 1 },
+    { key: 'week', label: 'Week', days: 7 },
+    { key: 'month', label: 'Month', days: 30 },
+    { key: 'year', label: 'Year', days: 365 }
+  ];
+  /* null means "pick one that has something in it". A channel uploading twice a year opened
+     on Day, saw an empty box, and had no reason to think the chart worked at all. */
+  const anChart = { range: null };
+
+  function chartPoints(videos, days) {
+    return videos
+      .filter((v) => v.views != null && v.publishedAt && daysSince(v.publishedAt) != null)
+      .filter((v) => daysSince(v.publishedAt) <= days)
+      .slice()
+      .sort((a, b) => Date.parse(a.publishedAt) - Date.parse(b.publishedAt));
+  }
+
+  /* The shortest range that holds enough posts to draw a line rather than a dot. */
+  function autoRange(videos) {
+    for (const r of CHART_RANGES) {
+      if (chartPoints(videos, r.days).length >= 3) return r.key;
+    }
+    return 'year';
+  }
+
+  function medianOf(nums) {
+    if (!nums.length) return null;
+    const s = nums.slice().sort((a, b) => a - b);
+    const mid = s.length >> 1;
+    return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  }
+
+  function viewsChartHtml(videos) {
+    const rangeKey = anChart.range || autoRange(videos);
+    const range = CHART_RANGES.find((r) => r.key === rangeKey) || CHART_RANGES[3];
+    const pts = chartPoints(videos, range.days);
+
+    const tabs = '<div class="ytc-an__ranges">' + CHART_RANGES.map((r) => {
+      const n = chartPoints(videos, r.days).length;
+      return '<button type="button" class="ytc-an__range' +
+        (r.key === rangeKey ? ' on' : '') + (n ? '' : ' empty') +
+        '" data-range="' + r.key + '" title="' +
+        escapeHtml(n + ' upload' + (n === 1 ? '' : 's') + ' in the last ' +
+          (r.days === 1 ? '24 hours' : r.days + ' days')) + '">' +
+        r.label + '</button>';
+    }).join('') + '</div>';
+
+    const head = '<div class="ytc-an__charthead">' +
+      '<span class="ytc-an__label">Views of recent posts</span>' + tabs + '</div>';
+
+    if (pts.length < 2) {
+      return '<div class="ytc-an__chart">' + head +
+        '<p class="ytc-an__note">' + (pts.length
+          ? 'Only one upload in this range \u2014 nothing to plot against.'
+          : 'No uploads in this range.') +
+        ' Try a longer one.</p></div>';
+    }
+
+    const W = 640, H = 190, padL = 10, padR = 10, padT = 16, padB = 26;
+    const t0 = Date.parse(pts[0].publishedAt);
+    const t1 = Date.parse(pts[pts.length - 1].publishedAt);
+    const span = Math.max(1, t1 - t0);
+    const maxV = Math.max.apply(null, pts.map((v) => v.views)) || 1;
+    const x = (v) => padL + ((Date.parse(v.publishedAt) - t0) / span) * (W - padL - padR);
+    /* Scaled from zero, not from the smallest value. A floor at the minimum turns an ordinary
+       run into a mountain range and makes every channel look equally volatile. */
+    const y = (n) => padT + (1 - n / maxV) * (H - padT - padB);
+
+    const med = medianOf(pts.map((v) => v.views));
+    const line = pts.map((v) => x(v).toFixed(1) + ',' + y(v.views).toFixed(1)).join(' ');
+    const dots = pts.map((v, i) =>
+      '<circle class="ytc-an__pt" cx="' + x(v).toFixed(1) + '" cy="' +
+        y(v.views).toFixed(1) + '" r="4.5" data-i="' + i + '"></circle>').join('');
+
+    const fmt = (iso) => {
+      const d = new Date(iso);
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    };
+
+    return '<div class="ytc-an__chart">' + head +
+      '<div class="ytc-an__plot">' +
+        '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" ' +
+          'class="ytc-an__svg" role="img" aria-label="Views of recent posts">' +
+          '<line class="ytc-an__median" x1="' + padL + '" x2="' + (W - padR) +
+            '" y1="' + y(med).toFixed(1) + '" y2="' + y(med).toFixed(1) + '"></line>' +
+          '<polyline class="ytc-an__line" points="' + line + '"></polyline>' +
+          dots +
+        '</svg>' +
+        '<span class="ytc-an__medlabel">Median ' + F.compact(Math.round(med)) + '</span>' +
+        '<div class="ytc-an__tip" hidden></div>' +
+      '</div>' +
+      '<div class="ytc-an__axis"><span>' + escapeHtml(fmt(pts[0].publishedAt)) +
+        '</span><span>' + pts.length + ' uploads</span><span>' +
+        escapeHtml(fmt(pts[pts.length - 1].publishedAt)) + '</span></div>' +
+    '</div>';
+  }
+
   /* Derived once, so the cards read from one place and cannot disagree with each other. */
   function analyticsModel(res) {
     const st = (res && res.stats) || {};
@@ -2260,6 +2418,8 @@
           m.rpm ? '$' + m.rpm.toFixed(2) : dash, rpmMeter(m.rpm), '\u25CE') +
       '</div>' +
 
+      (m.sampled ? viewsChartHtml((res && res.videos) || []) : '') +
+
         '<div class="ytc-an__panel">' +
           '<span class="ytc-an__label">Videos vs Shorts views</span>' +
           (pct == null
@@ -2295,6 +2455,8 @@
       '<p class="ytc-an__foot">Revenue is views multiplied by the reference rate for this ' +
         'niche, adjusted for nothing else. Audience country moves real RPM further than ' +
         'niche does, so treat it as a scale rather than a figure.</p>';
+
+    wireChart(host, res);
 
     const refresh = host.querySelector('.ytc-an__refresh');
     if (refresh) {
