@@ -226,6 +226,12 @@ html[dark] .ytc-btn:hover { color: #fff; }
   padding: 2px 5px;
 }
 .ytc-spin {
+  /* Without this it is display:inline, where width and height simply do not apply, and the
+     spinner renders at zero size. It only ever appeared because its two original parents were
+     flex containers, which blockify their children — so it worked in the monetization badge
+     and vanished the moment it was used inside a paragraph or a plain span. */
+  display: inline-block;
+  vertical-align: middle;
   width: 9px;
   height: 9px;
   border: 2px solid rgba(128, 128, 128, .35);
