@@ -1538,7 +1538,14 @@
   const SIM_COLS = [
     { key: 'similarity', label: 'Similarity', cls: 'ytc-t__sim',
       get: (c) => c.similarity || 0,
-      cell: (c) => Math.round((c.similarity || 0) * 100) + '%' },
+      /* The dot marks a score that carries a search-agreement boost, so a reader comparing
+         two rows can see that one of them is not resting on the embedding alone. Deliberately
+         a mark and not a second number: the column is sorted and thresholded on one value. */
+      cell: (c) => Math.round((c.similarity || 0) * 100) + '%' +
+        ((c.searchHits || 0) > 0
+          ? '<span class="ytc-t__agree" title="' + escapeHtml('Also ranked in YouTube’s ' +
+            'own results for ' + c.searchHits + ' of this channel’s topics') + '">●</span>'
+          : '') },
     { key: 'subs', label: 'Subscribers',
       get: (c) => c.subscribers || 0,
       cell: (c) => (c.subscribers ? F.compact(c.subscribers) : '\u2014') },
@@ -1818,8 +1825,21 @@
        modal. */
     let note, warn = '';
     if (fromIndex) {
+      /* Say what was searched for, on this path too. The topics are derived from the
+         channel's description, name and titles by a chain of heuristics that get it wrong
+         often enough to matter, and a reader who can see "culturally rooted african stories"
+         can tell at a glance whether the list under it is answering the right question. They
+         were previously printed only on the fallback path, where the list is weakest and the
+         explanation least useful. */
+      const topics = (res.queries || []).length
+        ? '. Topics searched: ' +
+          (res.queries || []).map((q) => escapeHtml(q)).join('  \u00b7  ')
+        : '';
+      const agreed = list.filter((c) => (c.searchHits || 0) > 0).length;
       note = 'Ranked by topic similarity against the channel index' +
-        (res.indexed ? '' : ' \u2014 this channel is not indexed yet, so its own page text was used');
+        (res.indexed ? '' : ' \u2014 this channel is not indexed yet, so its own page text was used') +
+        (agreed ? ', with ' + agreed + ' also ranking in YouTube search for those topics' : '') +
+        topics;
       const best = list.reduce((m, c) => Math.max(m, c.similarity || 0), 0);
       /* Two different failures used to read as the same "weak matches" warning, and only one
          of them is about the index. When the channel itself covers several unrelated subjects
@@ -2003,7 +2023,7 @@
       });
     }
     const refresh = host.querySelector('.ytc-t__refresh');
-    if (refresh) refresh.addEventListener('click', () => askSimilar(true));
+    if (refresh) refresh.addEventListener('click', () => askSimilar(true, true));
 
     const grab = host.querySelector('.ytc-t__grab');
     if (grab) wireGrab(host, grab, res);
@@ -2268,7 +2288,19 @@
   }
   /* null means "pick one that has something in it". A channel uploading twice a year opened
      on Day, saw an empty box, and had no reason to think the chart worked at all. */
-  const anChart = { range: null, byRange: {}, loading: false, error: '' };
+  /* Keyed by channel. byRange holds uploads fetched for a period, and the period alone is not
+     a sufficient key: walking from one channel to the next reused the first one's videos under
+     the second one's name, which is a wrong chart rather than a stale one. The range choice
+     resets too — it was picked for a channel whose upload rate the next one need not share. */
+  const anChart = { key: '', range: null, byRange: {}, loading: false, error: '' };
+
+  function resetChart(key) {
+    anChart.key = key;
+    anChart.range = null;
+    anChart.byRange = {};
+    anChart.loading = false;
+    anChart.error = '';
+  }
 
   /* The panel's own fifty uploads cover a period this channel actually spans, or they do not.
      UFC posts thirteen times a day, so its most recent fifty are two days — which under a
@@ -2520,6 +2552,10 @@
     const host = analyticsHost();
     if (!host) return;
     host.dataset.loaded = '1';
+    /* Before anything reads it: a render for a different channel than the one the chart state
+       was built for must not see that state at all. */
+    const key = channelKeyFromLocation();
+    if (key && anChart.key !== key) resetChart(key);
 
     if (!res || !res.ok) {
       host.innerHTML = '<p class="ytc-an__note">' +
@@ -2907,7 +2943,11 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  function askSimilar(force) {
+  /* Two different meanings used to share one flag. `force` redraws the table; `rediscover`
+     re-scrapes YouTube search. Only Refresh means both. "Smaller than this" changes a
+     subscriber bound and nothing else — the channel's topics are the same topics — so making
+     it re-run three search fetches spent the user's rate limit on an answer already held. */
+  function askSimilar(force, rediscover) {
     const key = channelKeyFromLocation();
     if (!key) return;
     const host = similarHost();
@@ -2926,7 +2966,7 @@
       // easy to name, while the ones just below it are what nobody can see.
       maxSubs: simFilter.smallOnly && own.subscribers ? own.subscribers : null
     };
-    sendMessage({ type: 'ytc-similar', key, titles, about, force, opts }, (res) => {
+    sendMessage({ type: 'ytc-similar', key, titles, about, force: !!rediscover, opts }, (res) => {
       if (chrome.runtime.lastError) {
         renderSimilar({ channels: [], reason: 'Extension reloaded — refresh this tab' });
         return;
@@ -3525,6 +3565,10 @@
     });
   }
 
+  /* The channel the on-page panels were last drawn for, so a move between channels can be
+     told from a redraw of the same one. */
+  let panelKey = '';
+
   function decorateChannelHeader() {
     const key = channelKeyFromLocation();
     const stray = document.querySelector('.ytc-money--lg');
@@ -3538,8 +3582,25 @@
       closeSimilarView();
       closeAnalyticsView();
       document.querySelectorAll('.ytc-sim, .ytc-simview, .ytc-an').forEach((n) => n.remove());
+      panelKey = '';
       return;
     }
+
+    /* Moving from one channel to another. The hosts are only torn down on leaving channel
+       pages altogether, so channel-to-channel kept dataset.loaded set and the previous
+       channel's rendered panel stayed on screen under the new channel's name until a fresh
+       response arrived — indistinguishable, while it lasted, from figures about this channel.
+       The request already refuses to render a late reply for the wrong channel; this covers
+       the render that was already on the page before the request went out. */
+    if (panelKey && panelKey !== key) {
+      document.querySelectorAll('.ytc-an, .ytc-sim, .ytc-simview').forEach((n) => {
+        delete n.dataset.loaded;
+        n.innerHTML = '';
+      });
+      simFilter.chip = 'all';
+      simFilter.reveal = 0;
+    }
+    panelKey = key;
     if (!settings.showMoney) {
       if (stray) stray.remove();
       const host0 = channelHeaderHost();
