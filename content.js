@@ -2130,7 +2130,8 @@
         anChart.loading = true;
         renderAnalytics(res);
         sendMessage({ type: 'ytc-channel-videos', key: channelKeyFromLocation(),
-                      channelId: (res && res.channelId) || null, days: range.days }, (out) => {
+                      channelId: (res && res.channelId) || null,
+                      days: rangeDays(range) }, (out) => {
           anChart.loading = false;
           if (chrome.runtime.lastError || !out || !out.ok) {
             // Keep the sample on screen rather than blanking the chart; say why it is partial.
@@ -2150,16 +2151,16 @@
     if (!plot || !tip) return;
     const rangeKey = anChart.range || autoRange((res && res.videos) || []);
     const range = CHART_RANGES.find((r) => r.key === rangeKey) || CHART_RANGES[3];
-    const pts = chartPoints((res && res.videos) || [], range.days);
+    const bins = bucketize(rangeData(res, rangeKey).videos, range);
+    const noun = BUCKET_NOUN[range.unit];
 
     const show = (dot) => {
-      const v = pts[Number(dot.dataset.i)];
-      if (!v) return;
-      const when = new Date(v.publishedAt).toLocaleDateString(undefined,
-        { year: 'numeric', month: 'short', day: 'numeric' });
-      tip.innerHTML = '<b>' + escapeHtml(v.title || 'Untitled') + '</b>' +
-        '<span>' + escapeHtml(when) + '</span>' +
-        '<em>' + F.compact(v.views) + ' views</em>';
+      const b = bins[Number(dot.dataset.i)];
+      if (!b) return;
+      tip.innerHTML = '<b>' + escapeHtml(b.label) + '</b>' +
+        '<span>' + b.count + ' upload' + (b.count === 1 ? '' : 's') +
+          ' this ' + noun + '</span>' +
+        '<em>' + F.compact(b.views) + ' views</em>';
       tip.hidden = false;
       /* Positioned from the dot's own box rather than the pointer, so the tip does not
          jitter under a moving cursor, and flipped left near the right edge so it cannot be
@@ -2190,12 +2191,81 @@
      a timeline of views received — no public page reports that, and an old video goes on
      earning long after its point on this chart stops moving. It answers a narrower question:
      how did each post do, and is the recent run above or below the channel's usual. */
+  /* Each range plots totals per period, not one dot per upload. A channel posting thirteen
+     times a day put 388 points on a month and they merged into a smear with no shape in it:
+     the question "how is this channel doing lately" is answered by what a day earned, not by
+     where each individual video landed. Buckets are calendar-aligned rather than rolling, so
+     a day means a day and a month boundary falls where the reader expects it. */
   const CHART_RANGES = [
-    { key: 'day', label: 'Day', days: 1 },
-    { key: 'week', label: 'Week', days: 7 },
-    { key: 'month', label: 'Month', days: 30 },
-    { key: 'year', label: 'Year', days: 365 }
+    { key: 'day', label: 'Day', days: 1, unit: 'hour', buckets: 24 },
+    { key: 'week', label: 'Week', days: 7, unit: 'day', buckets: 7 },
+    { key: 'month', label: 'Month', days: 30, unit: 'day', buckets: 30 },
+    { key: 'year', label: 'Year', days: 365, unit: 'month', buckets: 12 }
   ];
+
+  const BUCKET_NOUN = { hour: 'hour', day: 'day', month: 'month' };
+
+  /* Where the oldest bucket begins. Buckets are calendar-aligned, so this is not the same as
+     "now minus range.days": twelve calendar months back from today starts on the first of a
+     month, somewhere between 335 and 365 days ago. Fetching by the nominal 365 would pull
+     videos that fall before the first bucket and then drop them without a word, which is the
+     kind of silent discard that makes a chart quietly wrong. Everything asks this instead. */
+  function windowStart(range) {
+    const d = new Date();
+    const back = range.buckets - 1;
+    if (range.unit === 'hour') { d.setMinutes(0, 0, 0); d.setHours(d.getHours() - back); }
+    else if (range.unit === 'day') { d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - back); }
+    else { d.setHours(0, 0, 0, 0); d.setDate(1); d.setMonth(d.getMonth() - back); }
+    return d.getTime();
+  }
+
+  function rangeDays(range) {
+    return Math.max(1, Math.ceil((Date.now() - windowStart(range)) / 86400000));
+  }
+
+  function bucketKey(d, unit) {
+    const p = d.getFullYear() + '-' + d.getMonth();
+    if (unit === 'month') return p;
+    const day = p + '-' + d.getDate();
+    return unit === 'day' ? day : day + '-' + d.getHours();
+  }
+
+  function bucketLabel(d, unit) {
+    if (unit === 'hour') {
+      return d.toLocaleTimeString(undefined, { hour: 'numeric' });
+    }
+    if (unit === 'day') {
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+    return d.toLocaleDateString(undefined, { month: 'short', year: '2-digit' });
+  }
+
+  /* Views of everything published in each period, oldest first. Empty periods are kept and
+     plotted as zero: a week with no upload earned nothing, and dropping it would draw a line
+     straight over the gap as though the channel had been steady. */
+  function bucketize(videos, range) {
+    const out = [], byKey = new Map();
+    const base = new Date();
+    for (let i = range.buckets - 1; i >= 0; i--) {
+      const d = new Date(base);
+      if (range.unit === 'hour') { d.setMinutes(0, 0, 0); d.setHours(d.getHours() - i); }
+      else if (range.unit === 'day') { d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i); }
+      else { d.setHours(0, 0, 0, 0); d.setDate(1); d.setMonth(d.getMonth() - i); }
+      const b = { t: d.getTime(), label: bucketLabel(d, range.unit), views: 0, count: 0 };
+      out.push(b);
+      byKey.set(bucketKey(d, range.unit), b);
+    }
+    for (const v of videos) {
+      if (!v.publishedAt || v.views == null) continue;
+      const d = new Date(v.publishedAt);
+      if (isNaN(d.getTime())) continue;
+      const b = byKey.get(bucketKey(d, range.unit));
+      if (!b) continue;                 // outside the window
+      b.views += v.views;
+      b.count++;
+    }
+    return out;
+  }
   /* null means "pick one that has something in it". A channel uploading twice a year opened
      on Day, saw an empty box, and had no reason to think the chart worked at all. */
   const anChart = { range: null, byRange: {}, loading: false, error: '' };
@@ -2216,7 +2286,7 @@
     }, 0);
     /* The sample suffices only if it reaches past the window: if its oldest upload is still
        inside the period, there is more out there that it never saw. */
-    return { videos: have, enough: oldest >= range.days || have.length < 50 };
+    return { videos: have, enough: oldest >= rangeDays(range) || have.length < 50 };
   }
 
   function chartPoints(videos, days) {
@@ -2230,7 +2300,7 @@
   /* The shortest range that holds enough posts to draw a line rather than a dot. */
   function autoRange(videos) {
     for (const r of CHART_RANGES) {
-      if (chartPoints(videos, r.days).length >= 3) return r.key;
+      if (chartPoints(videos, rangeDays(r)).length >= 3) return r.key;
     }
     return 'year';
   }
@@ -2248,11 +2318,12 @@
     const range = CHART_RANGES.find((r) => r.key === rangeKey) || CHART_RANGES[3];
     const data = rangeData(res, rangeKey);
     const videos = data.videos;
-    const pts = chartPoints(videos, range.days);
+    const pts = chartPoints(videos, rangeDays(range));
+    const unitNoun = BUCKET_NOUN[range.unit];
 
     const tabs = '<div class="ytc-an__ranges">' + CHART_RANGES.map((r) => {
       const d = rangeData(res, r.key);
-      const n = chartPoints(d.videos, r.days).length;
+      const n = chartPoints(d.videos, rangeDays(r)).length;
       /* "At least" whenever the sample cannot see the whole window, because the number is
          then a floor rather than a count and must not be read as the latter. */
       const sure = d.enough;
@@ -2260,13 +2331,15 @@
         (r.key === rangeKey ? ' on' : '') + (sure && !n ? ' empty' : '') +
         '" data-range="' + r.key + '" title="' +
         escapeHtml((sure ? '' : 'At least ') + n + ' upload' + (n === 1 ? '' : 's') +
-          ' in the last ' + (r.days === 1 ? '24 hours' : r.days + ' days') +
+          ' in the last ' + (r.unit === 'hour' ? '24 hours' : rangeDays(r) + ' days') +
           (sure ? '' : ' \u2014 select to load the full period')) + '">' +
         r.label + '</button>';
     }).join('') + '</div>';
 
+    /* Named for what is plotted. It was "Views of recent posts" when each dot was a post;
+       each dot is now a period, and a title describing the old shape would misread the new one. */
     const head = '<div class="ytc-an__charthead">' +
-      '<span class="ytc-an__label">Views of recent posts</span>' + tabs + '</div>';
+      '<span class="ytc-an__label">Views per ' + unitNoun + '</span>' + tabs + '</div>';
 
     if (anChart.loading) {
       return '<div class="ytc-an__chart">' + head +
@@ -2277,60 +2350,55 @@
       return '<div class="ytc-an__chart">' + head +
         '<p class="ytc-an__note">' + escapeHtml(anChart.error) + '</p></div>';
     }
-    if (pts.length < 2) {
+    if (!pts.length) {
       return '<div class="ytc-an__chart">' + head +
-        '<p class="ytc-an__note">' + (pts.length
-          ? 'Only one upload in this range \u2014 nothing to plot against.'
-          : 'No uploads in this range.') +
-        ' Try a longer one.</p></div>';
+        '<p class="ytc-an__note">No uploads in this range. Try a longer one.</p></div>';
     }
 
+    const bins = bucketize(videos, range);
+    const noun = unitNoun;
     const W = 640, H = 190, padL = 10, padR = 10, padT = 16, padB = 26;
-    const t0 = Date.parse(pts[0].publishedAt);
-    const t1 = Date.parse(pts[pts.length - 1].publishedAt);
-    const span = Math.max(1, t1 - t0);
-    const maxV = Math.max.apply(null, pts.map((v) => v.views)) || 1;
-    const x = (v) => padL + ((Date.parse(v.publishedAt) - t0) / span) * (W - padL - padR);
-    /* Scaled from zero, not from the smallest value. A floor at the minimum turns an ordinary
-       run into a mountain range and makes every channel look equally volatile. */
+    const maxV = Math.max.apply(null, bins.map((b) => b.views)) || 1;
+    const step = bins.length > 1 ? (W - padL - padR) / (bins.length - 1) : 0;
+    const x = (i) => padL + i * step;
+    /* From zero, not from the smallest bucket. A floor at the minimum turns an ordinary run
+       into a mountain range and makes every channel look equally volatile. */
     const y = (n) => padT + (1 - n / maxV) * (H - padT - padB);
 
-    const med = medianOf(pts.map((v) => v.views));
-    /* A line through a thousand uploads is a scribble that hides the very shape it is meant
-       to show, so past a point the chart becomes a scatter and the median carries the trend
-       on its own. Dots shrink with density for the same reason. */
-    const dense = pts.length > 60;
-    const line = dense ? '' :
-      '<polyline class="ytc-an__line" points="' +
-      pts.map((v) => x(v).toFixed(1) + ',' + y(v.views).toFixed(1)).join(' ') + '"></polyline>';
-    const r = pts.length > 400 ? 1.6 : pts.length > 150 ? 2.4 : dense ? 3.2 : 4.5;
-    const dots = pts.map((v, i) =>
-      '<circle class="ytc-an__pt" cx="' + x(v).toFixed(1) + '" cy="' +
-        y(v.views).toFixed(1) + '" r="' + r + '" data-i="' + i + '"></circle>').join('');
+    /* Median across periods that actually had an upload. Including the empty ones would put
+       the line on the axis for any channel that does not post daily, which describes the
+       calendar rather than the channel. */
+    const active = bins.filter((b) => b.count);
+    const med = medianOf(active.map((b) => b.views));
 
-    const fmt = (iso) => {
-      const d = new Date(iso);
-      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    };
+    const line = '<polyline class="ytc-an__line" points="' +
+      bins.map((b, i) => x(i).toFixed(1) + ',' + y(b.views).toFixed(1)).join(' ') +
+      '"></polyline>';
+    const r = bins.length > 20 ? 3 : 4;
+    const dots = bins.map((b, i) =>
+      '<circle class="ytc-an__pt" cx="' + x(i).toFixed(1) + '" cy="' +
+        y(b.views).toFixed(1) + '" r="' + r + '" data-i="' + i + '"></circle>').join('');
+
+    const total = bins.reduce((a, b) => a + b.views, 0);
+    const uploads = bins.reduce((a, b) => a + b.count, 0);
 
     return '<div class="ytc-an__chart">' + head +
       '<div class="ytc-an__plot">' +
         '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" ' +
-          'class="ytc-an__svg" role="img" aria-label="Views of recent posts">' +
-          '<line class="ytc-an__median" x1="' + padL + '" x2="' + (W - padR) +
-            '" y1="' + y(med).toFixed(1) + '" y2="' + y(med).toFixed(1) + '"></line>' +
-          line +
-          dots +
+          'class="ytc-an__svg" role="img" aria-label="Views per ' + noun + '">' +
+          (med == null ? '' :
+            '<line class="ytc-an__median" x1="' + padL + '" x2="' + (W - padR) +
+              '" y1="' + y(med).toFixed(1) + '" y2="' + y(med).toFixed(1) + '"></line>') +
+          line + dots +
         '</svg>' +
-        '<span class="ytc-an__medlabel">Median ' + F.compact(Math.round(med)) + '</span>' +
+        (med == null ? '' : '<span class="ytc-an__medlabel">Median ' +
+          F.compact(Math.round(med)) + '/' + noun + '</span>') +
         '<div class="ytc-an__tip" hidden></div>' +
       '</div>' +
-      '<div class="ytc-an__axis"><span>' + escapeHtml(fmt(pts[0].publishedAt)) +
-        '</span><span>' + pts.length + ' upload' + (pts.length === 1 ? '' : 's') +
-        (data.truncated ? ' \u00b7 capped' : '') + '</span><span>' +
-        escapeHtml(fmt(pts[pts.length - 1].publishedAt)) + '</span></div>' +
-      /* A capped walk covers less than the button says, and the axis dates alone would let
-         that pass as the channel's whole history. */
+      '<div class="ytc-an__axis"><span>' + escapeHtml(bins[0].label) +
+        '</span><span>' + F.compact(total) + ' views \u00b7 ' + uploads + ' upload' +
+        (uploads === 1 ? '' : 's') + (data.truncated ? ' \u00b7 capped' : '') +
+        '</span><span>' + escapeHtml(bins[bins.length - 1].label) + '</span></div>' +
       (data.truncated
         ? '<p class="ytc-an__note ytc-an__note--cap">This channel uploads faster than the ' +
           'period can be walked, so the chart covers the most recent part of it rather than ' +
