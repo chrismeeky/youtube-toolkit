@@ -989,7 +989,14 @@ def channels_for_videos(video_ids):
     return out
 
 
-def channel_videos(handle, channel_id=None, want=50):
+# A page is fifty items: YouTube's maximum for both playlistItems and videos.list, so every
+# extra fifty videos costs exactly two quota units. The cap is what stops one request for a
+# channel that uploads hourly from spending a day's quota by itself.
+VIDEO_PAGE = 50
+VIDEO_MAX_PAGES = _int("VIDEO_MAX_PAGES", 24)      # 1,200 videos, 48 units, worst case
+
+
+def channel_videos(handle, channel_id=None, want=50, days=None):
     """A channel's recent uploads with durations and view counts, through the API.
 
     The first version of this scraped the channel's videos grid from the browser. That was
@@ -997,6 +1004,13 @@ def channel_videos(handle, channel_id=None, want=50):
     parser silently returned nothing, and YouTube rate-limits the fetch anyway. The API costs
     two quota units for fifty videos, cannot be rate-limited by IP, and returns the durations
     the grid only renders as text.
+
+    `days` asks for a period rather than a count, which is what a chart with Day/Week/Month/
+    Year buttons actually needs: a channel posting fifty times a month has a whole year of
+    history that one page of fifty cannot reach, and showing it thirty days under a button
+    marked Year is simply wrong. The uploads playlist comes back newest first, so paging can
+    stop at the first video older than the cutoff instead of walking the entire channel —
+    a year costs what that year holds, not what the channel has ever published.
     """
     if not YT_KEY:
         return {"ok": False, "reason": "no youtube key"}
@@ -1017,46 +1031,79 @@ def channel_videos(handle, channel_id=None, want=50):
     if not uploads:
         return {"ok": False, "reason": "no uploads playlist"}
 
-    url = ("%s/playlistItems?part=snippet&playlistId=%s&maxResults=%d&key=%s"
-           % (YT_API, uploads, min(50, want), YT_KEY))
-    try:
-        listing = _get_json(url)
-    except Exception as e:
-        return {"ok": False, "reason": "%s: %s" % (type(e).__name__, e)}
+    cutoff = None
+    if days:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=float(days))).isoformat()
+    limit = max(1, int(want or VIDEO_PAGE))
 
-    order, meta = [], {}
-    for item in listing.get("items") or []:
-        snip = item.get("snippet") or {}
-        vid = ((snip.get("resourceId") or {}).get("videoId") or "").strip()
-        if not vid:
-            continue
-        order.append(vid)
-        meta[vid] = {"id": vid, "title": snip.get("title") or "",
-                     "publishedAt": snip.get("publishedAt") or ""}
-    if not order:
-        return {"ok": True, "videos": []}
-
-    # Durations and view counts, fifty per unit.
-    url2 = ("%s/videos?part=contentDetails,statistics&id=%s&maxResults=50&key=%s"
-            % (YT_API, ",".join(order[:50]), YT_KEY))
-    try:
-        detail = _get_json(url2)
-    except Exception as e:
-        print("  channel_videos detail failed: %s: %s" % (type(e).__name__, e), flush=True)
-        detail = {}
-    for item in detail.get("items") or []:
-        row = meta.get(item.get("id"))
-        if not row:
-            continue
-        row["seconds"] = _iso_duration_seconds(
-            ((item.get("contentDetails") or {}).get("duration") or ""))
-        stats = item.get("statistics") or {}
+    order, meta, token, pages, truncated = [], {}, None, 0, False
+    while pages < VIDEO_MAX_PAGES:
+        url = ("%s/playlistItems?part=snippet&playlistId=%s&maxResults=%d&key=%s%s"
+               % (YT_API, uploads, VIDEO_PAGE, YT_KEY,
+                  ("&pageToken=" + token) if token else ""))
         try:
-            row["views"] = int(stats.get("viewCount"))
-        except (TypeError, ValueError):
-            row["views"] = None
+            listing = _get_json(url)
+        except Exception as e:
+            if not order:
+                return {"ok": False, "reason": "%s: %s" % (type(e).__name__, e)}
+            truncated = True
+            break
+        pages += 1
 
-    return {"ok": True, "videos": [meta[v] for v in order if v in meta]}
+        past = False
+        for item in listing.get("items") or []:
+            snip = item.get("snippet") or {}
+            vid = ((snip.get("resourceId") or {}).get("videoId") or "").strip()
+            if not vid:
+                continue
+            when = snip.get("publishedAt") or ""
+            # Newest first, so the first video older than the cutoff ends the walk. Checked
+            # per item rather than per page: a page straddling the boundary must contribute
+            # the part that falls inside it.
+            if cutoff and when and when < cutoff:
+                past = True
+                break
+            order.append(vid)
+            meta[vid] = {"id": vid, "title": snip.get("title") or "",
+                         "publishedAt": when}
+            if len(order) >= limit:
+                break
+
+        token = listing.get("nextPageToken")
+        if past or not token or len(order) >= limit:
+            # Out of period, out of channel, or out of allowance — only the last is a cut.
+            truncated = truncated or (len(order) >= limit and bool(token) and not past)
+            break
+    else:
+        truncated = True
+
+    if not order:
+        return {"ok": True, "videos": [], "truncated": False, "pages": pages}
+
+    # Durations and view counts, fifty ids per unit.
+    for start in range(0, len(order), VIDEO_PAGE):
+        chunk = order[start:start + VIDEO_PAGE]
+        url2 = ("%s/videos?part=contentDetails,statistics&id=%s&maxResults=%d&key=%s"
+                % (YT_API, ",".join(chunk), VIDEO_PAGE, YT_KEY))
+        try:
+            detail = _get_json(url2)
+        except Exception as e:
+            print("  channel_videos detail failed: %s: %s" % (type(e).__name__, e), flush=True)
+            continue
+        for item in detail.get("items") or []:
+            row = meta.get(item.get("id"))
+            if not row:
+                continue
+            row["seconds"] = _iso_duration_seconds(
+                ((item.get("contentDetails") or {}).get("duration") or ""))
+            stats = item.get("statistics") or {}
+            try:
+                row["views"] = int(stats.get("viewCount"))
+            except (TypeError, ValueError):
+                row["views"] = None
+
+    return {"ok": True, "videos": [meta[v] for v in order if v in meta],
+            "truncated": truncated, "pages": pages}
 
 
 def _iso_duration_seconds(iso):
@@ -2021,7 +2068,20 @@ class Handler(BaseHTTPRequestHandler):
             handle = str(body.get("channel") or "").strip()
             if handle and not handle.startswith("@"):
                 handle = "@" + handle
-            self._send(200, channel_videos(handle, str(body.get("channelId") or "") or None))
+            def _pos(name, default, high):
+                try:
+                    v = int(body.get(name) or default)
+                except (TypeError, ValueError):
+                    return default
+                return max(1, min(v, high))
+            # Asking for a period means asking for what that period holds. Defaulting to a
+            # count here would silently cap a year at fifty videos, which is the exact bug
+            # this parameter exists to fix.
+            ceiling = VIDEO_PAGE * VIDEO_MAX_PAGES
+            self._send(200, channel_videos(
+                handle, str(body.get("channelId") or "") or None,
+                want=_pos("want", ceiling if body.get("days") else 50, ceiling),
+                days=(_pos("days", 0, 3650) if body.get("days") else None)))
             return
 
         if path == "/niche":

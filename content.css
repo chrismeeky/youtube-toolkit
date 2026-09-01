@@ -321,6 +321,11 @@ html[dark] .ytc-spin { border-color: rgba(255, 255, 255, .25); border-top-color:
 }
 .ytc-an__tip span { display: block; color: var(--yt-spec-text-secondary, #606060); }
 .ytc-an__tip em { display: block; font-style: normal; font-weight: 500; color: #7c3aed; }
+.ytc-an__note--cap {
+  margin: 6px 0 0; font-size: 11.5px;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-an__note--cap { color: #aaa; }
 .ytc-an__axis {
   display: flex; justify-content: space-between; margin-top: 4px;
   font: 400 11.5px/1 Roboto, Arial, sans-serif;

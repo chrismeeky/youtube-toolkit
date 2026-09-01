@@ -2118,8 +2118,30 @@
     chart.querySelectorAll('.ytc-an__range').forEach((b) => {
       b.addEventListener('click', (e) => {
         e.preventDefault();
-        anChart.range = b.dataset.range;
+        const key = b.dataset.range;
+        anChart.range = key;
+        anChart.error = '';
+        const range = CHART_RANGES.find((r) => r.key === key);
+        const data = rangeData(res, key);
+        /* Already covered by the sample, or already fetched once: draw immediately. Only a
+           window the fifty uploads cannot reach costs a request. */
+        if (data.enough || !range) { renderAnalytics(res); return; }
+
+        anChart.loading = true;
         renderAnalytics(res);
+        sendMessage({ type: 'ytc-channel-videos', key: channelKeyFromLocation(),
+                      channelId: (res && res.channelId) || null, days: range.days }, (out) => {
+          anChart.loading = false;
+          if (chrome.runtime.lastError || !out || !out.ok) {
+            // Keep the sample on screen rather than blanking the chart; say why it is partial.
+            anChart.error = 'Could not load the full ' + range.label.toLowerCase() +
+              '. Showing what the panel already had.';
+            anChart.byRange[key] = { videos: (res && res.videos) || [], truncated: true };
+          } else {
+            anChart.byRange[key] = { videos: out.videos || [], truncated: !!out.truncated };
+          }
+          if (anChart.range === key) renderAnalytics(res);
+        });
       });
     });
 
@@ -2176,7 +2198,26 @@
   ];
   /* null means "pick one that has something in it". A channel uploading twice a year opened
      on Day, saw an empty box, and had no reason to think the chart worked at all. */
-  const anChart = { range: null };
+  const anChart = { range: null, byRange: {}, loading: false, error: '' };
+
+  /* The panel's own fifty uploads cover a period this channel actually spans, or they do not.
+     UFC posts thirteen times a day, so its most recent fifty are two days — which under a
+     button marked Year is simply a false statement. When the sample cannot reach back as far
+     as the button claims, the real range has to be fetched. */
+  function rangeData(res, key) {
+    const range = CHART_RANGES.find((r) => r.key === key);
+    if (!range) return { videos: [], enough: true };
+    const fetched = anChart.byRange[key];
+    if (fetched) return { videos: fetched.videos, enough: true, truncated: fetched.truncated };
+    const have = (res && res.videos) || [];
+    const oldest = have.reduce((m, v) => {
+      const d = daysSince(v.publishedAt);
+      return d == null ? m : Math.max(m, d);
+    }, 0);
+    /* The sample suffices only if it reaches past the window: if its oldest upload is still
+       inside the period, there is more out there that it never saw. */
+    return { videos: have, enough: oldest >= range.days || have.length < 50 };
+  }
 
   function chartPoints(videos, days) {
     return videos
@@ -2201,24 +2242,41 @@
     return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
   }
 
-  function viewsChartHtml(videos) {
-    const rangeKey = anChart.range || autoRange(videos);
+  function viewsChartHtml(res) {
+    const sample = (res && res.videos) || [];
+    const rangeKey = anChart.range || autoRange(sample);
     const range = CHART_RANGES.find((r) => r.key === rangeKey) || CHART_RANGES[3];
+    const data = rangeData(res, rangeKey);
+    const videos = data.videos;
     const pts = chartPoints(videos, range.days);
 
     const tabs = '<div class="ytc-an__ranges">' + CHART_RANGES.map((r) => {
-      const n = chartPoints(videos, r.days).length;
+      const d = rangeData(res, r.key);
+      const n = chartPoints(d.videos, r.days).length;
+      /* "At least" whenever the sample cannot see the whole window, because the number is
+         then a floor rather than a count and must not be read as the latter. */
+      const sure = d.enough;
       return '<button type="button" class="ytc-an__range' +
-        (r.key === rangeKey ? ' on' : '') + (n ? '' : ' empty') +
+        (r.key === rangeKey ? ' on' : '') + (sure && !n ? ' empty' : '') +
         '" data-range="' + r.key + '" title="' +
-        escapeHtml(n + ' upload' + (n === 1 ? '' : 's') + ' in the last ' +
-          (r.days === 1 ? '24 hours' : r.days + ' days')) + '">' +
+        escapeHtml((sure ? '' : 'At least ') + n + ' upload' + (n === 1 ? '' : 's') +
+          ' in the last ' + (r.days === 1 ? '24 hours' : r.days + ' days') +
+          (sure ? '' : ' \u2014 select to load the full period')) + '">' +
         r.label + '</button>';
     }).join('') + '</div>';
 
     const head = '<div class="ytc-an__charthead">' +
       '<span class="ytc-an__label">Views of recent posts</span>' + tabs + '</div>';
 
+    if (anChart.loading) {
+      return '<div class="ytc-an__chart">' + head +
+        '<p class="ytc-an__note"><span class="ytc-spin"></span> Loading ' +
+        escapeHtml(range.label.toLowerCase()) + ' of uploads\u2026</p></div>';
+    }
+    if (anChart.error) {
+      return '<div class="ytc-an__chart">' + head +
+        '<p class="ytc-an__note">' + escapeHtml(anChart.error) + '</p></div>';
+    }
     if (pts.length < 2) {
       return '<div class="ytc-an__chart">' + head +
         '<p class="ytc-an__note">' + (pts.length
@@ -2238,10 +2296,17 @@
     const y = (n) => padT + (1 - n / maxV) * (H - padT - padB);
 
     const med = medianOf(pts.map((v) => v.views));
-    const line = pts.map((v) => x(v).toFixed(1) + ',' + y(v.views).toFixed(1)).join(' ');
+    /* A line through a thousand uploads is a scribble that hides the very shape it is meant
+       to show, so past a point the chart becomes a scatter and the median carries the trend
+       on its own. Dots shrink with density for the same reason. */
+    const dense = pts.length > 60;
+    const line = dense ? '' :
+      '<polyline class="ytc-an__line" points="' +
+      pts.map((v) => x(v).toFixed(1) + ',' + y(v.views).toFixed(1)).join(' ') + '"></polyline>';
+    const r = pts.length > 400 ? 1.6 : pts.length > 150 ? 2.4 : dense ? 3.2 : 4.5;
     const dots = pts.map((v, i) =>
       '<circle class="ytc-an__pt" cx="' + x(v).toFixed(1) + '" cy="' +
-        y(v.views).toFixed(1) + '" r="4.5" data-i="' + i + '"></circle>').join('');
+        y(v.views).toFixed(1) + '" r="' + r + '" data-i="' + i + '"></circle>').join('');
 
     const fmt = (iso) => {
       const d = new Date(iso);
@@ -2254,15 +2319,23 @@
           'class="ytc-an__svg" role="img" aria-label="Views of recent posts">' +
           '<line class="ytc-an__median" x1="' + padL + '" x2="' + (W - padR) +
             '" y1="' + y(med).toFixed(1) + '" y2="' + y(med).toFixed(1) + '"></line>' +
-          '<polyline class="ytc-an__line" points="' + line + '"></polyline>' +
+          line +
           dots +
         '</svg>' +
         '<span class="ytc-an__medlabel">Median ' + F.compact(Math.round(med)) + '</span>' +
         '<div class="ytc-an__tip" hidden></div>' +
       '</div>' +
       '<div class="ytc-an__axis"><span>' + escapeHtml(fmt(pts[0].publishedAt)) +
-        '</span><span>' + pts.length + ' uploads</span><span>' +
+        '</span><span>' + pts.length + ' upload' + (pts.length === 1 ? '' : 's') +
+        (data.truncated ? ' \u00b7 capped' : '') + '</span><span>' +
         escapeHtml(fmt(pts[pts.length - 1].publishedAt)) + '</span></div>' +
+      /* A capped walk covers less than the button says, and the axis dates alone would let
+         that pass as the channel's whole history. */
+      (data.truncated
+        ? '<p class="ytc-an__note ytc-an__note--cap">This channel uploads faster than the ' +
+          'period can be walked, so the chart covers the most recent part of it rather than ' +
+          'the whole ' + escapeHtml(range.label.toLowerCase()) + '.</p>'
+        : '') +
     '</div>';
   }
 
@@ -2418,7 +2491,7 @@
           m.rpm ? '$' + m.rpm.toFixed(2) : dash, rpmMeter(m.rpm), '\u25CE') +
       '</div>' +
 
-      (m.sampled ? viewsChartHtml((res && res.videos) || []) : '') +
+      (m.sampled ? viewsChartHtml(res) : '') +
 
         '<div class="ytc-an__panel">' +
           '<span class="ytc-an__label">Videos vs Shorts views</span>' +

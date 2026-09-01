@@ -791,6 +791,47 @@ async function getNiche(key, opts) {
   }
 }
 
+/* One entry per channel and period. A reader flipping between Week and Year and back should
+   pay for each once, not once per click — and the answer only changes when the channel
+   uploads again, which the TTL covers. */
+const VIDEOS_TTL = 30 * 60 * 1000;
+const videoRuns = new Map();
+
+async function channelVideosFor(key, channelId, days) {
+  const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+  if (!base) return { ok: false, reason: 'no index configured' };
+  const id = key + '|' + (days || 0);
+  const hit = videoRuns.get(id);
+  if (hit && Date.now() - hit.t < VIDEOS_TTL) return hit.out;
+  // In flight already: share the promise rather than starting a second walk of the channel.
+  if (hit && hit.pending) return hit.pending;
+
+  const pending = (async () => {
+    const res = await fetch(base.replace(/\/$/, '') + '/videos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: key, channelId: channelId || null, days: days || null })
+    });
+    if (!res.ok) return { ok: false, reason: 'index ' + res.status };
+    const out = await res.json();
+    if (out && out.ok) {
+      out.videos = (out.videos || []).map((v) => ({
+        id: v.id, title: v.title || '', seconds: v.seconds || null,
+        views: v.views == null ? null : v.views,
+        publishedAt: v.publishedAt || '',
+        shorts: !!v.seconds && v.seconds <= 60
+      }));
+      videoRuns.set(id, { out, t: Date.now() });
+    } else {
+      videoRuns.delete(id);
+    }
+    return out;
+  })();
+
+  videoRuns.set(id, { pending, t: 0 });
+  return pending;
+}
+
 async function getSimilarChannels(key, titles, about, force, opts) {
   // Baked in at build time. Users were never in a position to know this value, and asking
   // them for it in the popup made an internal detail look like a setting.
@@ -1075,6 +1116,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   /* Cached hard: a channel's niche does not change between videos, and the classification is
      the same vector comparison every time. */
+  /* Uploads across a period, for the analytics chart's range buttons.
+  
+     Kept out of the analytics payload deliberately. That one page of fifty is cheap and every
+     channel page load pays for it; a year of a channel posting thirteen times a day is
+     forty-eight quota units, which nobody should spend before being asked. So the panel opens
+     on what it already has and this runs only when a range is chosen. */
+  if (msg.type === 'ytc-channel-videos' && msg.key) {
+    channelVideosFor(msg.key, msg.channelId, msg.days)
+      .then((out) => sendResponse(out))
+      .catch((e) => sendResponse({ ok: false, reason: String(e) }));
+    return true;
+  }
   if (msg.type === 'ytc-analytics' && msg.key) {
     getAnalytics(msg.key, msg.force)
       .then(sendResponse)
