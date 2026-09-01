@@ -123,6 +123,24 @@
     return (Array.isArray(thumbs) && thumbs.length && thumbs[0].url) || '';
   }
 
+  /* Where the channel behind a result actually lives. The byline run carries the endpoint
+     YouTube itself navigates to: canonicalBaseUrl is the "/@handle" form and browseId the
+     "UC…" one, and a channel always has the second even when it has never claimed a handle.
+     Written without the leading slash so it matches the keys read off the DOM, and the two
+     sources can fill in for each other. */
+  function channelKey(v) {
+    const bylines = [v.ownerText, v.longBylineText, v.shortBylineText];
+    for (const node of bylines) {
+      for (const r of (node && node.runs) || []) {
+        const b = ((r.navigationEndpoint || {}).browseEndpoint) || {};
+        const base = (b.canonicalBaseUrl || '').replace(/^https?:\/\/[^/]+/, '');
+        if (base) return base.replace(/^\//, '');
+        if (/^UC/.test(b.browseId || '')) return 'channel/' + b.browseId;
+      }
+    }
+    return '';
+  }
+
   function searchResults() {
     const data = window.ytInitialData;
     if (!data || !/^\/results/.test(location.pathname)) return null;
@@ -139,6 +157,7 @@
           views: exactViews(v),
           published: runs(v.publishedTimeText),
           channel: runs(v.ownerText) || runs(v.longBylineText),
+          chanKey: channelKey(v),
           avatar: channelAvatar(v),
           shorts: false
         });
@@ -151,7 +170,7 @@
         out.push({
           id: r.videoId, title: runs(r.headline),
           views: exactViews({ viewCountText: r.viewCountText }),
-          published: '', channel: '', avatar: '', shorts: true
+          published: '', channel: '', chanKey: '', avatar: '', shorts: true
         });
       }
       if (Array.isArray(node)) {
@@ -174,7 +193,7 @@
       // Bumped when the payload shape changes, so the content script can tell a stale
       // MAIN-world injection (which survives an extension reload in an open tab) from a
       // genuine read failure.
-      v: 4,
+      v: 5,
       apiKey: cfg ? cfg.get('INNERTUBE_API_KEY') || '' : '',
       clientVersion: cfg ? cfg.get('INNERTUBE_CLIENT_VERSION') || '' : '',
       visitorData: cfg ? cfg.get('VISITOR_DATA') || '' : '',

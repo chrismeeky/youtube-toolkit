@@ -18,6 +18,9 @@
     showMoney: true,              // monetization badge (inferred from ad placements)
     showStats: true,              // views/hour, engagement and an earnings estimate
     showSimilar: true,            // "Similar channels" button on channel pages
+    /* Hovering a card's channel link lists that channel's recent uploads. Costs a
+       request per channel, so it is gated behind hover intent rather than proximity. */
+    showPreview: true,            // channel preview popover on hover
     showFilter: true,             // "Filter" button over search results, home and channel grids
     showCompanion: true,          // search-term panel beside search results
     showThumb: true,              // thumbnail download button

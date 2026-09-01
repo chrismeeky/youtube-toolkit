@@ -670,6 +670,74 @@ function pushToIndex(base, pairs) {
   }).catch(() => { /* the answer above is unaffected */ });
 }
 
+/* Who published a video, for cards that do not say.
+
+   A short's lockup carries a title and a view count and nothing else, so the extension has no
+   channel to look up and no date to age it by. The id is the one thing it does have, and the
+   index service turns fifty of those into channel ids for a single quota unit.
+
+   Cached hard and for a long time, because the answer cannot change: a video does not move to
+   another channel and its publish date does not drift. That matters more here than elsewhere —
+   a results page is thirty shorts, and scrolling back past them must not ask again. */
+const TTL_OWNER = 30 * 24 * 60 * 60 * 1000;
+const OWNER_MAX_BATCH = 50;
+
+async function videoOwners(ids) {
+  const want = (ids || []).filter((v) => /^[\w-]{11}$/.test(v || ''));
+  if (!want.length) return { ok: true, videos: {} };
+
+  const keys = want.map((v) => 'own:' + v);
+  const store = await chrome.storage.local.get(keys);
+  const out = {};
+  const missing = [];
+  for (const id of want) {
+    const hit = store['own:' + id];
+    if (hit && hit.v === CACHE_VERSION && Date.now() - hit.t <= TTL_OWNER) {
+      // A cached miss is stored as an empty record; it still counts as answered.
+      if (hit.channel) out[id] = hit;
+    } else {
+      missing.push(id);
+    }
+  }
+  if (!missing.length) return { ok: true, videos: out };
+
+  const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+  if (!base) return { ok: false, reason: 'no index configured', videos: out };
+
+  const write = {};
+  for (let i = 0; i < missing.length; i += OWNER_MAX_BATCH) {
+    const batch = missing.slice(i, i + OWNER_MAX_BATCH);
+    let got = null;
+    try {
+      const res = await fetch(base.replace(/\/$/, '') + '/video-owners', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videos: batch })
+      });
+      if (!res.ok) return { ok: false, reason: 'owners ' + res.status, videos: out };
+      got = await res.json();
+    } catch (e) {
+      return { ok: false, reason: 'owners unreachable', videos: out };
+    }
+    if (!got || !got.ok) return { ok: false, reason: (got && got.reason) || 'owners failed',
+                                  videos: out };
+    const found = got.videos || {};
+    for (const id of batch) {
+      const rec = found[id];
+      const entry = rec
+        ? { channel: rec.channel || '', channelTitle: rec.channelTitle || '',
+            publishedAt: rec.publishedAt || '', t: Date.now(), v: CACHE_VERSION }
+        /* A video the API did not return — private, deleted, age-gated — is cached as a miss
+           too. Without that, every scan re-asks for the same handful of ids forever. */
+        : { channel: '', t: Date.now(), v: CACHE_VERSION };
+      write['own:' + id] = entry;
+      if (entry.channel) out[id] = entry;
+    }
+  }
+  await chrome.storage.local.set(write);
+  return { ok: true, videos: out };
+}
+
 const TTL_ANALYTICS = 12 * 60 * 60 * 1000;    // upload counts and view totals move daily-ish
 
 /* Everything the analytics panel shows, from one page fetch plus two lookups it already had.
@@ -1207,6 +1275,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     channelVideosFor(msg.key, msg.channelId, msg.days)
       .then((out) => sendResponse(out))
       .catch((e) => sendResponse({ ok: false, reason: String(e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-video-owners' && Array.isArray(msg.videos)) {
+    videoOwners(msg.videos)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String(e), videos: {} }));
     return true;
   }
   if (msg.type === 'ytc-analytics' && msg.key) {

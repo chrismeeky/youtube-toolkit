@@ -201,6 +201,11 @@
   }
 
   function findChannelKey(card) {
+    /* Resolved by id, for a card whose markup never names its channel. Checked first because
+       it is the authoritative answer once we have it, and because putting it here is what
+       makes the subscriber badge, the outlier, the filter modal's channel column and the
+       hover preview all work for shorts without any of them knowing shorts exist. */
+    if (card.dataset && card.dataset.ytcChan) return card.dataset.ytcChan;
     let fallback = '';
     for (const a of card.querySelectorAll('a[href]')) {
       const href = a.getAttribute('href');
@@ -3732,7 +3737,12 @@
       if (settings.showStats) {
         try {
           const meta = findMeta(card);
-          const vph = F.vphFromRelative(meta.views, meta.date, Date.now());
+          const vph = meta.date
+            ? F.vphFromRelative(meta.views, meta.date, Date.now())
+            /* Shorts print no date at all, so there is no relative phrase to parse. When the
+               id lookup supplied a real timestamp, use it directly — it is more precise than
+               the "3 weeks ago" the other path has to work from, not less. */
+            : vphFromStamp(meta.views, card.dataset.ytcPub);
           if (vph != null && vph >= 1) {
             parts.push('<span class="ytc-vph" title="' +
               Math.round(vph).toLocaleString() + ' views per hour on average since it was posted. ' +
@@ -3930,6 +3940,105 @@
     });
   }
 
+
+  /* ------------------------------------------------- channels by video id */
+
+  /* A short's lockup names no channel and gives no date, in the DOM or in ytInitialData —
+     measured across fifty lockups on two live results pages, the whole payload is a title, a
+     view count and a thumbnail. So every badge the extension draws is unavailable for a
+     short: the subscriber count, both ratios (which need the channel) and views per hour
+     (which needs an age). Waiting for hydration cannot fix what was never sent.
+
+     The video id is the one identifier a short does carry, and the index service turns fifty
+     ids into channels for a single quota unit. Cards are batched rather than asked for one at
+     a time, because a results page is thirty shorts arriving within a second of each other
+     and thirty requests would be thirty times the cost of one. */
+  const OWNER_DEBOUNCE = 250;
+  const OWNER_BATCH = 50;
+
+  let ownerQueue = new Map();     // video id -> Set of cards waiting on it
+  let ownerTimer = null;
+  const ownerAsked = new Set();   // ids already sent this session, answered or not
+
+  function isShortCard(card) {
+    return !!(card.matches('ytd-reel-item-renderer, ytm-shorts-lockup-view-model') ||
+              card.querySelector('a[href*="/shorts/"]'));
+  }
+
+  /* True when the card was taken on and the caller should show a spinner rather than a dash. */
+  function queueOwnerLookup(card) {
+    if (!isShortCard(card)) return false;
+    const id = findUrl(card).id;
+    if (!id) return false;
+    if (card.dataset.ytcChan) return false;
+    // Asked once per session per id. A miss is a fact about the video, not about the moment.
+    if (ownerAsked.has(id) && !ownerQueue.has(id)) return false;
+
+    if (!ownerQueue.has(id)) ownerQueue.set(id, new Set());
+    ownerQueue.get(id).add(card);
+    if (!ownerTimer) ownerTimer = setTimeout(flushOwnerLookups, OWNER_DEBOUNCE);
+    return true;
+  }
+
+  function flushOwnerLookups() {
+    ownerTimer = null;
+    if (!ownerQueue.size) return;
+    const pending = ownerQueue;
+    ownerQueue = new Map();
+
+    const ids = Array.from(pending.keys()).slice(0, OWNER_BATCH);
+    // Anything over the batch ceiling goes back for the next pass rather than being dropped.
+    for (const [id, cards] of pending) {
+      if (ids.indexOf(id) < 0) {
+        ownerQueue.set(id, cards);
+      } else {
+        ownerAsked.add(id);
+      }
+    }
+    if (ownerQueue.size && !ownerTimer) {
+      ownerTimer = setTimeout(flushOwnerLookups, OWNER_DEBOUNCE);
+    }
+
+    sendMessage({ type: 'ytc-video-owners', videos: ids }, (res) => {
+      if (chrome.runtime.lastError) return;
+      const found = (res && res.videos) || {};
+      for (const id of ids) {
+        const rec = found[id];
+        for (const card of pending.get(id) || []) {
+          if (!card.isConnected) continue;
+          if (!rec || !rec.channel) {
+            /* No answer, and none is coming. Say what is actually true rather than leaving a
+               spinner running: for a short, "no channel on this card" is the honest state. */
+            renderEmpty(card, res && res.ok
+              ? 'YouTube does not put a channel on Shorts results, and this one could not be '
+                + 'resolved by its video id.'
+              : 'Could not resolve this Short’s channel: ' +
+                ((res && res.reason) || 'the index service did not answer') + '.');
+            continue;
+          }
+          card.dataset.ytcChan = rec.channel;
+          if (rec.channelTitle) card.dataset.ytcChanName = rec.channelTitle;
+          if (rec.publishedAt) card.dataset.ytcPub = rec.publishedAt;
+          /* Detection is settled now, so clear the retry counter — otherwise the next scan
+             sees an exhausted card and renders the dash over the badge we just earned. */
+          delete card.dataset.ytcDetect;
+          wantSubs(card);
+        }
+      }
+    });
+  }
+
+  /* Views per hour from an exact timestamp, for cards that carry no relative date. */
+  function vphFromStamp(viewsText, iso) {
+    if (!iso) return null;
+    const views = F.viewsToNumber(viewsText);
+    if (!views) return null;
+    const at = Date.parse(iso);
+    if (isNaN(at)) return null;
+    const hours = Math.max(1, (Date.now() - at) / 3600000);
+    return views / hours;
+  }
+
   function wantSubs(card) {
     if (!settings.showSubs) return;
     if (isAd(card)) return;
@@ -3974,6 +4083,10 @@
         setTimeout(() => { if (card.isConnected) wantSubs(card); }, DETECT_DELAYS[attempt]);
         return;
       }
+      /* Out of retries, and for a short that is not a timing problem: its lockup carries a
+         title and a view count and never a byline, so waiting longer cannot help. Ask by
+         video id instead — the one identifier the card does have. */
+      if (queueOwnerLookup(card)) { renderLoading(card, false); return; }
       renderEmpty(card, 'No channel link found on this card. Click to check again.');
       return;
     }
@@ -4039,6 +4152,15 @@
     if (card.dataset.ytcVid !== id) {
       card.dataset.ytcVid = id;
       delete card.dataset.ytcDetect;
+      /* Everything resolved by the OLD video's id goes with it. These are the one set of
+         card facts not readable from the card, so nothing downstream would notice them being
+         wrong — findChannelKey trusts ytcChan over the markup, which is the whole point of
+         it, and a recycled tile would have gone on to report a stranger's subscriber count
+         with total confidence. Exactly the failure the subscriber parser is built to avoid,
+         reintroduced from the other end. */
+      delete card.dataset.ytcChan;
+      delete card.dataset.ytcChanName;
+      delete card.dataset.ytcPub;
       const badge = badgeOf(card);
       if (badge) badge.remove();
       watchForSubs(card);
@@ -4157,7 +4279,16 @@
     scan();
   });
 
+  loadPresets();
+
   chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && (changes[PRESET_STORE] || changes[PRESET_ORDER])) {
+      // Saved in another tab. Reload rather than merge: storage is the single copy.
+      loadPresets(() => {
+        const modal = document.querySelector('.ytc-fm');
+        if (modal) renderPresets(modal);
+      });
+    }
     if (area !== 'sync') return;
     const patch = {};
     for (const k in changes) patch[k] = changes[k].newValue;
@@ -4240,7 +4371,7 @@
   // The one preset that filters nothing — where clearing any other one lands.
   const NO_FILTER_KEY = 'all';
 
-  const FILTER_PRESETS = [
+  const BUILTIN_PRESETS = [
     { key: 'all', label: 'All videos', note: 'No filters applied' },
 
     { key: 'recent', label: 'Recent uploads', note: 'Newest videos from this week',
@@ -4281,6 +4412,151 @@
     { key: 'longwin', label: 'Long-form winners', note: 'Full videos beating their average',
       apply: (f) => { f.kind = 'long'; f.ratio = from('ratio', 2); f.sort = 'ratio'; } }
   ];
+
+
+  /* ------------------------------------------------------- saved presets */
+
+  /* A preset the reader made, kept in the browser.
+
+     A built-in preset is a function: it moves sliders and picks a sort. A saved one cannot be,
+     because a function does not survive a trip through storage — so what is stored is the
+     VALUES the sliders were left at, and its apply is generated from those on the way back
+     out. That keeps saved and built-in presets the same shape everywhere else, which is why
+     the chip list, the clearing behaviour and the drawer logic needed no special cases.
+
+     Ranges are stored as slider positions rather than real numbers, matching FILTER_STATE.
+     Positions are what the sliders read and what a preset restores; converting to views and
+     back would introduce rounding that moves a handle every time a preset is loaded. */
+  const PRESET_MAX = 40;
+  const PRESET_NAME_MAX = 40;
+  const PRESET_DESC_MAX = 120;
+  const PRESET_STORE = 'ytcPresets';
+  const PRESET_ORDER = 'ytcPresetOrder';
+
+  let userPresets = [];      // [{ id, label, state }]
+  let presetOrder = [];      // full key order, built-ins included
+
+  function presetKey(id) { return 'u:' + id; }
+
+  /* The line under a saved preset's name.
+
+     The reader's own description wins when there is one — they know why they saved it, and
+     "channels I might sponsor" says something the sliders never could. When they leave it
+     blank the sliders describe themselves, which is better than an empty line: a list of
+     names with nothing under them is the ambiguity the built-in rows already solved. */
+  function presetNote(saved) {
+    const own = String((saved && saved.desc) || '').trim();
+    return own || describeFilters(saved && saved.state);
+  }
+
+  function describeFilters(st) {
+    if (!st) return '';
+    const parts = [];
+    if (st.kind === 'shorts') parts.push('Shorts');
+    else if (st.kind === 'long') parts.push('Long form');
+    for (const k of RANGE_KEYS) {
+      const r = st[k];
+      if (!r || (r[0] <= 0 && r[1] >= RANGE_MAX)) continue;
+      parts.push(rangeText(k, st));
+    }
+    if (!parts.length) return 'No filters, sorted by ' + sortLabel(st.sort);
+    return parts.join(' \u00b7 ');
+  }
+
+  function sortLabel(key) {
+    const c = FILTER_SORTS.find((x) => x.key === key);
+    return c ? c.label.toLowerCase() : key;
+  }
+
+  function toPreset(saved) {
+    const st = saved.state || {};
+    return {
+      key: presetKey(saved.id),
+      id: saved.id,
+      label: saved.label,
+      desc: saved.desc || '',
+      note: presetNote(saved),
+      mine: true,
+      apply: (f) => {
+        for (const k of RANGE_KEYS) {
+          const r = st[k];
+          f[k] = Array.isArray(r) ? [r[0], r[1]] : [0, RANGE_MAX];
+        }
+        f.kind = st.kind || 'all';
+        f.sort = st.sort || FM_DEFAULT_SORT;
+        f.desc = st.desc !== false;
+      }
+    };
+  }
+
+  /* Built-ins and saved presets in one list, in the order the reader put them.
+
+     A key in the stored order that no longer exists is skipped, and anything the order does
+     not mention goes on the end in its natural position — which is what carries a preset
+     added by a later version of the extension. Without that, upgrading would silently hide
+     every new built-in from anyone who had ever dragged a chip. */
+  function filterPresets() {
+    const all = BUILTIN_PRESETS.concat(userPresets.map(toPreset));
+    const byKey = new Map(all.map((p) => [p.key, p]));
+    const out = [];
+    for (const k of presetOrder) {
+      const p = byKey.get(k);
+      if (p) { out.push(p); byKey.delete(k); }
+    }
+    for (const p of all) if (byKey.has(p.key)) out.push(p);
+    return out;
+  }
+
+  function loadPresets(cb) {
+    try {
+      chrome.storage.local.get([PRESET_STORE, PRESET_ORDER], (got) => {
+        if (chrome.runtime.lastError) { if (cb) cb(); return; }
+        const list = (got && got[PRESET_STORE]) || [];
+        userPresets = Array.isArray(list)
+          ? list.filter((x) => x && x.id && x.label && x.state)
+              // desc arrived in a later version; presets saved before it have none.
+              .map((x) => Object.assign({ desc: '' }, x))
+          : [];
+        const order = (got && got[PRESET_ORDER]) || [];
+        presetOrder = Array.isArray(order) ? order.filter((k) => typeof k === 'string') : [];
+        if (cb) cb();
+      });
+    } catch (e) { if (cb) cb(); }
+  }
+
+  function savePresets(cb) {
+    try {
+      chrome.storage.local.set({
+        [PRESET_STORE]: userPresets.slice(0, PRESET_MAX),
+        [PRESET_ORDER]: presetOrder
+      }, () => { if (chrome.runtime.lastError) { /* nothing to undo */ } if (cb) cb(); });
+    } catch (e) { if (cb) cb(); }
+  }
+
+  /* The slider positions as they stand, frozen. Copied rather than referenced: FILTER_STATE
+     is mutated in place by every slider drag, so storing it live would leave every saved
+     preset pointing at whatever the reader last touched. */
+  function snapshotFilters() {
+    const st = { kind: FILTER_STATE.kind, sort: FILTER_STATE.sort, desc: FILTER_STATE.desc };
+    for (const k of RANGE_KEYS) st[k] = [FILTER_STATE[k][0], FILTER_STATE[k][1]];
+    return st;
+  }
+
+  function addPreset(label, desc) {
+    const id = String(Date.now()) + Math.random().toString(36).slice(2, 7);
+    userPresets.push({
+      id,
+      label: label.slice(0, PRESET_NAME_MAX),
+      desc: String(desc || '').slice(0, PRESET_DESC_MAX),
+      state: snapshotFilters()
+    });
+    /* A new preset joins the order explicitly rather than relying on the fall-through above,
+       so that the first drag afterwards does not reshuffle everything that was never
+       mentioned in a stored order. */
+    if (presetOrder.length) presetOrder.push(presetKey(id));
+    savePresets();
+    return presetKey(id);
+  }
 
   function collectScrolled() {
     const out = [];
@@ -4329,7 +4605,15 @@
         title: v.title,
         url: v.url,
         id: v.id || '',
-        channel: v.channel || '',
+        /* The resolved name for a card whose markup carries none. A shorts row with a blank
+           channel column reads as "no channel", which is a claim about the video rather than
+           about YouTube's markup. */
+        channel: v.channel || card.dataset.ytcChanName || '',
+        /* Which channel page the name points at. findChannelKey already reads it off the
+           card's own anchors for the subscriber lookup, so the channel list gets its link
+           for free rather than guessing a URL from the display name — which is not the
+           handle, and for "ZOZA & Friends" is not even a path. */
+        chanKey: findChannelKey(card),
         views: views,
         subs: subs,
         /* Strictly what each one claims. ratio used to fall back to the subscriber count
@@ -4339,8 +4623,13 @@
         subRatio: (views != null && subs) ? views / subs : null,
         /* The same figure the card's own VPH pill shows, from the card's relative date — so
            it can be filtered and sorted on, not only read. */
-        vph: F.vphFromRelative(v.views, v.date, Date.now()),
-        ageDays: daysSince(F.relativeToISO(v.date, Date.now())),
+        /* Both fall back to the timestamp the id lookup supplied, so a short can be sorted
+           and filtered on velocity and age like anything else. Without this a Shorts filter
+           was a list every range slider silently excluded. */
+        vph: v.date ? F.vphFromRelative(v.views, v.date, Date.now())
+                    : vphFromStamp(v.views, card.dataset.ytcPub),
+        ageDays: v.date ? daysSince(F.relativeToISO(v.date, Date.now()))
+                        : daysSince(card.dataset.ytcPub || ''),
         /* How long the channel has existed, from its about page — already fetched for the
            subscriber count, so this costs nothing. Absent when the page did not yield it. */
         chanAge: card.dataset.ytcJoined
@@ -4493,7 +4782,11 @@
           (r.views == null ? '' : F.compact(r.views) + ' views') +
           (r.date ? ' \u00b7 ' + escapeHtml(r.date) : '') +
         '</span>' +
-        '<span class="ytc-fm__chan">' + escapeHtml(r.channel || '') +
+        /* data-chan makes the name a preview trigger. The key was already read off the card
+           for the subscriber lookup, so this costs nothing to carry. */
+        '<span class="ytc-fm__chan"' +
+          (r.chanKey ? ' data-chan="' + escapeHtml(r.chanKey) + '"' : '') + '>' +
+          escapeHtml(r.channel || '') +
           (r.chanAge ? '<span class="ytc-fm__age">channel ' + escapeHtml(r.chanAge) +
             ' old</span>' : '') +
         '</span>' +
@@ -5017,6 +5310,7 @@
       : '<p class="ytc-fm__none">Nothing on this page matches. Widen a range, or load more ' +
         'below \u2014 only what has loaded can be filtered.</p>') + moreBarHtml();
     box.scrollTop = keepTop;
+    pvReanchor();
     paintLoadBar();
     watchMoreBar(box);
     primeVisibleRows(box, rows);
@@ -5040,9 +5334,12 @@
       '</div>';
   }
 
-  function rangeText(key) {
+  /* Reads the live filter state by default, but a saved preset needs the same sentence built
+     from values that are not on the sliders right now — that is what the note under a saved
+     preset's name is. */
+  function rangeText(key, state) {
     const spec = RANGE_SPECS[key];
-    const [lo, hi] = FILTER_STATE[key];
+    const [lo, hi] = (state || FILTER_STATE)[key];
     if (lo === 0 && hi === RANGE_MAX) return 'any';
     const loV = spec.fmt(posToVal(lo, spec));
     const hiV = hi >= RANGE_MAX ? 'any' : spec.fmt(posToVal(hi, spec));
@@ -5073,16 +5370,14 @@
      exist. So the list is cut to roughly two thirds, with the next one clipped and faded
      rather than removed: an item half in view says "there is more here" in a way a hard edge
      never does, and it leaves the two things underneath on screen. */
-  const PRESET_SHOWN = Math.max(4, Math.round(FILTER_PRESETS.length * 0.65));
-
   /* Forced open when the active preset is one of the hidden ones, since a selection the
      reader cannot see is worse than a long list. */
   function presetsOpen() {
     if (FILTER_STATE.allPresets) return true;
     /* >= not >: the chip at the cut is the clipped one, and it is click-through, so leaving
        a selection sitting in it would show the active preset half-faded and unclickable. */
-    const i = FILTER_PRESETS.findIndex((pz) => pz.key === FILTER_STATE.preset);
-    return i >= PRESET_SHOWN;
+    const i = filterPresets().findIndex((pz) => pz.key === FILTER_STATE.preset);
+    return i >= presetShown();
   }
 
   function setPresetList(modal, open) {
@@ -5093,7 +5388,7 @@
     if (btn) {
       btn.classList.toggle('open', presetsOpen());
       btn.firstChild.nodeValue = presetsOpen()
-        ? 'Show fewer' : 'Show all ' + FILTER_PRESETS.length + ' presets';
+        ? 'Show fewer' : 'Show all ' + filterPresets().length + ' presets';
     }
   }
 
@@ -5118,8 +5413,354 @@
     if (out) out.textContent = rangeText(key);
   }
 
+
+  /* ------------------------------------------------- preset list rendering */
+
+  /* The chip list is rebuilt rather than patched. Saving, renaming, deleting and dropping a
+     dragged chip all change which chips exist and in what order, and four separate patch
+     paths against a list that also carries the collapse cut and the active selection is how
+     a list ends up disagreeing with the state behind it. */
+
+  let pmForm = null;      // { mode: 'new' | 'rename', id } while the name field is open
+  let pmMenu = '';        // key of the preset whose ⋮ menu is open
+
+  function presetShown() {
+    return Math.max(4, Math.round(filterPresets().length * 0.65));
+  }
+
+  function presetChipHtml(pz, i, cut) {
+    const cls = (FILTER_STATE.preset === pz.key ? ' on' : '') +
+      (pmForm && pmForm.mode === 'edit' && pmForm.id === pz.id ? ' ytc-fm__chipwrap--editing' : '') +
+      (i === cut ? ' ytc-fm__chipwrap--peek' : i > cut ? ' ytc-fm__chipwrap--extra' : '');
+
+    /* The row is a div, not a button, because a button cannot legally contain the ⋮ button
+       the saved ones need. The click target inside it keeps the button semantics. */
+    return '<div class="ytc-fm__chipwrap' + cls + '" data-key="' + escapeHtml(pz.key) + '"' +
+        ' draggable="true">' +
+      /* Says the row can be dragged, at the moment the pointer is on it and not before.
+         Shown always it is eleven pieces of furniture nobody asked about; shown never, the
+         only way to discover reordering is to try it by accident. The space it occupies is
+         reserved on every row regardless, so arriving on one does not shunt its text. */
+      '<span class="ytc-fm__grip" aria-hidden="true">\u22ee\u22ee</span>' +
+      '<button type="button" class="ytc-fm__chip" data-preset="' +
+        escapeHtml(pz.key) + '">' +
+        '<b>' + escapeHtml(pz.label) + '</b>' +
+        (pz.note ? '<i>' + escapeHtml(pz.note) + '</i>' : '') +
+      '</button>' +
+      (pz.mine
+        ? '<button type="button" class="ytc-fm__dots" draggable="false" data-dots="' +
+            escapeHtml(pz.key) + '" aria-label="Options for ' + escapeHtml(pz.label) +
+            '" aria-haspopup="menu">\u22ee</button>' +
+          (pmMenu === pz.key
+            ? '<div class="ytc-fm__menu" role="menu">' +
+                '<button type="button" role="menuitem" data-act="edit">Edit\u2026</button>' +
+                '<button type="button" role="menuitem" class="danger" data-act="delete">' +
+                  'Delete</button>' +
+              '</div>'
+            : '')
+        : '') +
+    '</div>';
+  }
+
+  function presetListHtml() {
+    const list = filterPresets();
+    const cut = presetShown();
+    return list.map((pz, i) => presetChipHtml(pz, i, cut)).join('');
+  }
+
+  /* Rebuild the chips, the show-more button and the save row, then rewire them. Called for
+     every change to the list; nothing else is allowed to touch a chip's markup. */
+  function renderPresets(modal) {
+    const box = modal.querySelector('.ytc-fm__chips');
+    if (!box) return;
+    box.innerHTML = presetListHtml();
+    box.classList.toggle('ytc-fm__chips--all', presetsOpen());
+
+    const list = filterPresets();
+    const btn = modal.querySelector('.ytc-fm__more-presets');
+    if (btn) {
+      btn.hidden = list.length <= presetShown() + 1;
+      btn.classList.toggle('open', presetsOpen());
+      btn.firstChild.nodeValue = presetsOpen()
+        ? 'Show fewer' : 'Show all ' + list.length + ' presets';
+    }
+    wirePresets(modal);
+  }
+
+  /* The form, and the button that opens it — one control in two states.
+
+     Closed, it is a single button offering to save what the sliders are set to. Open, the
+     name and description sit directly above it and the button becomes the one that commits
+     them. It lives at the foot of the drawer rather than in the chip list because editing a
+     preset means adjusting its filters, and a field inside the list would be torn out and
+     rebuilt every time a slider moved a chip's highlight. */
+  function renderPresetForm(modal) {
+    const wrap = modal.querySelector('.ytc-fm__pform');
+    const save = modal.querySelector('.ytc-fm__savepreset');
+    const cancel = modal.querySelector('.ytc-fm__pcancel');
+    if (!wrap || !save) return;
+
+    const editing = pmForm && pmForm.mode === 'edit';
+    const row = editing ? userPresets.find((x) => x.id === pmForm.id) : null;
+    // The preset went away underneath the form — another tab deleted it. Fall back to closed.
+    if (editing && !row) pmForm = null;
+
+    const open = !!pmForm;
+    wrap.hidden = !open;
+    if (cancel) cancel.hidden = !open;
+
+    if (open) {
+      const name = wrap.querySelector('.ytc-fm__pname');
+      const desc = wrap.querySelector('.ytc-fm__pdesc');
+      /* Filled only as the form opens. Rewriting the fields on every render would undo what
+         is being typed, since a slider moved while the form is open re-renders. */
+      if (!wrap.dataset.for || wrap.dataset.for !== (pmForm.id || 'new')) {
+        wrap.dataset.for = pmForm.id || 'new';
+        name.value = row ? row.label : '';
+        desc.value = row ? (row.desc || '') : '';
+        setTimeout(() => { name.focus(); name.select(); }, 0);
+      }
+      save.textContent = editing ? 'Update preset' : 'Add preset';
+      save.classList.add('ytc-fm__savepreset--commit');
+      save.disabled = false;
+      save.title = editing
+        ? 'Save the name, description and the filters as they are set now'
+        : 'Save this name, description and the filters as they are set now';
+    } else {
+      delete wrap.dataset.for;
+      const full = userPresets.length >= PRESET_MAX;
+      save.textContent = 'Save these filters as a preset';
+      save.classList.remove('ytc-fm__savepreset--commit');
+      save.disabled = full;
+      save.title = full
+        ? 'You have reached ' + PRESET_MAX + ' saved presets. Delete one to save another.'
+        : 'Save the filters currently set as a preset you can come back to';
+    }
+  }
+
+  function closePresetForm(modal) {
+    pmForm = null;
+    renderPresetForm(modal);
+    renderPresets(modal);
+  }
+
+  function commitPresetForm(modal) {
+    const wrap = modal.querySelector('.ytc-fm__pform');
+    if (!wrap || !pmForm) return;
+    const name = String(wrap.querySelector('.ytc-fm__pname').value || '')
+      .trim().slice(0, PRESET_NAME_MAX);
+    const desc = String(wrap.querySelector('.ytc-fm__pdesc').value || '')
+      .trim().slice(0, PRESET_DESC_MAX);
+    // A preset with no name cannot be picked out of a list. Ask again rather than inventing one.
+    if (!name) {
+      const field = wrap.querySelector('.ytc-fm__pname');
+      field.focus();
+      field.classList.add('ytc-fm__pname--bad');
+      setTimeout(() => field.classList.remove('ytc-fm__pname--bad'), 900);
+      return;
+    }
+    if (pmForm.mode === 'edit') {
+      const row = userPresets.find((x) => x.id === pmForm.id);
+      if (row) {
+        row.label = name;
+        row.desc = desc;
+        // Editing captures the sliders as they stand, which is what opening the form loaded
+        // them with — so leaving them alone updates only the words, and moving one updates
+        // the filter too. Both are what the reader just did.
+        row.state = snapshotFilters();
+        savePresets();
+        FILTER_STATE.preset = presetKey(row.id);
+      }
+    } else {
+      FILTER_STATE.preset = addPreset(name, desc);
+    }
+    closePresetForm(modal);
+  }
+
+  /* Moving a slider by hand drops whatever preset was on, so the chips have to say so.
+     Cheaper than a full rebuild, which is what a slider drag would otherwise trigger on every
+     input event — and the list itself has not changed, only which row is lit. */
+  function markActivePreset(modal) {
+    modal.querySelectorAll('.ytc-fm__chipwrap').forEach((w) =>
+      w.classList.toggle('on', w.dataset.key === FILTER_STATE.preset));
+  }
+
+  /* `force` loads the preset without the clear-on-reclick behaviour. Edit has to land on the
+     preset's own filters whether or not it was already the active one; the toggle is a
+     property of clicking a chip, not of loading a preset. */
+  function applyPreset(modal, pz, force) {
+    /* Clicking the preset that is already on clears it instead of reapplying it — see the
+       long note this replaced; the behaviour is unchanged, it just lives here now that the
+       chips are rebuilt rather than toggled in place. */
+    const clearing = !force && FILTER_STATE.preset === pz.key && pz.key !== NO_FILTER_KEY;
+    const use = clearing
+      ? filterPresets().find((x) => x.key === NO_FILTER_KEY) || pz : pz;
+    resetRanges(FILTER_STATE);
+    FILTER_STATE.sort = FM_DEFAULT_SORT;
+    FILTER_STATE.desc = true;
+    FILTER_STATE.preset = use.key;
+    if (use.apply) use.apply(FILTER_STATE);
+    if (use.apply) setDrawer(modal, true);
+    renderPresets(modal);
+    syncFilterControls(modal);
+    redraw();
+  }
+
+  function wirePresets(modal) {
+    const box = modal.querySelector('.ytc-fm__chips');
+    if (!box) return;
+
+    box.querySelectorAll('.ytc-fm__chip').forEach((b) => {
+      b.addEventListener('click', () => {
+        const pz = filterPresets().find((x) => x.key === b.dataset.preset);
+        if (pz) applyPreset(modal, pz);
+      });
+    });
+
+    box.querySelectorAll('[data-dots]').forEach((b) => {
+      // A menu button inside a draggable row: neither the drag nor the chip click is meant.
+      b.addEventListener('mousedown', (e) => e.stopPropagation());
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        pmMenu = pmMenu === b.dataset.dots ? '' : b.dataset.dots;
+        renderPresets(modal);
+      });
+    });
+
+    box.querySelectorAll('.ytc-fm__menu [data-act]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const pz = filterPresets().find((x) => x.key === pmMenu);
+        pmMenu = '';
+        if (!pz || !pz.mine) { renderPresets(modal); return; }
+
+        if (b.dataset.act === 'edit') {
+          /* Editing loads the preset before it opens the form. Its name and description are
+             only half of what a preset is — the other half is on the sliders, and a form that
+             asked you to rename something while the drawer showed somebody else's filters
+             would be editing two different presets at once. */
+          applyPreset(modal, pz, true);
+          pmForm = { mode: 'edit', id: pz.id };
+          setDrawer(modal, true);
+          renderPresetForm(modal);
+          renderPresets(modal);
+          return;
+        }
+
+        if (b.dataset.act === 'delete') {
+          userPresets = userPresets.filter((x) => x.id !== pz.id);
+          presetOrder = presetOrder.filter((k) => k !== pz.key);
+          savePresets();
+          // Deleting the one being edited must close the form it is behind.
+          if (pmForm && pmForm.mode === 'edit' && pmForm.id === pz.id) pmForm = null;
+          renderPresetForm(modal);
+          /* Deleting the preset that is currently filtering the list would otherwise leave
+             the list narrowed by a rule with nothing on screen claiming it. */
+          if (FILTER_STATE.preset === pz.key) {
+            const none = filterPresets().find((x) => x.key === NO_FILTER_KEY);
+            if (none) { applyPreset(modal, none); return; }
+          }
+        }
+        renderPresets(modal);
+      });
+    });
+
+    wirePresetDrag(modal, box);
+  }
+
+  /* Drag to reorder, built-ins included.
+
+     Only saved presets carry the ⋮ menu, but the ORDER is the reader's either way — a
+     built-in they never use has no claim on the top of the list. What is stored is a flat
+     list of keys covering both kinds; filterPresets() reconciles it with whatever presets
+     actually exist, so a preset removed by an update disappears cleanly and one added by an
+     update still shows up. */
+  let pmDragKey = '';
+
+  function wirePresetDrag(modal, box) {
+    box.querySelectorAll('.ytc-fm__chipwrap[draggable="true"]').forEach((row) => {
+      row.addEventListener('dragstart', (e) => {
+        pmDragKey = row.dataset.key;
+        row.classList.add('ytc-fm__chipwrap--drag');
+        try {
+          e.dataTransfer.effectAllowed = 'move';
+          // Firefox refuses to start a drag without data set; the value is never read.
+          e.dataTransfer.setData('text/plain', pmDragKey);
+        } catch (err) { /* the drag still works */ }
+        /* Expanded for the duration. Half the list is clipped when collapsed, and a chip
+           cannot be dropped onto a target that is not on screen — without this, reordering
+           silently only worked across the visible two thirds. */
+        if (!presetsOpen()) setPresetList(modal, true);
+      });
+
+      row.addEventListener('dragend', () => {
+        pmDragKey = '';
+        box.querySelectorAll('.ytc-fm__chipwrap').forEach((r) =>
+          r.classList.remove('ytc-fm__chipwrap--drag', 'ytc-fm__chipwrap--over'));
+      });
+
+      row.addEventListener('dragover', (e) => {
+        if (!pmDragKey || row.dataset.key === pmDragKey) return;
+        e.preventDefault();
+        try { e.dataTransfer.dropEffect = 'move'; } catch (err) { /* ignore */ }
+        row.classList.add('ytc-fm__chipwrap--over');
+      });
+
+      row.addEventListener('dragleave', () => row.classList.remove('ytc-fm__chipwrap--over'));
+
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const from = pmDragKey;
+        const to = row.dataset.key;
+        pmDragKey = '';
+        if (!from || from === to) { renderPresets(modal); return; }
+        movePreset(modal, from, to);
+      });
+    });
+
+    /* The list itself takes a drop, meaning "put it last".
+
+       Rows insert BEFORE themselves, which is what the top-edge marker promises — and which
+       on its own leaves the final position unreachable, since there is no row after the last
+       one to drop in front of. */
+    box.addEventListener('dragover', (e) => {
+      if (!pmDragKey) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'move'; } catch (err) { /* ignore */ }
+    });
+    box.addEventListener('drop', (e) => {
+      if (!pmDragKey) return;
+      e.preventDefault();
+      const from = pmDragKey;
+      pmDragKey = '';
+      movePreset(modal, from, '');
+    });
+  }
+
+  /* Insert `from` before `to`, or at the end when `to` is empty.
+
+     The index of the target is read AFTER the dragged key is removed. Splicing at an index
+     measured before the removal inserts before the target when dragging upward and after it
+     when dragging downward — the same gesture landing in two different places depending on
+     which way the reader happened to come at it. */
+  function movePreset(modal, from, to) {
+    const keys = filterPresets().map((p) => p.key);
+    const i = keys.indexOf(from);
+    if (i < 0 || from === to) { renderPresets(modal); return; }
+    keys.splice(i, 1);
+    const at = to ? keys.indexOf(to) : -1;
+    keys.splice(at < 0 ? keys.length : at, 0, from);
+    presetOrder = keys;
+    savePresets();
+    renderPresets(modal);
+  }
+
   function openFilterModal() {
     closeFilterModal();
+    // Transient chrome, not state: a menu or a half-typed name must not survive a reopen.
+    pmForm = null;
+    pmMenu = '';
     FM = { all: collectScrolled(), loading: false, ended: false, slow: false, since: 0,
            io: null, rowIo: null, refresh: 0, sig: '', quiet: 0, settle: 0,
            mode: 'all', menu: false, cancel: false, stopped: false, startedAt: 0,
@@ -5140,23 +5781,9 @@
       '<div class="ytc-fm__body">' +
         '<div class="ytc-fm__side">' +
           '<div class="ytc-fm__sec">Presets</div>' +
-          '<div class="ytc-fm__chips' + (presetsOpen() ? ' ytc-fm__chips--all' : '') + '">' +
-            FILTER_PRESETS.map((pz, i) =>
-              '<button type="button" class="ytc-fm__chip' +
-              (FILTER_STATE.preset === pz.key ? ' on' : '') +
-              (i === PRESET_SHOWN ? ' ytc-fm__chip--peek'
-                : i > PRESET_SHOWN ? ' ytc-fm__chip--extra' : '') +
-              '" data-preset="' + pz.key + '">' +
-              '<b>' + escapeHtml(pz.label) + '</b>' +
-              (pz.note ? '<i>' + escapeHtml(pz.note) + '</i>' : '') +
-              '</button>').join('') +
-          '</div>' +
-          (FILTER_PRESETS.length > PRESET_SHOWN + 1
-            ? '<button type="button" class="ytc-fm__more-presets">' +
-                (presetsOpen() ? 'Show fewer'
-                  : 'Show all ' + FILTER_PRESETS.length + ' presets') +
-                '<span class="ytc-fm__caret">\u25BE</span></button>'
-            : '') +
+          '<div class="ytc-fm__chips"></div>' +
+          '<button type="button" class="ytc-fm__more-presets">Show all presets' +
+            '<span class="ytc-fm__caret">\u25BE</span></button>' +
           /* Collapsed by default: eleven presets answer most of what anyone opens this for,
              and six sliders under them turns a list you scan into a form you fill in. Opened
              the moment a preset moves something, so a filtered list always says why. */
@@ -5178,6 +5805,19 @@
             rangeControl('ratio', 'Views vs channel average') +
             rangeControl('subratio', 'Views vs subscribers') +
             rangeControl('age', 'Uploaded') +
+            /* Inside the drawer, under the sliders it saves. A preset is these values, so the
+               control that captures them belongs at the end of them rather than beside Reset,
+               where it would read as another way to clear things. */
+            '<div class="ytc-fm__pform" hidden>' +
+              '<input class="ytc-fm__pname" type="text" maxlength="' + PRESET_NAME_MAX + '"' +
+                ' placeholder="Preset name" aria-label="Preset name">' +
+              '<textarea class="ytc-fm__pdesc" rows="2" maxlength="' + PRESET_DESC_MAX + '"' +
+                ' placeholder="Description (optional)" aria-label="Preset description">' +
+              '</textarea>' +
+            '</div>' +
+            '<button type="button" class="ytc-fm__savepreset">' +
+              'Save these filters as a preset</button>' +
+            '<button type="button" class="ytc-fm__pcancel" hidden>Cancel</button>' +
           '</div>' +
           '<button type="button" class="ytc-fm__reset">Reset</button>' +
         '</div>' +
@@ -5237,40 +5877,57 @@
         inp.value = v;
         FILTER_STATE[key][which] = v;
         FILTER_STATE.preset = 'all';
-        modal.querySelectorAll('.ytc-fm__chip').forEach((c) =>
-          c.classList.toggle('on', c.dataset.preset === 'all'));
+        markActivePreset(modal);
         paintRange(box);
         redraw();
       });
     });
 
-    modal.querySelectorAll('.ytc-fm__chip').forEach((b) => {
-      b.addEventListener('click', () => {
-        const pz = FILTER_PRESETS.find((x) => x.key === b.dataset.preset);
-        /* Clicking the preset that is already on clears it instead of reapplying it. The
-           chip is the only thing that shows a preset is active, so it has to be the thing
-           that turns it off — otherwise the only way out is Reset, which closes and reopens
-           the whole modal. Clearing lands on the no-filter preset rather than on an unnamed
-           empty state, so the list and the chips still agree about what is on. */
-        const clearing = FILTER_STATE.preset === pz.key && pz.key !== NO_FILTER_KEY;
-        const use = clearing
-          ? FILTER_PRESETS.find((x) => x.key === NO_FILTER_KEY) : pz;
-        /* Every preset starts from a clean sheet, including the sort, so picking one is
-           never the last one's leftovers plus this one's changes. */
-        resetRanges(FILTER_STATE);
-        FILTER_STATE.sort = FM_DEFAULT_SORT;
-        FILTER_STATE.desc = true;
-        FILTER_STATE.preset = use.key;
-        if (use.apply) use.apply(FILTER_STATE);
-        modal.querySelectorAll('.ytc-fm__chip').forEach((c) =>
-          c.classList.toggle('on', c.dataset.preset === use.key));
-        // A preset that moved a slider opens the drawer, so the list never filters by
-        // something the reader has no way to see. Clearing moves nothing, so it leaves the
-        // drawer as the reader had it.
-        if (use.apply) setDrawer(modal, true);
-        setPresetList(modal, FILTER_STATE.allPresets);
-        syncFilterControls(modal);
-        redraw();
+    renderPresets(modal);
+    renderPresetForm(modal);
+    /* Storage is asynchronous and the modal is built synchronously, so a filter opened in the
+       first moments of a page load would show the built-ins alone. Re-read and repaint. */
+    loadPresets(() => { if (modal.isConnected) renderPresets(modal); });
+
+    /* Anywhere else closes an open ⋮ menu. The menu items stop their own clicks, and the dots
+       toggle theirs, so reaching here means the reader clicked past it. */
+    modal.addEventListener('click', () => {
+      if (!pmMenu) return;
+      pmMenu = '';
+      renderPresets(modal);
+    });
+
+    /* Reset clears the filters, so a form standing on them has nothing left to describe.
+       It reopens the modal, which rebuilds everything — this only makes sure the form state
+       does not survive into the new one. */
+    modal.querySelector('.ytc-fm__reset').addEventListener('click', () => { pmForm = null; });
+
+    const savePreset = modal.querySelector('.ytc-fm__savepreset');
+    if (savePreset) {
+      savePreset.addEventListener('click', () => {
+        // One button, two jobs: it opens the form, and once open it is the one that commits.
+        if (pmForm) { commitPresetForm(modal); return; }
+        pmForm = { mode: 'new' };
+        renderPresetForm(modal);
+        renderPresets(modal);
+      });
+    }
+
+    const cancelPreset = modal.querySelector('.ytc-fm__pcancel');
+    if (cancelPreset) cancelPreset.addEventListener('click', () => closePresetForm(modal));
+
+    modal.querySelectorAll('.ytc-fm__pname, .ytc-fm__pdesc').forEach((f) => {
+      f.addEventListener('keydown', (e) => {
+        // Escape belongs to the form while a field has focus; the modal's own handler would
+        // otherwise close the whole thing and lose what was typed.
+        e.stopPropagation();
+        if (e.key === 'Escape') { closePresetForm(modal); return; }
+        // Enter commits from the name field. The description is a textarea, where Enter is
+        // a newline and taking it would be surprising.
+        if (e.key === 'Enter' && f.classList.contains('ytc-fm__pname')) {
+          e.preventDefault();
+          commitPresetForm(modal);
+        }
       });
     });
 
@@ -5288,8 +5945,7 @@
       b.addEventListener('click', () => {
         FILTER_STATE.kind = b.dataset.kind;
         FILTER_STATE.preset = 'all';
-        modal.querySelectorAll('.ytc-fm__chip').forEach((c) =>
-          c.classList.toggle('on', c.dataset.preset === 'all'));
+        markActivePreset(modal);
         syncFilterControls(modal);
         redraw();
       });
@@ -5463,12 +6119,14 @@
            no guarantee of one. The payload carries it for every result, so fill the gap
            rather than leaving the channel list on its placeholder icon. */
         if (!card.avatar && p.avatar) patch.avatar = p.avatar;
+        if (!card.chanKey && p.chanKey) patch.chanKey = p.chanKey;
         return Object.keys(patch).length ? Object.assign({}, card, patch) : card;
       }
       const ageDays = daysSince(F.relativeToISO(p.published, now));
       return {
         card: null, tools: '', title: p.title, url: '', id: p.id,
-        channel: p.channel, avatar: p.avatar || '', views: p.views, subs: null,
+        channel: p.channel, chanKey: p.chanKey || '', avatar: p.avatar || '',
+        views: p.views, subs: null,
         ratio: null, subRatio: null,
         vph: p.views != null && ageDays ? p.views / (ageDays * 24) : null,
         ageDays: ageDays, chanAge: '', shorts: p.shorts, thumb: '', date: p.published
@@ -5902,12 +6560,20 @@
       const name = (r.channel || '').trim();
       if (!name) continue;
       let c = by.get(name);
-      if (!c) { c = { name, results: 0, views: 0, subs: null, avatar: '' }; by.set(name, c); }
+      if (!c) {
+        c = { name, results: 0, views: 0, subs: null, avatar: '', key: '' };
+        by.set(name, c);
+      }
       c.results++;
       if (r.views != null) c.views += r.views;
       // Subscriber counts arrive per card; whichever lands first stands for the channel.
       if (c.subs == null && r.subs != null) c.subs = r.subs;
       if (!c.avatar && r.avatar) c.avatar = r.avatar;
+      /* Whichever result names it first. A handle beats an id when both turn up, so the row
+         links to the address the channel publishes rather than the internal one. */
+      if (r.chanKey && (!c.key || (c.key[0] !== '@' && r.chanKey[0] === '@'))) {
+        c.key = r.chanKey;
+      }
     }
     const list = Array.from(by.values());
     list.sort((a, b) => (CHAN_SORT.by === 'results'
@@ -5938,9 +6604,18 @@
           c.subs == null ? '' : F.compact(c.subs) + ' subs',
           c.results + (c.results === 1 ? ' result' : ' results')
         ].filter(Boolean).join(' \u00b7 ');
-        return '<div class="ytc-sc__chan" title="' + escapeHtml(c.name + ' \u2014 ' + sub +
-            ', ' + (c.views ? F.compact(c.views) + ' views' : 'views unread') +
-            ' across this page') + '">' +
+        /* A link where the channel was identified, plain text where it was not. Every name
+           here came off a card that links to its channel, so the link is normally there —
+           but a result the payload described without a byline endpoint has no address to
+           offer, and a dead anchor that looks live is worse than a name. */
+        const href = c.key ? 'https://www.youtube.com/' + encodeURI(c.key) : '';
+        const tip = c.name + ' \u2014 ' + sub + ', ' +
+          (c.views ? F.compact(c.views) + ' views' : 'views unread') + ' across this page' +
+          (href ? '. Opens the channel in a new tab.' : '');
+        return (href
+            ? '<a class="ytc-sc__chan" href="' + escapeHtml(href) + '" target="_blank" ' +
+              'rel="noopener noreferrer" title="' + escapeHtml(tip) + '">'
+            : '<div class="ytc-sc__chan" title="' + escapeHtml(tip) + '">') +
           (c.avatar
             ? '<img class="ytc-sc__cav" src="' + escapeHtml(c.avatar) + '" alt="" ' +
               'loading="lazy">'
@@ -5954,7 +6629,7 @@
             (CHAN_SORT.by === 'results'
               ? c.results + '\u00d7'
               : (c.views ? F.compact(c.views) : '\u2014')) + '</b>' +
-        '</div>';
+          (href ? '</a>' : '</div>');
       }).join('');
   }
 
@@ -6443,6 +7118,274 @@
     }
     return true;
   });
+
+
+  /* ------------------------------------------------------- channel preview */
+
+  /* What else does this channel make? — answered without leaving the page.
+
+     The question comes up constantly while scanning a feed, and answering it costs a tab, a
+     channel page load and the loss of your scroll position. This puts the channel's recent
+     uploads under the cursor instead.
+
+     Bound to the channel LINK, not to the card. Hovering a card is something you do by
+     accident on the way somewhere else, and every accidental hover would be a request; moving
+     onto the channel's name is a deliberate act that already means "tell me about this
+     channel". It also keeps the popover away from the thumbnail, where YouTube runs its own
+     hover-preview player.
+
+     Nothing is drawn inside the card. The popover is a fixed-position element on <body>, so
+     it sits outside every stacking context the card creates — which is the failure the Copy
+     button hit when it was overlaid on thumbnails, where a raised z-index worked on the home
+     grid and not on search results. */
+  const PV_OPEN_MS = 350;      // hover intent: long enough that passing over is not a request
+  const PV_CLOSE_MS = 220;     // grace to cross the gap from the link into the popover
+  const PV_ROWS = 6;
+
+  let pvEl = null;
+  let pvOpenTimer = null;
+  let pvCloseTimer = null;
+  let pvKey = '';
+  let pvAnchor = null;
+  let pvTab = 'latest';
+  let pvState = null;          // { loading } | { videos } | { error }
+  /* Page-lifetime, on top of the service worker's own 30-minute cache. Re-hovering a channel
+     you looked at a second ago must not go anywhere near the network — the worker dedupes,
+     but a round trip through it still repaints the popover through a loading state.
+
+     Capped, because this holds fifty videos per channel and a long session down an infinite
+     feed passes over hundreds of them. Oldest out first: the channels worth keeping are the
+     ones still on screen. */
+  const PV_CACHE_MAX = 60;
+  const pvCache = new Map();
+
+  function pvRemember(key, state) {
+    if (pvCache.size >= PV_CACHE_MAX) pvCache.delete(pvCache.keys().next().value);
+    pvCache.set(key, state);
+  }
+
+  /* Two shapes of trigger, one answer: { el, key }.
+
+     On the page the trigger is a real channel link inside a card, and the key comes out of
+     its href. In the filter modal there is no link to hover — the whole row is one anchor
+     pointing at the video, and a channel link nested inside it would be invalid markup and
+     would fight the row's own click — so the channel name carries the key in a data
+     attribute instead. Both end up here so the popover never learns there was a difference. */
+  function pvTarget(el) {
+    if (!el || !el.closest) return null;
+    const named = el.closest('[data-chan]');
+    if (named && named.dataset.chan) return { el: named, key: named.dataset.chan };
+    const a = el.closest('a[href]');
+    if (!a || !a.closest('.ytc-card')) return null;
+    const href = a.getAttribute('href');
+    if (!href || href[0] === '#') return null;
+    let path;
+    try { path = new URL(href, location.origin).pathname; } catch (e) { return null; }
+    const key = keyFromPath(path);
+    return key ? { el: a, key } : null;
+  }
+
+  function pvHost() {
+    if (pvEl && pvEl.isConnected) return pvEl;
+    pvEl = document.createElement('div');
+    pvEl.className = 'ytc-pv';
+    pvEl.setAttribute('role', 'dialog');
+    pvEl.setAttribute('aria-label', 'Channel preview');
+    document.body.appendChild(pvEl);
+    return pvEl;
+  }
+
+  function pvClose() {
+    clearTimeout(pvOpenTimer); pvOpenTimer = null;
+    clearTimeout(pvCloseTimer); pvCloseTimer = null;
+    if (pvEl) pvEl.remove();
+    pvEl = null; pvKey = ''; pvAnchor = null; pvState = null;
+  }
+
+  function pvScheduleClose() {
+    clearTimeout(pvCloseTimer);
+    pvCloseTimer = setTimeout(pvClose, PV_CLOSE_MS);
+  }
+
+  function pvDuration(seconds) {
+    return seconds ? F.stampMs(seconds * 1000) : '';
+  }
+
+  function pvRow(v) {
+    const id = String(v.id || '');
+    const dur = pvDuration(v.seconds);
+    return '<a class="ytc-pv__row" href="https://www.youtube.com/watch?v=' +
+        encodeURIComponent(id) + '" target="_blank" rel="noopener noreferrer">' +
+      '<span class="ytc-pv__thumb">' +
+        '<img src="https://i.ytimg.com/vi/' + encodeURIComponent(id) +
+          '/mqdefault.jpg" alt="" loading="lazy">' +
+        (dur ? '<span class="ytc-pv__dur">' + escapeHtml(dur) + '</span>' : '') +
+      '</span>' +
+      '<span class="ytc-pv__meta">' +
+        '<span class="ytc-pv__title">' + escapeHtml(v.title || '') + '</span>' +
+        '<span class="ytc-pv__sub">' +
+          (v.views == null ? '—' : escapeHtml(F.compact(v.views)) + ' views') +
+          ' · ' + escapeHtml(agoLabel(v.publishedAt)) +
+        '</span>' +
+      '</span>' +
+    '</a>';
+  }
+
+  function pvRender() {
+    const host = pvHost();
+    const st = pvState || {};
+
+    /* "Most viewed", not "Most popular". The window is whatever the uploads playlist
+       returned — the fifty most recent — so this is the best of a channel's recent work, not
+       its best ever. Naming it "popular" would claim the second while showing the first, and
+       a channel whose breakout was two years ago would be misrepresented by its own preview.
+       The tooltip carries the qualification; the label stays true without it. */
+    const tabs = '<div class="ytc-pv__tabs">' +
+      ['latest', 'viewed'].map((k) => {
+        const label = k === 'latest' ? 'Latest' : 'Most viewed';
+        const hint = k === 'latest' ? 'Newest uploads first'
+          : 'The most viewed of the uploads loaded here — recent work, not all time';
+        return '<button type="button" class="ytc-pv__tab' +
+          (pvTab === k ? ' ytc-pv__tab--on' : '') + '" data-pvtab="' + k +
+          '" title="' + escapeHtml(hint) + '">' + label + '</button>';
+      }).join('') +
+      '<span class="ytc-pv__who">' + escapeHtml(pvKey) + '</span>' +
+    '</div>';
+
+    let body;
+    if (st.loading) {
+      body = '<p class="ytc-pv__note"><span class="ytc-spin"></span> Loading uploads…</p>';
+    } else if (st.error) {
+      body = '<p class="ytc-pv__note" title="' + escapeHtml(st.detail || '') + '">' +
+        escapeHtml(st.error) + '</p>';
+    } else {
+      const all = st.videos || [];
+      const list = pvTab === 'viewed'
+        ? all.slice().sort((a, b) => (b.views || 0) - (a.views || 0))
+        : all;
+      body = list.length
+        ? list.slice(0, PV_ROWS).map(pvRow).join('')
+        : '<p class="ytc-pv__note">No uploads found for this channel.</p>';
+    }
+
+    host.innerHTML = tabs + '<div class="ytc-pv__list">' + body + '</div>';
+    host.querySelectorAll('[data-pvtab]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        pvTab = b.dataset.pvtab;
+        pvRender();
+      });
+    });
+    pvPlace();
+  }
+
+  /* Below the link, flipped above when there is no room, clamped to the viewport.
+     Measured after rendering rather than guessed: the popover's height depends on how many
+     rows came back, and a guess puts a short list halfway up the screen. */
+  function pvPlace() {
+    if (!pvEl || !pvAnchor || !pvAnchor.isConnected) return;
+    const r = pvAnchor.getBoundingClientRect();
+    const w = pvEl.offsetWidth;
+    const h = pvEl.offsetHeight;
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
+    let top = r.bottom + 8;
+    if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 8);
+    pvEl.style.left = Math.round(left) + 'px';
+    pvEl.style.top = Math.round(top) + 'px';
+  }
+
+  /* The filter modal replaces its whole result list on a timer, so the element the popover is
+     pinned to stops existing while the reader is still reading it. Point at the equivalent
+     node in the new list instead of closing: a popover that vanished every few seconds
+     because something reloaded underneath it would be unusable exactly where it is most
+     useful. Only when the channel is genuinely gone from the list does it close. */
+  function pvReanchor() {
+    if (!pvEl || !pvAnchor || pvAnchor.isConnected) return;
+    let next = null;
+    try {
+      next = document.querySelector('.ytc-fm__results [data-chan="' + CSS.escape(pvKey) + '"]');
+    } catch (e) { next = null; }
+    if (next) { pvAnchor = next; pvPlace(); return; }
+    pvClose();
+  }
+
+  function pvOpen(anchor, key) {
+    pvAnchor = anchor;
+    pvKey = key;
+    pvTab = 'latest';
+
+    const hit = pvCache.get(key);
+    if (hit) { pvState = hit; pvRender(); return; }
+
+    pvState = { loading: true };
+    pvRender();
+    sendMessage({ type: 'ytc-channel-videos', key }, (out) => {
+      if (chrome.runtime.lastError) return;
+      if (pvKey !== key) return;            // moved on before it landed
+      let state;
+      if (out && out.ok) {
+        state = { videos: out.videos || [] };
+      } else {
+        /* Same split the velocity panel makes: one sentence on screen, the diagnosis on
+           hover. Without an index there is no route to ask, and saying "no uploads found"
+           would blame the channel for a missing endpoint. */
+        const why = (out && out.reason) || '';
+        state = {
+          error: 'Could not load this channel’s uploads.',
+          detail: /no index|not configured/i.test(why)
+            ? 'No index is configured, so there is nowhere to ask for a channel’s uploads.'
+            : why ? 'The index service answered: ' + why
+                  : 'The index service did not answer.'
+        };
+      }
+      // Only a real answer is worth keeping; a failure should be retried on the next hover.
+      if (state.videos) pvRemember(key, state);
+      pvState = state;
+      pvRender();
+    });
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    if (!settings.showPreview) return;
+    const el = e.target instanceof Element ? e.target : null;
+    if (!el) return;
+    if (pvEl && pvEl.contains(el)) { clearTimeout(pvCloseTimer); pvCloseTimer = null; return; }
+    /* Its trigger was removed from the page and no mouseout will ever come from a node that
+       no longer exists, so the popover would sit there until something else closed it. */
+    if (pvEl && pvAnchor && !pvAnchor.isConnected) { pvClose(); return; }
+    const hit = pvTarget(el);
+    if (!hit) return;
+    clearTimeout(pvCloseTimer); pvCloseTimer = null;
+    // Already showing this channel: re-anchor to whatever is under the cursor, fetch nothing.
+    if (pvKey === hit.key && pvEl) { pvAnchor = hit.el; return; }
+    clearTimeout(pvOpenTimer);
+    pvOpenTimer = setTimeout(() => pvOpen(hit.el, hit.key), PV_OPEN_MS);
+  }, true);
+
+  document.addEventListener('mouseout', (e) => {
+    if (!pvOpenTimer && !pvEl) return;
+    const to = e.relatedTarget instanceof Element ? e.relatedTarget : null;
+    if (to && pvEl && pvEl.contains(to)) return;
+    if (to && pvTarget(to)) return;
+    clearTimeout(pvOpenTimer); pvOpenTimer = null;
+    if (pvEl) pvScheduleClose();
+  }, true);
+
+  /* Scrolling moves the link out from under a popover pinned to the viewport, so the two
+     part company. Close rather than chase it: this is a glance, not a panel.
+
+     Except when the scroll came from inside the popover. A capture listener on window sees
+     scrolls targeted at descendants too, and the list of uploads is itself scrollable — so
+     without this guard, reaching for the fifth row dismissed the thing you were reading. */
+  window.addEventListener('scroll', (e) => {
+    if (!pvEl) return;
+    const t = e.target;
+    if (t instanceof Node && pvEl.contains(t)) return;
+    pvClose();
+  }, true);
+  window.addEventListener('yt-navigate-finish', pvClose);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && pvEl) pvClose(); });
 
   /* -------------------------------------------------------------- observers */
 

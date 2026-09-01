@@ -127,6 +127,25 @@ is re-tried after 2 minutes, while a count that genuinely isn't on the page — 
 waits 12 hours. Fetching a dozen channels in a row can get you rate-limited, and that's a
 temporary state, not a verdict about the channel.
 
+### Shorts
+
+YouTube's Shorts lockups carry a title, a view count and a thumbnail. That is the entire
+payload — measured across fifty of them on two live results pages, there is no byline and no
+upload date, in the DOM or in `ytInitialData`, under any key. So a Short on a results page has
+no channel to look up and no age to divide views by, which is every badge on the row:
+subscribers, both ratios and views per hour. Waiting for hydration cannot supply what was
+never sent.
+
+The video id is the one identifier a Short does carry, so the extension asks the index service
+who published it: **fifty ids per quota unit**, batched, and cached for a month because the
+answer cannot change. That restores the channel (and with it the subscriber badge and both
+ratios) and the publish time, which is an exact timestamp rather than the "3 weeks ago" other
+cards are aged from — so a Short's views per hour is more precise than a normal card's, not
+less.
+
+Without `INDEX_API` set there is nowhere to ask, and a Short keeps the dim `— subs` badge; its
+tooltip says so rather than blaming the video.
+
 ### If badges don't appear
 
 The badge itself carries the reason — hover it. A dim badge reading `— subs` is a failed
@@ -161,6 +180,7 @@ two videos with the same title can't collide.
 | Wrap title in quotes | Useful when pasting into CSV-ish tools |
 | Show Copy button | Hide the Copy button and work only through select mode |
 | Show thumbnail button | Hide the **Thumb** button on cards |
+| Channel preview on hover | Hovering a card's channel name lists that channel's recent uploads |
 | Show transcript button | Hide the **Transcript** button on watch pages |
 | Include timestamps | Prefix each transcript line with its timestamp |
 | Save transcripts as .txt | Download instead of copying to the clipboard |
@@ -196,6 +216,71 @@ Markdown with URLs:
 ```
 - [TokTok Users Just Got PAYBACK! RIP NOLAN WELLS](https://www.youtube.com/watch?v=6KCPs3Umu5w) — 271K views · 23 hours ago
 ```
+
+## Saved filter presets
+
+The filter modal ships with eleven presets. Anything you can set on the sliders can become a
+twelfth: open **Custom filters**, set what you want, and click **Save these filters as a
+preset**. A name and description field appear directly above the button, and the button itself
+becomes **Add preset**. Saving closes the form and puts the button back.
+
+The description is what shows under the preset's name in the list. Leave it blank and the
+sliders describe themselves instead — `Shorts · 25K subs · 3× avg` — because a list of names
+with nothing under them is the ambiguity the built-in rows already solved.
+
+Saved presets carry a **⋮** menu with *Edit…* and *Delete*. Editing loads the preset first:
+its filters go onto the sliders, its name and description into the form, and the button
+becomes **Update preset**. That is deliberate — a preset's name is only half of it, and a form
+that renamed something while the drawer showed a different preset's filters would be editing
+two things at once. Adjust the sliders before updating and the filters are updated too.
+
+Built-in presets have no menu. They cannot be renamed, changed or removed.
+
+**Drag any preset to reorder it**, built-ins included — a grip fades in at the left edge of a
+row when you hover it. Only saved presets can be edited, but the order is yours either way: a
+built-in you never use has no claim on the top of the list. A row inserts *before* the one you
+drop it on, which is what the marker on its top edge promises; drop below the last row to send
+it to the end. The list expands for the duration of a drag, since a chip cannot be dropped on
+a target that is clipped out of view.
+
+Presets are stored in the browser (`chrome.storage.local`) and are limited to 40. What is
+saved is the slider *positions* plus the video type and sort — not a rule of its own, so a
+saved preset stays visible and adjustable in the drawer exactly like a built-in one. Saving in
+one tab updates any other tab with the modal open.
+
+## Channel preview
+
+Hover a card's **channel name** and a popover lists that channel's recent uploads — thumbnail,
+title, views, age and duration — with a **Latest** / **Most viewed** toggle. Answering "what
+else does this channel make?" otherwise costs a tab, a channel page load and your scroll
+position.
+
+The same preview works in the **filter modal**, on the channel name under each result. There
+is no link to hover there — the whole row is one anchor pointing at the video, and a channel
+link nested inside it would be invalid markup and would fight the row's own click — so the
+name carries the channel key in a data attribute and becomes the trigger itself. It underlines
+on hover to say so. The key was already read off the card for the subscriber lookup, so
+carrying it costs nothing.
+
+On the page it is bound to the channel link rather than the card. Hovering a card is something you do by
+accident on the way somewhere else, and each accidental hover would be a request; moving onto
+the name is already a deliberate act. A 350 ms delay means passing over a name on the way
+elsewhere never asks for anything.
+
+**Most viewed** is the most viewed of the *uploads loaded here* — the fifty most recent — not
+the channel's best ever. A channel whose breakout was two years ago will not show it. The tab
+is named for what it does rather than what you might hope it does; hover it for the
+qualification.
+
+The popover is a fixed-position element on `<body>`, deliberately not drawn inside the card.
+That keeps it outside every stacking context the card creates, which is the same problem that
+made overlaying the thumbnail unworkable for the Copy button — a raised `z-index` reaches on
+the home grid but not on search results.
+
+Uploads come from the channel index's `/videos` route, so **this needs `INDEX_API` set**;
+without it the popover says so rather than blaming the channel. Each new channel costs a
+couple of API units, cached for 30 minutes in the service worker and for the life of the page
+in the tab, so re-hovering is free. Turn it off in the popup.
 
 ## Similar channels & the channel index
 

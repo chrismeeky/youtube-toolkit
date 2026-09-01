@@ -970,14 +970,17 @@ def start_crawl(mode_args):
     return {"ok": True, "started": True}
 
 
-def channels_for_videos(video_ids):
-    """Video id -> channel id, 50 per quota unit.
+def video_owners(video_ids):
+    """Video id -> who published it and when, 50 per quota unit.
 
-    The sidebar does not always name the channel: in some layouts only the video is a link.
-    One videos.list call turns thirty of those into channel ids for a single unit, which is
-    cheaper than giving up on the edges or asking the browser to fetch each page.
+    Shorts are why this returns the whole record rather than a bare channel id. YouTube's
+    shorts lockups carry a title and a view count and nothing else — no byline, no upload
+    date, in the DOM or in ytInitialData — so a short on a results page has no channel to look
+    up and no age to divide views by, which is every badge the extension draws. One
+    videos.list call answers fifty of them for a single quota unit, which is the only
+    affordable way to ask: the alternative is a ~1MB watch page per short.
     """
-    out = set()
+    out = {}
     ids = [v for v in video_ids if re.match(r"^[\w-]{11}$", v or "")][:50]
     if not ids or not YT_KEY:
         return out
@@ -986,13 +989,28 @@ def channels_for_videos(video_ids):
     try:
         data = _get_json(url)
     except Exception as e:
-        print("  channels_for_videos failed: %s: %s" % (type(e).__name__, e), flush=True)
+        print("  video_owners failed: %s: %s" % (type(e).__name__, e), flush=True)
         return out
     for item in data.get("items") or []:
-        cid = ((item.get("snippet") or {}).get("channelId") or "").strip()
-        if cid:
-            out.add(cid)
+        snip = item.get("snippet") or {}
+        cid = (snip.get("channelId") or "").strip()
+        if not cid:
+            continue
+        out[item.get("id") or ""] = {
+            # The key form the extension already uses for a channel it knows only by id, so
+            # the answer drops straight into the subscriber cache beside the handle-keyed
+            # ones rather than needing a second lookup to turn it into a handle.
+            "channel": "channel/" + cid,
+            "channelId": cid,
+            "channelTitle": snip.get("channelTitle") or "",
+            "publishedAt": snip.get("publishedAt") or "",
+        }
     return out
+
+
+def channels_for_videos(video_ids):
+    """Just the channel ids, for callers that only need to know who is involved."""
+    return {rec["channelId"] for rec in video_owners(video_ids).values()}
 
 
 # A page is fifty items: YouTube's maximum for both playlistItems and videos.list, so every
@@ -2196,6 +2214,15 @@ class Handler(BaseHTTPRequestHandler):
             # Returns as soon as the batch is running: a full batch is tens of minutes of
             # yt-dlp. Poll /health for the outcome.
             self._send(200, start_enrich(body.get("limit")))
+            return
+
+        if path == "/video-owners":
+            ids = body.get("videos")
+            if not isinstance(ids, list) or not ids:
+                self._send(400, {"ok": False, "reason": "videos required"})
+                return
+            clean = [str(v) for v in ids if isinstance(v, (str, int))][:50]
+            self._send(200, {"ok": True, "videos": video_owners(clean)})
             return
 
         if path == "/ingest":
