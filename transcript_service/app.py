@@ -477,6 +477,12 @@ DEFAULT_FLOOR = 0.35   # see background.js: 0.45 hid genuine neighbours scoring 
 COHERENCE_FLOOR = float(os.environ.get("COHERENCE_FLOOR") or 0.45)
 INGEST_READY = bool(INDEX_READY and OPENAI_KEY and YT_KEY)
 
+# How many search-discovered channels /similar will enrich before answering. This is the one
+# place the extension pays for recall synchronously, so it is capped: each channel costs a
+# channels.list share plus one playlistItems call, and the caller is a panel someone is
+# watching. The rest of what the extension found still goes to /ingest in the background.
+SIMILAR_CANDIDATES = _int("SIMILAR_CANDIDATES", 20)
+
 
 def _get_json(url, timeout=30):
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
@@ -2039,6 +2045,24 @@ class Handler(BaseHTTPRequestHandler):
                 floor = float(raw_floor) if raw_floor is not None else DEFAULT_FLOOR
             except (TypeError, ValueError):
                 floor = DEFAULT_FLOOR
+
+            # Channels the extension found by searching YouTube for this channel's own
+            # topics, enriched before the match runs so they can be ranked in this answer
+            # rather than the next one. The division of labour is the same as /ingest: the
+            # extension scrapes search from a residential connection because a server doing it
+            # gets the bot interstitial, and the server holds the keys to enrich and embed.
+            # Failure is not fatal — an answer from the corpus alone is the previous
+            # behaviour, which was never wrong, only narrow.
+            candidates = body.get("candidates")
+            if INGEST_READY and isinstance(candidates, list) and candidates:
+                pairs = [{"id": str(p.get("id") or ""), "handle": str(p.get("handle") or "")}
+                         for p in candidates if isinstance(p, dict)][:SIMILAR_CANDIDATES]
+                try:
+                    added = ingest_channels(pairs)
+                    print("  /similar enriched %s candidates for %s (%s)"
+                          % (len(pairs), handle, added.get("added")), flush=True)
+                except Exception as exc:                       # noqa: BLE001
+                    print("  /similar candidate ingest failed: %s" % exc, flush=True)
 
             result = similar_channels(
                 handle, text, max(1, min(100, limit)),

@@ -204,9 +204,17 @@ at, with subscribers, average views, upload rate, age, last upload, and a moneti
 estimate — sortable, and filterable by preset ("Overperforming", "Low subs, high views",
 "New channels").
 
-Without a backend it falls back to live YouTube search, which finds established channels but
-never small ones. With the index it can surface a 20K-subscriber channel that no search
-result would ever have shown you.
+It asks two sources and merges them. The **index** ranks the whole corpus by topic, which is
+how a 20K-subscriber channel surfaces beside a household name — no search result would ever
+have shown it to you. **YouTube search** answers the other half: it finds the channels nobody
+has crawled yet, which no index can know about.
+
+These used to be alternatives, and search ran only when the index returned literally nothing.
+With a 0.35 similarity floor a corpus of any size almost always returns *something*, so that
+path was very nearly unreachable, and every list answered "who is already in the corpus"
+rather than "who is out there". Both now run on every lookup.
+
+Without a backend, only the search half runs — established channels, no scores, no filters.
 
 ### Pointing it at an index
 
@@ -238,6 +246,21 @@ it:
   source's videos. Text similarity answers "describes itself like this channel"; the
   recommendation graph answers "watched by the same people", which is usually the question
   being asked.
+- **Search agreement** adds up to +0.12 for a channel that also ranked in YouTube's own
+  results for the source's topics, priced just under co-recommendation for the same reason it
+  is worth anything at all: ranking for the same words is close to what the vector already
+  measures, while being recommended beside the videos is not. Rows carrying it are marked with
+  a dot beside the score.
+
+The three topics are derived from the channel's description, then its name, then repeated
+phrases in its titles — in that order, because a description states a niche and titles often
+chase a story. The panel prints them under the table, so a list answering the wrong question
+can be recognised as one.
+
+Search results are handed to the server with the request and enriched before the match runs,
+so a channel discovered a second ago is ranked in the same answer rather than the next one.
+That is also the defence against a weak topic: a query that drifts returns channels whose
+vectors do not match, and the similarity floor drops them.
 
 ### Filling the index
 

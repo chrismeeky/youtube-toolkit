@@ -759,6 +759,12 @@
     'most much many about after before over under out up down off again ever never all any ' +
     'each every some no not only own same too also here there full official video shorts ' +
     'episode part trailer leading platform network covers welcome subscribe content ' +
+    /* The same category as "leading platform network covers welcome" above: verbs and
+       flattery a channel writes ABOUT itself, which describe no subject. "Our stories immerse
+       you in the beauty" produced the query "stories immerse beauty", which is a sentence
+       fragment wearing a topic's clothes. Deliberately excluded from this list: "relax" and
+       "dive", which really are subjects (lofi and ASMR channels, diving channels). */
+    'immerse brought join community celebrate expect lovers entertain educate memorable ' +
     'channel channels everything weekly daily official home page site com www').split(' '));
 
   /* What KIND of video the channel makes. Measured: "toyota corolla" returns dealerships and
@@ -775,10 +781,29 @@
       .toLowerCase()
       // & and + split too: "Law&Crime" must tokenise as law, crime, or the channel's own
       // name is not recognised in phrases built from it.
-      .replace(/[|•·—–\-_/\\()\[\]{}:;,.!?"'’“”&+]+/g, ' ')
+      /* Anything that is not a letter, a digit or a space, rather than a hand-kept list of
+         punctuation. The list left emoji standing, and a description bulleted with them glues
+         each one to the word it precedes: measured on @talesby_chizi, "💕Dramatic twists" and
+         "💕Engaging storytelling" tokenised with the emoji attached, so the phrase carried a
+         pictograph into the search query and "dramatic twists" never existed as a phrase at
+         all. The same fix drops "#shorts", which survived the old class intact and was never
+         a topic. */
+      .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
       .split(/\s+/)
       // Two-character tokens matter — "gr", "m2", "f1" are the subject, not noise.
       .filter((w) => w && w.length > 1 && !STOPWORDS.has(w) && !/^\d+$/.test(w));
+  }
+
+  /* Crude, and deliberately so. Counting how often a channel uses a word only works if
+     "stories", "story" and "storytelling" count as the same word, and if "Africa" and
+     "African" do — but a real stemmer is a dictionary, and this runs in a content script.
+     Strip the plural, then keep six characters: enough to fuse africa/african,
+     cultural/culturally and tale/tales, short enough not to fuse anything that matters. */
+  function stemWord(word) {
+    let w = String(word || '');
+    if (w.length > 4 && w.slice(-3) === 'ies') w = w.slice(0, -3) + 'y';
+    else if (w.length > 3 && w.slice(-1) === 's' && w.slice(-2) !== 'ss') w = w.slice(0, -1);
+    return w.slice(0, 6);
   }
 
   /* Phrases beat single words: "corolla" alone pulls in dealerships and music, while
@@ -815,7 +840,12 @@
     const clauses = [];
     const tails = [];
     const windows = [];
-    for (const segment of String(about || '').split(/[,.;:|/!?()\n]+/)) {
+    /* Em and en dashes end a clause the way a comma does — "the beauty, drama, and wisdom of
+       Africa—one tale at a time" is two thoughts, and without the dash the second half rode
+       along into "wisdom africa one tale time". The plain hyphen is deliberately NOT here: it
+       joins words rather than separating clauses, and splitting on it would turn
+       "high-profile criminal trials" into "high" and "profile criminal trials". */
+    for (const segment of String(about || '').split(/[,.;:|/!?()\n—–]+/)) {
       if (JUNK.test(segment)) continue;
       const words = titleTokens(segment).filter((w) => GENRE_WORDS.indexOf(w) < 0);
       if (words.length >= 2 && words.length <= 5) {
@@ -895,10 +925,51 @@
     /* Within the description's own clauses, the ones free of the channel's name come first.
        The opening clause is almost always "<Channel> is the leading ... that covers", which
        survives as a phrase but describes the company rather than the subject. */
+    /* Then, among clauses the name does not own, the one built from the words this channel
+       actually keeps using.
+
+       Document order was the tiebreak, and document order is not a quality signal: a
+       description opens with a greeting and a hook and states its niche further down. On
+       @talesby_chizi the first three clauses were "family secrets cultural mysteries",
+       "stories immerse beauty" and "wisdom africa one tale time" — one plot detail and two
+       pieces of grammatical debris — while "culturally rooted african stories" and "dramatic
+       twists" sat in slots five and six and never reached the three query slots.
+
+       So score a clause by how dense it is in the channel's own recurring vocabulary,
+       counted over the description AND the video titles together. That cross-check is the
+       whole point: prose filler like "immerse" or "wisdom" appears once in the description
+       and never in a title, while "african" and "stories" appear in both, repeatedly. Words
+       are counted once per clause, so repetition inside one clause cannot inflate it, and
+       the mean is used rather than the sum so a long clause does not win on length. */
     const nameSet = new Set(titleTokens(channelName));
+    const freq = new Map();
+    const countInto = (text) => {
+      for (const w of titleTokens(text)) {
+        const s = stemWord(w);
+        freq.set(s, (freq.get(s) || 0) + 1);
+      }
+    };
+    countInto(about);
+    for (const t of list) countInto(t);
+    /* Breadth first, density second. Ranking on density alone put "stories immerse beauty"
+       and "stories entertain" at the top of this same channel: one hub word the channel uses
+       eleven times drags the average up however much prose is bolted to it. Counting how many
+       of a clause's words recur at all separates them — "culturally rooted african stories"
+       has three recurring words, a prose fragment carrying one hub word has exactly one. */
+    const weigh = (phrase) => {
+      const stems = Array.from(new Set(phrase.split(' ').map(stemWord)));
+      if (!stems.length) return { recurring: 0, density: 0 };
+      const counts = stems.map((s) => freq.get(s) || 0);
+      return {
+        recurring: counts.filter((n) => n > 1).length,
+        density: counts.reduce((n, x) => n + x, 0) / stems.length
+      };
+    };
     const orderedClauses = fromAbout.clauses
-      .map((c, i) => ({ c: c, i: i, owned: c.split(' ').filter((w) => nameSet.has(w)).length }))
-      .sort((a, b) => a.owned - b.owned || a.i - b.i)
+      .map((c, i) => ({ c: c, i: i, w: weigh(c),
+                        owned: c.split(' ').filter((w) => nameSet.has(w)).length }))
+      .sort((a, b) => a.owned - b.owned || b.w.recurring - a.w.recurring ||
+                      b.w.density - a.w.density || a.i - b.i)
       .map((x) => x.c);
 
     ranked = orderedClauses
@@ -972,10 +1043,14 @@
     // an unrelated franchise that happens to share the words.
     /* Do not append a genre the phrase already carries in another form — "military history
        documentaries" must not become "military history documentaries documentary". */
-    const stem = genre.slice(0, 5);
+    /* Compared through the stemmer rather than a fixed five-character prefix, which was one
+       character short of the case it existed for: "story".slice(0,5) is "story" but
+       "stories".slice(0,5) is "stori", so "culturally rooted african stories" was handed a
+       genre it already carried and searched for "... stories story". */
+    const genreStem = stemWord(genre);
     return picked.map((p) => {
       if (!genre) return p;
-      if (p.split(' ').some((w) => w.slice(0, 5) === stem)) return p;
+      if (p.split(' ').some((w) => stemWord(w) === genreStem)) return p;
       return p + ' ' + genre;
     });
   }

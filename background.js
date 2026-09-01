@@ -577,11 +577,15 @@ async function expandNiche(key, videos) {
    The channel's own text goes with the request so a channel nobody has crawled yet still gets
    an answer — the server embeds what it is given rather than trying to fetch the channel,
    which from a datacenter IP would mostly be refused. */
-async function similarFromIndex(base, key, titles, about, opts) {
+async function similarFromIndex(base, key, titles, about, opts, candidates) {
   const url = base.replace(/\/$/, '') + '/similar';
   const body = {
     channel: key,
     channelId: (opts && opts.channelId) || null,
+    /* What YouTube itself returns for this channel's topics, right now. The index answers
+       "who is in the corpus"; this answers "who is out there", and the server enriches them
+       before matching so both arrive scored on the same scale. */
+    candidates: (candidates || []).slice(0, 40),
     title: (opts && opts.title) || '',
     about: about || '',
     videoTitles: (titles || []).slice(0, 10),
@@ -832,6 +836,73 @@ async function channelVideosFor(key, channelId, days) {
   return pending;
 }
 
+/* The keyword-search half, cached on its own.
+
+   It has to be cached separately from the answer because the two go stale at different rates
+   and for different reasons: the index answers differently for every filter setting, so its
+   result can never be cached here, while three search pages cost three fetches and describe a
+   niche that does not move in a week. Splitting them is what makes running search on every
+   panel open affordable — after the first visit it is free. */
+/* Deeper than the fallback path reads. SEARCH_DEPTH exists to keep general-interest channels
+   ranking fortieth out of a list that had no way to score them; these are only ever handed to
+   the index, which scores them properly and drops what does not belong. */
+const SIM_PAIR_DEPTH = 25;
+
+async function searchCandidates(key, titles, about, force) {
+  const id = 'simq:' + key;
+  if (!force) {
+    const store = await chrome.storage.local.get(id);
+    const hit = store[id];
+    const ttl = hit && hit.pairs && hit.pairs.length ? TTL_SIM : TTL_SIM_EMPTY;
+    if (hit && hit.v === CACHE_VERSION && Date.now() - hit.t <= ttl) return hit;
+  }
+
+  const queries = F.topicQueries(titles || [], key, SIM_QUERIES, about);
+  const empty = { queries, perQuery: [], pairs: [], t: Date.now(), v: CACHE_VERSION };
+  if (!queries.length) return empty;
+  // Not cached: a tripped breaker is a fact about the last minute, not about this channel.
+  if (breakerOpen()) return Object.assign({}, empty, { t: 0, limited: true });
+
+  const perQuery = [];
+  const pairs = [];
+  const seen = new Set();
+  for (const q of queries) {
+    const html = await schedule(() => searchPage(q));
+    if (!html) continue;
+    perQuery.push(F.channelsFromSearch(html, key));
+    for (const pair of F.channelPairsFromSearch(html, SIM_PAIR_DEPTH)) {
+      if (seen.has(pair.id)) continue;
+      seen.add(pair.id);
+      pairs.push(pair);
+    }
+  }
+  noteResult(perQuery.length > 0);
+
+  const entry = { queries, perQuery, pairs, t: Date.now(), v: CACHE_VERSION };
+  await chrome.storage.local.set({ [id]: entry });
+  return entry;
+}
+
+/* How many of the channel's own topics each result also ranked for on YouTube. */
+function searchHitCounts(perQuery) {
+  const hits = new Map();
+  for (const list of perQuery || []) {
+    for (const handle of new Set(list.map((h) => h.toLowerCase()))) {
+      hits.set(handle, (hits.get(handle) || 0) + 1);
+    }
+  }
+  return hits;
+}
+
+/* Ranking in YouTube's own results for two of this channel's three topics is the same class
+   of evidence as being recommended beside its videos, which match_channels already pays up to
+   +0.15 for. Priced just under that: the recommendation graph is a statement about who
+   watches, while search rank is a statement about who writes similar words, and the vector
+   already covers most of the second. Capped so agreement can promote a genuine neighbour past
+   the confidence threshold but can never manufacture one out of a 0.36. */
+const SEARCH_BOOST = 0.04;
+const SEARCH_BOOST_MAX = 0.12;
+
 async function getSimilarChannels(key, titles, about, force, opts) {
   // Baked in at build time. Users were never in a position to know this value, and asking
   // them for it in the popup made an internal detail look like a setting.
@@ -840,8 +911,8 @@ async function getSimilarChannels(key, titles, about, force, opts) {
 
   /* The index answers differently depending on the filters, so its results are not cached
      here — the server holds the corpus, and a cached list would go stale the moment the
-     filter changed. The search fallback below is cached, because each lookup there costs two
-     page fetches. */
+     filter changed. The search half is cached inside searchCandidates instead, on its own
+     key, because a channel's topics do not change when a subscriber bound does. */
   /* The channel being looked at is the one channel we know is real, is current, and someone
      cares about — and it was the only one never being added. Ingest ran solely on the search
      fallback, and only for channels search turned up, so visiting Bellator taught the index
@@ -850,20 +921,41 @@ async function getSimilarChannels(key, titles, about, force, opts) {
     pushToIndex(base, [{ id: (opts && opts.channelId) || '', handle: key }]);
   }
 
+  /* Both halves, every time — not one or the other.
+
+     These were wired as alternatives: search ran only when the index returned literally zero
+     rows, and with a 0.35 similarity floor a corpus of any size almost always returns
+     something, so the search path was very nearly unreachable. That made every list an
+     answer to "who is already in the corpus" and never to "who is out there", which is the
+     one question a channel nobody has crawled needs answered.
+
+     They are not redundant. The index finds a 20K-subscriber channel that ranks nowhere;
+     search finds the channel indexed by nobody. Running both and merging is strictly more
+     than either, and after the first visit the search half comes from cache. */
+  const found = await searchCandidates(key, titles, about, force);
+
   if (base) {
-    const out = await similarFromIndex(base, key, titles, about, opts);
+    const out = await similarFromIndex(base, key, titles, about, opts, found.pairs);
     /* An empty index answer is not an answer. The index only knows the niches that have been
        seeded, so a channel from an unseeded one matches nothing above the similarity floor —
        Law&Crime against an index holding only aviation channels returns zero rows, correctly,
        and showing "nothing found" would be wrong when a live search would have found plenty.
        Treat empty as a miss and fall through. */
     if (out && out.ok && (out.channels || []).length) {
+      const hits = searchHitCounts(found.perQuery);
       return {
         channels: (out.channels || []).map((c) => ({
           handle: c.handle || c.title,
           title: c.title,
           avatar: c.avatar_url,
-          similarity: c.similarity,
+          /* The index's score, raised where YouTube's own results agree. Kept as one number
+             rather than shown alongside a second one: the panel sorts, filters and thresholds
+             on similarity, and a row carrying two incomparable scores would have to pick one
+             for all of that anyway. searchHits travels with it so the row can say why. */
+          similarity: Math.min(1, (c.similarity || 0) +
+            Math.min(SEARCH_BOOST_MAX,
+                     SEARCH_BOOST * (hits.get((c.handle || '').toLowerCase()) || 0))),
+          searchHits: hits.get((c.handle || '').toLowerCase()) || 0,
           subscribers: c.subscribers,
           avgViews: c.avg_views,
           uploadsPerMo: c.uploads_per_mo,
@@ -880,7 +972,10 @@ async function getSimilarChannels(key, titles, about, force, opts) {
            here: the panel is where it can be explained. */
         scattered: !!out.scattered,
         coherence: typeof out.coherence === 'number' ? out.coherence : null,
-        queries: [],
+        /* Carried on the index path too, now that search runs on it. The panel used to print
+           these only when it had fallen back, which is precisely when they mattered least —
+           a reader looking at a good list has no way to tell what it was a list OF. */
+        queries: found.queries || [],
         reason: '',
         t: Date.now(),
         v: CACHE_VERSION
@@ -895,43 +990,29 @@ async function getSimilarChannels(key, titles, about, force, opts) {
       : ((out && out.reason) || 'index unavailable');
   }
 
-  const id = 'sim:' + key;
-  if (!force) {
-    const store = await chrome.storage.local.get(id);
-    const hit = store[id];
-    const ttl = hit && hit.channels && hit.channels.length ? TTL_SIM : TTL_SIM_EMPTY;
-    if (hit && hit.v === CACHE_VERSION && Date.now() - hit.t <= ttl) return hit;
+  /* No index, or the index had nothing: rank what search found on its own.
+
+     The scrape itself already happened above and is shared with the hybrid path, so reaching
+     here costs nothing extra. Results carry names and rank positions but no subscriber counts
+     or scores, which is why the panel drops its chips and its Smaller filter for this source
+     — those would be filtering on fields that are all undefined. */
+  if (found.limited) {
+    return { channels: [], queries: [], reason: 'rate limited', t: 0, v: CACHE_VERSION };
   }
-  if (breakerOpen()) return { channels: [], queries: [], reason: 'rate limited', t: 0, v: CACHE_VERSION };
-
-  const queries = F.topicQueries(titles || [], key, SIM_QUERIES, about);
-  if (!queries.length) {
-    return { channels: [], queries: [], reason: 'not enough video titles to search with', t: 0, v: CACHE_VERSION };
+  if (!found.queries.length) {
+    return { channels: [], queries: [], reason: 'not enough video titles to search with',
+             t: 0, v: CACHE_VERSION };
   }
 
-  const perQuery = [];
-  const discovered = [];
-  for (const q of queries) {
-    const html = await schedule(() => searchPage(q));
-    if (!html) continue;
-    perQuery.push(F.channelsFromSearch(html, key));
-    // The same scrape already contains the ids the index needs. Throwing them away was why
-    // an unseeded niche stayed unseeded no matter how many people looked at it.
-    for (const pair of F.channelPairsFromSearch(html)) discovered.push(pair);
-  }
-  noteResult(perQuery.length > 0);
+  /* Still worth handing over, even though nothing above could use it: a niche the index
+     cannot answer for is exactly the one that needs filling, and the next visitor gets the
+     benefit. Fire-and-forget, so a failed ingest costs the corpus a row rather than costing
+     the user their panel. */
+  pushToIndex(base, found.pairs);
 
-  /* Hand the discovery to the index. The extension can scrape search because it runs on a
-     residential connection; the server cannot, but it holds the keys to enrich and embed.
-     Fire-and-forget — this fills the niche for whoever looks next, and must never delay or
-     break the answer being given now. */
-  pushToIndex(base, discovered);
-
-  const channels = F.rankSimilar(perQuery, 25);
-  const entry = { channels, queries, source: 'search', reason: '',
-                  indexProblem: indexProblem, t: Date.now(), v: CACHE_VERSION };
-  await chrome.storage.local.set({ [id]: entry });
-  return entry;
+  return { channels: F.rankSimilar(found.perQuery, 25), queries: found.queries,
+           source: 'search', reason: '', indexProblem: indexProblem,
+           t: Date.now(), v: CACHE_VERSION };
 }
 
 /* ---------------------------------------------------------------- thumbnails */

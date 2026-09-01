@@ -638,6 +638,16 @@ html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
   color: var(--yt-spec-text-primary, #0f0f0f); white-space: nowrap;
 }
 .ytc-t__sim { font-weight: 700; color: #0f9d58; }
+
+/* Search agreement, beside the score it lifted. Small and low-contrast on purpose: it
+   qualifies the number rather than competing with it. */
+.ytc-t__agree {
+  margin-left: 3px;
+  font-size: 7px;
+  vertical-align: 3px;
+  opacity: .55;
+  cursor: help;
+}
 /* Cut list. The row at the boundary is clipped and faded rather than removed: a row half in
    view reads as "the list continues", where a clean edge reads as "the list ends" — and what
    is below the edge here is not nothing, it is the matches whose score has stopped
