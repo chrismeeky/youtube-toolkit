@@ -2391,7 +2391,12 @@
               '" y1="' + y(med).toFixed(1) + '" y2="' + y(med).toFixed(1) + '"></line>') +
           line + dots +
         '</svg>' +
-        (med == null ? '' : '<span class="ytc-an__medlabel">Median ' +
+        /* Pinned to the median line's own height rather than to a corner. The SVG is 190
+           units tall and rendered at 190px, so a viewBox y is a pixel y and the label can sit
+           on the line it names — where it cannot drift into whatever happens to occupy the
+           bottom right, which on a falling line is the line itself. */
+        (med == null ? '' : '<span class="ytc-an__medlabel" style="top:' +
+          y(med).toFixed(1) + 'px">Median ' +
           F.compact(Math.round(med)) + '/' + noun + '</span>') +
         '<div class="ytc-an__tip" hidden></div>' +
       '</div>' +

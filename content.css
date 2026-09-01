@@ -301,10 +301,14 @@ html[dark] .ytc-spin { border-color: rgba(255, 255, 255, .25); border-top-color:
   transition: r .12s ease;
 }
 .ytc-an__pt:hover, .ytc-an__pt.on { fill: #7c3aed; r: 6; }
+/* Sits on the median line, centred on it, with the panel's own background behind so it
+   occludes the dashes rather than tangling with them. */
 .ytc-an__medlabel {
-  position: absolute; right: 0; bottom: 26px;
-  font: 500 11.5px/1 Roboto, Arial, sans-serif; color: #7c3aed; opacity: .8;
-  pointer-events: none;
+  position: absolute; right: 2px; transform: translateY(-50%);
+  padding: 1px 5px; border-radius: 4px;
+  background: var(--yt-spec-general-background-a, #fff);
+  font: 500 11.5px/1.4 Roboto, Arial, sans-serif; color: #7c3aed;
+  pointer-events: none; white-space: nowrap;
 }
 .ytc-an__tip {
   position: absolute; z-index: 2; max-width: 230px; padding: 8px 10px;
@@ -343,6 +347,7 @@ html[dark] .ytc-an__line, html[dark] .ytc-an__median { stroke: #b083f0; }
 html[dark] .ytc-an__pt { fill: #0f0f0f; stroke: #b083f0; }
 html[dark] .ytc-an__pt:hover, html[dark] .ytc-an__pt.on { fill: #b083f0; }
 html[dark] .ytc-an__medlabel, html[dark] .ytc-an__tip em { color: #b083f0; }
+html[dark] .ytc-an__medlabel { background: #0f0f0f; }
 html[dark] .ytc-an__tip {
   background: #212121; border-color: rgba(255,255,255,.16); color: #f1f1f1;
 }
