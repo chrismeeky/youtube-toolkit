@@ -703,6 +703,8 @@
     decorateChannelHeader();
     /* Kept out of decorateChannelHeader deliberately: that function returns early when the
        monetization badge is switched off, which would silently take the tab with it. */
+    try { ensurePocketButton(); } catch (e) { /* keep the rest of the scan */ }
+    try { ensurePocketNav(); } catch (e) { /* keep the rest of the scan */ }
     ensureSimilarTab();
     /* After the tabs, because a rebuild there drops the active class and this puts it back. */
     try { reassertPanels(); } catch (e) { /* keep the rest of the scan */ }
@@ -1771,6 +1773,18 @@
               '<span class="ytc-t__nameline">' +
                 '<span class="ytc-t__name">' + escapeHtml(c.title || handle) + '</span>' +
                 monetizationPill(c) +
+                /* On the name line, beside the monetization pill. It was a cell of its own at
+                   the end of the row, but the header defines no column for it — so the grid
+                   had one more cell in the body than in the head and wrapped the star onto a
+                   line of its own. It belongs with the name in any case: it is a fact about
+                   the channel, not another measurement of it. */
+                (settings.showPockets
+                  ? '<button type="button" class="ytc-t__star' +
+                    (pocketsHolding(c).length ? ' ytc-t__star--on' : '') +
+                    '" data-star="' + escapeHtml(handle) +
+                    '" aria-label="Save to a pocket" title="Save to a pocket">' +
+                    (pocketsHolding(c).length ? '\u2605' : '\u2606') + '</button>'
+                  : '') +
               '</span>' +
               '<span class="ytc-t__handle">' + escapeHtml(handle) + '</span>' +
             '</span>' +
@@ -2022,6 +2036,19 @@
   }
 
   function wireSimilarControls(host, res) {
+    /* The star sits inside the row's own <a>, so both the navigation and the click have to be
+       stopped before the chooser opens. Wired here rather than in rowFor because the rows are
+       rebuilt as one innerHTML write and there is nothing to attach to until they exist. */
+    host.querySelectorAll('[data-star]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const handle = b.dataset.star;
+        const c = ((res && res.channels) || []).find((x) => (x.handle || x.title) === handle);
+        if (c) openPocketDialog(c, b, () => renderSimilar(res), seedFromChip());
+      });
+    });
+
     const small = host.querySelector('.ytc-t__small');
     if (small) {
       small.addEventListener('click', () => {
@@ -4410,9 +4437,14 @@
     scan();
   });
 
-  loadPresets();
-
   chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes[POCKET_STORE]) {
+      // Saved in another tab: the stars and the header button must agree across all of them.
+      loadPockets(() => {
+        refreshPocketMarks();
+        if (pocketsModalOpen()) renderPockets();
+      });
+    }
     if (area === 'local' && (changes[PRESET_STORE] || changes[PRESET_ORDER])) {
       // Saved in another tab. Reload rather than merge: storage is the single copy.
       loadPresets(() => {
@@ -4551,6 +4583,1096 @@
       apply: (f) => { f.kind = 'long'; f.ratio = from('ratio', 2); f.sort = 'ratio'; } }
   ];
 
+
+
+  /* ------------------------------------------------------------------ pockets */
+
+  /* Named lists of channels, kept in the browser.
+
+     A pocket stores a SNAPSHOT of each channel's figures — subscribers, average views, the
+     outlier ratio — rather than a reference to be resolved later. Two reasons. The numbers are
+     already on screen at the moment of saving, so storing them costs nothing, where resolving
+     forty channels on opening the list would be forty lookups and a quota bill. And a saved
+     list is a record of what you saw: a channel that was doing 3× its subscriber count when
+     you pocketed it is the reason it is in there, and silently rewriting that to today's
+     figure loses the very thing worth keeping. Where a figure was unknown at save time it
+     stays unknown rather than being invented. */
+  const POCKET_STORE = 'ytcPockets';
+  const POCKET_MAX = 50;
+  const POCKET_TITLE_MAX = 60;
+  const POCKET_DESC_MAX = 200;
+  const POCKET_NOTE_MAX = 120;
+  const POCKET_CHANNELS_MAX = 500;
+
+  let pockets = [];
+
+  function loadPockets(cb) {
+    try {
+      chrome.storage.local.get([POCKET_STORE], (got) => {
+        if (chrome.runtime.lastError) { if (cb) cb(); return; }
+        const list = (got && got[POCKET_STORE]) || [];
+        pockets = Array.isArray(list)
+          ? list.filter((p) => p && p.id && p.title)
+              .map((p) => Object.assign({ desc: '', channels: [] }, p, {
+                // note arrived later; channels saved before it have none.
+                channels: (Array.isArray(p.channels) ? p.channels : [])
+                  .map((c) => Object.assign({ note: '' }, c))
+              }))
+          : [];
+        if (cb) cb();
+      });
+    } catch (e) { if (cb) cb(); }
+  }
+
+  function savePockets(cb) {
+    try {
+      chrome.storage.local.set({ [POCKET_STORE]: pockets.slice(0, POCKET_MAX) },
+        () => { if (chrome.runtime.lastError) { /* nothing to undo */ } if (cb) cb(); });
+    } catch (e) { if (cb) cb(); }
+  }
+
+  function newPocket(title, desc) {
+    const id = String(Date.now()) + Math.random().toString(36).slice(2, 7);
+    const p = {
+      id,
+      title: String(title || '').trim().slice(0, POCKET_TITLE_MAX),
+      desc: String(desc || '').trim().slice(0, POCKET_DESC_MAX),
+      created: Date.now(),
+      channels: []
+    };
+    pockets.push(p);
+    return p;
+  }
+
+  /* One channel is one channel however it was reached. The similar list knows channels by
+     handle, the page header by whichever URL the reader arrived on, and the two must not
+     produce two entries for the same channel — so the id decides when there is one, and the
+     lower-cased handle when there is not. */
+  function pocketChannelKey(c) {
+    return String((c && (c.id || c.channelId)) || '').trim() ||
+           String((c && (c.handle || c.key)) || '').trim().toLowerCase();
+  }
+
+  function chanHandle(c) {
+    return String((c && (c.handle || c.key)) || '').trim().toLowerCase();
+  }
+
+  function chanId(c) {
+    return String((c && (c.id || c.channelId)) || '').trim();
+  }
+
+  /* Do two records name the same channel?
+
+     Collapsing each side to a single "best" key and comparing those was wrong, because the
+     two sides do not carry the same identifiers: the similar-channels list has a handle and
+     no id, the channel header derives an id by scraping the page. So the comparison silently
+     became "this side's id against that side's handle", and every channel reported itself
+     already pocketed — the header's id matched a stored record whenever it was stale, and a
+     scraped id is stale the moment YouTube navigates without repainting its canonical link.
+
+     Handles decide when both sides have one. The handle is what the address bar says and what
+     the index returns; it is the identifier that is actually present on both routes, and it
+     cannot be picked up from a leftover page. Ids are the fallback for /channel/UC… pages,
+     which carry no handle at all. A mismatch on the deciding identifier is a definite no —
+     never a reason to try the other one, which is exactly how a wrong answer got in. */
+  function sameChannel(a, b) {
+    const ha = chanHandle(a);
+    const hb = chanHandle(b);
+    if (ha && hb) return ha === hb;
+    const ia = chanId(a);
+    const ib = chanId(b);
+    return !!ia && ia === ib;
+  }
+
+  function pocketHas(pocket, c) {
+    if (!pocketChannelKey(c)) return false;
+    return (pocket.channels || []).some((x) => sameChannel(x, c));
+  }
+
+  function pocketAdd(pocket, c) {
+    /* No id and no handle is not a channel, and a row with neither can never be matched,
+       removed or de-duplicated afterwards — it would sit in the pocket forever. The dialog
+       already refuses to open on one; this refuses to store one whatever calls it. */
+    if (!pocket || !c || !pocketChannelKey(c)) return false;
+    if (pocketHas(pocket, c)) return false;
+    if ((pocket.channels || []).length >= POCKET_CHANNELS_MAX) return false;
+    pocket.channels.push({
+      id: c.id || c.channelId || '',
+      handle: c.handle || '',
+      title: c.title || c.handle || '',
+      avatar: c.avatar || '',
+      /* Why this channel was kept, in the reader's words. Seeded from where they were
+         standing when they saved it, because that is the answer most of the time and an
+         empty box is a question nobody comes back to answer. */
+      note: String((c && c.note) || '').slice(0, POCKET_NOTE_MAX),
+      subscribers: c.subscribers == null ? null : c.subscribers,
+      avgViews: c.avgViews == null ? null : c.avgViews,
+      added: Date.now()
+    });
+    return true;
+  }
+
+  function pocketRemove(pocket, key) {
+    const before = (pocket.channels || []).length;
+    pocket.channels = (pocket.channels || []).filter((x) => pocketChannelKey(x) !== key);
+    return pocket.channels.length !== before;
+  }
+
+  function pocketEntry(pocket, c) {
+    return (pocket.channels || []).find((x) => sameChannel(x, c)) || null;
+  }
+
+  function pocketsHolding(c) {
+    if (!pocketChannelKey(c)) return [];
+    return pockets.filter((p) => (p.channels || []).some((x) => sameChannel(x, c)));
+  }
+
+
+
+
+  /* ------------------------------------------------------------ pockets view */
+
+  const POCKET_LABEL = 'Pockets';
+  let pkEdit = '';        // id of the pocket whose edit form is open
+  let pkConfirm = '';     // id of the pocket awaiting a delete confirmation
+  let pkFind = '';        // the search box's text
+  let pkNoteEdit = '';    // "<pocketId>|<channelKey>" of the note being edited inline
+
+  /* One box, both levels.
+
+     A pocket matches on its own name or description; a channel matches on its name, handle or
+     note. A pocket whose NAME matches keeps all its channels — you searched for the pocket, so
+     you want the pocket — while one that matched only because something inside it did shows
+     just the channels that did. Anything with nothing left to show is dropped, so the result
+     is never a list of empty headings. */
+  function pocketSearch(list, q) {
+    const needle = String(q || '').trim().toLowerCase();
+    if (!needle) return list.map((p) => ({ pocket: p, channels: p.channels || [] }));
+    const hit = (v) => String(v || '').toLowerCase().indexOf(needle) >= 0;
+    const out = [];
+    for (const p of list) {
+      const self = hit(p.title) || hit(p.desc);
+      const kids = (p.channels || []).filter((c) =>
+        hit(c.title) || hit(c.handle) || hit(c.note));
+      if (self) out.push({ pocket: p, channels: p.channels || [] });
+      else if (kids.length) out.push({ pocket: p, channels: kids });
+    }
+    return out;
+  }
+
+  /* A modal, not a channel tab.
+
+     Pockets belong to the reader, not to whatever channel happens to be on screen, and the
+     first version put them in the channel tab row beside Similar Channels and Analytics —
+     which are both about the channel in front of you. That made a global list reachable only
+     from a channel page, and only by way of a page-content swap that has no meaning on a
+     watch page or the home feed. It opens over whatever you are looking at instead, the same
+     way the filter modal does, and it is reached from the sidebar where the rest of YouTube's
+     own global destinations live. */
+  function pocketsModalOpen() {
+    return !!document.querySelector('.ytc-pkm');
+  }
+
+  function closePocketsModal() {
+    document.querySelectorAll('.ytc-pkm, .ytc-pkm__veil').forEach((n) => n.remove());
+    document.removeEventListener('keydown', pocketsModalEsc, true);
+    pkEdit = '';
+    pkConfirm = '';
+    pkFind = '';
+    pkNoteEdit = '';
+  }
+
+  function pocketsModalEsc(e) {
+    if (e.key !== 'Escape' || !pocketsModalOpen()) return;
+    e.stopPropagation();
+    closePocketsModal();
+  }
+
+  function openPocketsModal() {
+    if (pocketsModalOpen()) { closePocketsModal(); return; }
+    const veil = document.createElement('div');
+    veil.className = 'ytc-pkm__veil';
+    veil.addEventListener('click', closePocketsModal);
+    const modal = document.createElement('div');
+    modal.className = 'ytc-pkm';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-label', 'Pockets');
+    document.body.appendChild(veil);
+    document.body.appendChild(modal);
+    document.addEventListener('keydown', pocketsModalEsc, true);
+    // Painted from what is already held, then repainted if storage had more to say.
+    renderPockets();
+    loadPockets(() => { if (pocketsModalOpen()) renderPockets(); });
+  }
+
+  /* Same figures as the similar-channels table, from the same helpers, so a channel reads
+     identically whether it is being considered or has already been kept. */
+  const PK_COLS = [
+    /* The note first, beside the name it is about. The pencil only appears on hover — a
+       column of edit affordances competes with the text it is offering to edit. */
+    { label: 'Note', cls: 'ytc-pkv__note',
+      cell: (c) => '<span class="ytc-pkv__notetext">' +
+        (c.note ? escapeHtml(c.note) : '<i class="ytc-pkv__noteempty">Add a note</i>') +
+        '</span><span class="ytc-pkv__pencil" aria-hidden="true">\u270e</span>' },
+    { label: 'Subscribers',
+      cell: (c) => (c.subscribers ? escapeHtml(F.compact(c.subscribers)) : '—') },
+    { label: 'Avg views',
+      cell: (c) => (c.avgViews ? escapeHtml(F.compact(c.avgViews)) : '—') },
+    { label: 'Outlier', cls: 'ytc-t__out', cell: (c) => outlierCell(c) },
+    { label: 'Added', cell: (c) => (c.added ? escapeHtml(agoLabel(new Date(c.added).toISOString()))
+                                            : '\u2014') }
+  ];
+
+  function pocketChannelRow(p, c) {
+    const handle = c.handle || '';
+    const href = handle ? 'https://www.youtube.com/' + encodeURI(handle)
+      : (c.id ? 'https://www.youtube.com/channel/' + encodeURIComponent(c.id) : '');
+    const img = c.avatar
+      ? '<img class="ytc-t__pic" src="' + escapeHtml(c.avatar) + '" alt="" loading="lazy">'
+      : '<span class="ytc-t__pic ytc-t__pic--none">' +
+        escapeHtml((c.title || handle || '?').trim().charAt(0).toUpperCase()) + '</span>';
+    return '<div class="ytc-pkv__row">' +
+      '<a class="ytc-pkv__chan"' + (href ? ' href="' + escapeHtml(href) + '"' : '') +
+        ' target="_blank" rel="noopener noreferrer">' + img +
+        '<span class="ytc-t__names">' +
+          '<span class="ytc-t__name">' + escapeHtml(c.title || handle) + '</span>' +
+          '<span class="ytc-t__handle">' + escapeHtml(handle || '') + '</span>' +
+        '</span>' +
+      '</a>' +
+      PK_COLS.map((col) => {
+        if (col.cls !== 'ytc-pkv__note') {
+          return '<span class="ytc-t__c' + (col.cls ? ' ' + col.cls : '') + '">' +
+            col.cell(c) + '</span>';
+        }
+        const token = p.id + '|' + pocketChannelKey(c);
+        if (pkNoteEdit === token) {
+          return '<span class="ytc-t__c ytc-pkv__note">' +
+            '<input class="ytc-pkv__noteinput" type="text" maxlength="' + POCKET_NOTE_MAX +
+            '" data-noteedit="' + escapeHtml(token) + '" aria-label="Note about this channel"' +
+            ' value="' + escapeHtml(c.note || '') + '"></span>';
+        }
+        return '<button type="button" class="ytc-t__c ytc-pkv__note" data-editnote="' +
+          escapeHtml(token) + '" title="Click to edit this note">' + col.cell(c) + '</button>';
+      }).join('') +
+      '<span class="ytc-t__c">' +
+        /* Deliberately NOT data-chan: that attribute is what marks a channel-preview
+           trigger, so naming it that turned the remove button into one — hovering the × in a
+           pocket opened a preview keyed by a raw channel id, which /videos cannot resolve,
+           and answered "unknown channel" over the row you were about to delete. */
+        '<button type="button" class="ytc-pkv__drop" data-pocket="' + escapeHtml(p.id) +
+        '" data-pkchan="' + escapeHtml(pocketChannelKey(c)) +
+        '" title="Remove from this pocket" aria-label="Remove from this pocket">×</button>' +
+      '</span>' +
+    '</div>';
+  }
+
+  function pocketBlock(p, shown) {
+    const list = shown || p.channels || [];
+    const n = (p.channels || []).length;
+    const editing = pkEdit === p.id;
+    const confirming = pkConfirm === p.id;
+    return '<section class="ytc-pkv__pocket">' +
+      '<div class="ytc-pkv__head">' +
+        (editing
+          ? '<div class="ytc-pkv__form">' +
+              '<input class="ytc-pkv__title" type="text" maxlength="' + POCKET_TITLE_MAX +
+                '" value="' + escapeHtml(p.title) + '" aria-label="Pocket name">' +
+              '<textarea class="ytc-pkv__desc" rows="2" maxlength="' + POCKET_DESC_MAX +
+                '" placeholder="Description (optional)" aria-label="Pocket description">' +
+                escapeHtml(p.desc || '') + '</textarea>' +
+              '<div class="ytc-pkv__formrow">' +
+                '<button type="button" class="ytc-pkv__savep" data-pocket="' +
+                  escapeHtml(p.id) + '">Save changes</button>' +
+                '<button type="button" class="ytc-pkv__cancel">Cancel</button>' +
+              '</div>' +
+            '</div>'
+          : '<div class="ytc-pkv__meta">' +
+              '<b>' + escapeHtml(p.title) + '</b>' +
+              '<span class="ytc-pkv__count">' + n + (n === 1 ? ' channel' : ' channels') +
+              '</span>' +
+              (p.desc ? '<i>' + escapeHtml(p.desc) + '</i>' : '') +
+            '</div>' +
+            '<div class="ytc-pkv__acts">' +
+              '<button type="button" class="ytc-pkv__edit" data-pocket="' +
+                escapeHtml(p.id) + '">Edit</button>' +
+              '<button type="button" class="ytc-pkv__del" data-pocket="' +
+                escapeHtml(p.id) + '">Delete</button>' +
+            '</div>') +
+      '</div>' +
+      /* A pocket with channels in it is not deleted on one click. The warning names the
+         number, because "delete this pocket" and "delete these 23 channels I collected" are
+         different sentences and only the second one is true here. */
+      (confirming
+        ? '<div class="ytc-pkv__warn">' +
+            (n
+              ? '<b>Delete “' + escapeHtml(p.title) + '” and the ' + n +
+                (n === 1 ? ' channel' : ' channels') + ' in it?</b> This cannot be undone.'
+              : '<b>Delete “' + escapeHtml(p.title) + '”?</b> It is empty.') +
+            '<span class="ytc-pkv__warnacts">' +
+              '<button type="button" class="ytc-pkv__delyes" data-pocket="' +
+                escapeHtml(p.id) + '">Delete</button>' +
+              '<button type="button" class="ytc-pkv__delno">Keep it</button>' +
+            '</span>' +
+          '</div>'
+        : '') +
+      (list.length
+        /* Header cells take .ytc-t__c exactly like the data cells do. Without it they were
+           bare spans, so every heading sat left in its column while the figure under it sat
+           right — the columns were correct and looked broken. Only "Channel" stays plain,
+           because that column is left-aligned on both rows. */
+        ? '<div class="ytc-pkv__row ytc-pkv__row--head">' +
+            '<span>Channel</span>' +
+            PK_COLS.map((c) => '<span class="ytc-t__c' + (c.cls ? ' ' + c.cls : '') + '">' +
+              c.label + '</span>').join('') +
+            '<span class="ytc-t__c"></span>' +
+          '</div>' +
+          list.map((c) => pocketChannelRow(p, c)).join('')
+        : '<p class="ytc-pkv__empty">' + (n
+            ? 'No channel in here matches that search.'
+            : 'Nothing saved here yet. Use the \u2606 on a channel page or in Similar ' +
+              'channels.') + '</p>') +
+    '</section>';
+  }
+
+  function renderPockets() {
+    const modal = document.querySelector('.ytc-pkm');
+    if (!modal) return;
+    const found = pocketSearch(pockets, pkFind);
+    const total = pockets.reduce((a, p) => a + ((p.channels || []).length), 0);
+    modal.innerHTML =
+      '<div class="ytc-pkm__head">' +
+        '<b>Pockets</b>' +
+        (pockets.length
+          ? '<span class="ytc-pkm__count">' + pockets.length +
+            (pockets.length === 1 ? ' pocket' : ' pockets') + ' \u00b7 ' + total +
+            (total === 1 ? ' channel' : ' channels') + '</span>'
+          : '') +
+        (pockets.length
+          ? '<input class="ytc-pkm__find" type="search" placeholder="Search pockets and ' +
+            'channels" aria-label="Search pockets and channels" value="' +
+            escapeHtml(pkFind) + '">'
+          : '') +
+        '<button type="button" class="ytc-pkm__x" aria-label="Close">\u00d7</button>' +
+      '</div>' +
+      '<div class="ytc-pkm__body">' +
+        (!pockets.length
+          ? '<p class="ytc-pkv__empty">No pockets yet. Open a channel and press ' +
+            '<b>\u2606 Pocket</b> beside Subscribe, or use the \u2606 on a row of the ' +
+            'Similar channels table.</p>'
+          : found.length
+            ? found.map((f) => pocketBlock(f.pocket, f.channels)).join('')
+            : '<p class="ytc-pkv__empty">Nothing matches \u201c' + escapeHtml(pkFind) +
+              '\u201d \u2014 not a pocket name, a description, a channel or a note.</p>') +
+      '</div>';
+    modal.querySelector('.ytc-pkm__x').addEventListener('click', closePocketsModal);
+
+    const find = modal.querySelector('.ytc-pkm__find');
+    if (find) {
+      /* Re-rendered on every keystroke, so focus and caret have to be put back. Cheaper than
+         a diff, and the list is tens of rows rather than thousands. */
+      find.addEventListener('input', () => {
+        const at = find.selectionStart;
+        pkFind = find.value;
+        renderPockets();
+        const next = document.querySelector('.ytc-pkm__find');
+        if (next) { next.focus(); try { next.setSelectionRange(at, at); } catch (e) { /* ok */ } }
+      });
+      find.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Escape' && find.value) {
+          e.preventDefault();
+          pkFind = '';
+          renderPockets();
+          const next = document.querySelector('.ytc-pkm__find');
+          if (next) next.focus();
+        }
+      });
+    }
+    wirePockets(modal);
+  }
+
+  function wirePockets(host) {
+    const byId = (el) => pockets.find((p) => p.id === el.dataset.pocket);
+
+    host.querySelectorAll('.ytc-pkv__edit').forEach((b) => b.addEventListener('click', () => {
+      pkEdit = b.dataset.pocket; pkConfirm = ''; renderPockets();
+    }));
+    host.querySelectorAll('.ytc-pkv__cancel').forEach((b) =>
+      b.addEventListener('click', () => { pkEdit = ''; renderPockets(); }));
+
+    host.querySelectorAll('.ytc-pkv__savep').forEach((b) => b.addEventListener('click', () => {
+      const p = byId(b);
+      const box = b.closest('.ytc-pkv__form');
+      if (!p || !box) return;
+      const title = String(box.querySelector('.ytc-pkv__title').value || '').trim();
+      // A pocket must keep a name; an empty one cannot be told from another empty one.
+      if (!title) {
+        const f = box.querySelector('.ytc-pkv__title');
+        f.focus();
+        f.classList.add('ytc-pk__title--bad');
+        setTimeout(() => f.classList.remove('ytc-pk__title--bad'), 900);
+        return;
+      }
+      p.title = title.slice(0, POCKET_TITLE_MAX);
+      p.desc = String(box.querySelector('.ytc-pkv__desc').value || '')
+        .trim().slice(0, POCKET_DESC_MAX);
+      savePockets();
+      pkEdit = '';
+      renderPockets();
+    }));
+
+    host.querySelectorAll('.ytc-pkv__del').forEach((b) => b.addEventListener('click', () => {
+      pkConfirm = b.dataset.pocket; pkEdit = ''; renderPockets();
+    }));
+    host.querySelectorAll('.ytc-pkv__delno').forEach((b) =>
+      b.addEventListener('click', () => { pkConfirm = ''; renderPockets(); }));
+    host.querySelectorAll('.ytc-pkv__delyes').forEach((b) => b.addEventListener('click', () => {
+      pockets = pockets.filter((p) => p.id !== b.dataset.pocket);
+      pkConfirm = '';
+      savePockets();
+      renderPockets();
+      refreshPocketMarks();
+    }));
+
+    host.querySelectorAll('[data-editnote]').forEach((b) => b.addEventListener('click', () => {
+      pkNoteEdit = b.dataset.editnote;
+      renderPockets();
+      const f = document.querySelector('[data-noteedit]');
+      if (f) { f.focus(); f.select(); }
+    }));
+
+    host.querySelectorAll('[data-noteedit]').forEach((f) => {
+      const parts = String(f.dataset.noteedit || '').split('|');
+      const commit = (keepOpen) => {
+        const p = pockets.find((x) => x.id === parts[0]);
+        const entry = p && (p.channels || []).find((x) => pocketChannelKey(x) === parts[1]);
+        if (entry) {
+          entry.note = String(f.value || '').slice(0, POCKET_NOTE_MAX);
+          savePockets();
+        }
+        if (!keepOpen) { pkNoteEdit = ''; renderPockets(); }
+      };
+      f.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); commit(false); }
+        // Escape abandons the edit; the stored note is left as it was.
+        if (e.key === 'Escape') { e.preventDefault(); pkNoteEdit = ''; renderPockets(); }
+      });
+      f.addEventListener('blur', () => { if (pkNoteEdit) commit(false); });
+    });
+
+    host.querySelectorAll('.ytc-pkv__drop').forEach((b) => b.addEventListener('click', () => {
+      const p = byId(b);
+      if (!p) return;
+      pocketRemove(p, b.dataset.pkchan);
+      savePockets();
+      renderPockets();
+      refreshPocketMarks();
+    }));
+  }
+
+  /* The star and the header button are the only things saying a channel is kept, so they have
+     to follow a change made anywhere else — including in another tab. */
+  function refreshPocketMarks() {
+    paintPocketNav();
+    const btn = document.querySelector('.ytc-pkbtn');
+    if (btn) paintPocketButton(btn);
+    document.querySelectorAll('[data-star]').forEach((b) => {
+      // data-star is built as `handle || title`, so match it the same way — a channel with
+      // no handle is identified by its title in both places or in neither.
+      const held = pockets.some((p) => (p.channels || []).some((x) =>
+        (x.handle || x.title || '').toLowerCase() === (b.dataset.star || '').toLowerCase()));
+      b.classList.toggle('ytc-t__star--on', held);
+      b.textContent = held ? '★' : '☆';
+    });
+  }
+
+
+
+  /* ---------------------------------------------------------- first-save hint */
+
+  /* Shown once, the first time anything is ever saved.
+
+     The save happens in a dialog anchored to a button on the page, and where the saved thing
+     went is nowhere near it. Without this the first pocket is created and then lost: the
+     reader has no reason to look down the sidebar for something they have never seen there.
+     Once is the whole point — a coach mark that returns is an interruption, so the flag is
+     written before the callout is drawn rather than after it is dismissed. */
+  const POCKET_HINT_KEY = 'ytcPocketHintSeen';
+  const POCKET_HINT_MS = 7000;
+  let pocketHintShown = false;
+
+  function maybeShowPocketHint() {
+    if (pocketHintShown) return;
+    pocketHintShown = true;            // never twice in one page, whatever storage says
+    try {
+      chrome.storage.local.get([POCKET_HINT_KEY], (got) => {
+        if (chrome.runtime.lastError) return;
+        if (got && got[POCKET_HINT_KEY]) return;
+        chrome.storage.local.set({ [POCKET_HINT_KEY]: Date.now() });
+        showPocketHint();
+      });
+    } catch (e) { /* a hint is never worth an exception */ }
+  }
+
+  function showPocketHint() {
+    const target = document.querySelector('.ytc-nav--full') ||
+                   document.querySelector('.ytc-nav--mini');
+    /* The guide can be collapsed away entirely, and pointing at something that is not on
+       screen is worse than not pointing. Fall back to the hamburger, which is always there
+       and is how the reader would open the guide anyway. */
+    const anchor = target || document.querySelector('#guide-button button, #guide-button');
+    if (!anchor || !anchor.getBoundingClientRect) return;
+
+    const el = document.createElement('div');
+    el.className = 'ytc-hint';
+    el.setAttribute('role', 'status');
+    el.innerHTML =
+      '<span class="ytc-hint__star" aria-hidden="true">★</span>' +
+      '<span class="ytc-hint__text"><b>Saved.</b> Find your pockets here.</span>' +
+      '<button type="button" class="ytc-hint__x" aria-label="Dismiss">×</button>';
+    document.body.appendChild(el);
+
+    const place = () => {
+      if (!el.isConnected || !anchor.isConnected) return;
+      const r = anchor.getBoundingClientRect();
+      const h = el.offsetHeight;
+      const top = Math.max(8, Math.min(r.top + (r.height / 2) - (h / 2),
+                                       window.innerHeight - h - 8));
+      el.style.left = Math.round(r.right + 14) + 'px';
+      el.style.top = Math.round(top) + 'px';
+    };
+    place();
+    // Two frames: the first paints it so offsetHeight is real, the second slides it in.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      place();
+      el.classList.add('ytc-hint--in');
+    }));
+
+    const close = () => {
+      el.classList.remove('ytc-hint--in');
+      setTimeout(() => el.remove(), 220);
+      window.removeEventListener('resize', place);
+    };
+    el.querySelector('.ytc-hint__x').addEventListener('click', close);
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.ytc-hint__x')) return;
+      close();
+      openPocketsModal();
+    });
+    window.addEventListener('resize', place);
+    setTimeout(close, POCKET_HINT_MS);
+  }
+
+  /* ------------------------------------------------------- sidebar entry */
+
+  /* Pockets live in YouTube's own guide, under Shorts.
+
+     They are the reader's, not the channel's, so they belong beside YouTube's other global
+     destinations rather than in a channel's tab row. Anchored to the Shorts entry by its
+     HREF and never by its label: the guide is translated, and matching "Shorts" as text is
+     one locale away from putting this in the wrong place or nowhere at all.
+
+     Both guides are handled. The full one is what most people see; the mini rail is what is
+     left when the window is narrow or the guide is collapsed, and an entry that vanished at
+     that width would look like the feature had been removed. */
+  const GUIDE_FULL = 'ytd-guide-entry-renderer';
+  const GUIDE_MINI = 'ytd-mini-guide-entry-renderer';
+
+  function pocketIconSvg() {
+    // A bookmark, drawn inline so it inherits currentColor and matches YouTube's own icons at
+    // every theme and zoom without shipping two more PNGs.
+    return '<svg viewBox="0 0 24 24" width="24" height="24" focusable="false" ' +
+      'aria-hidden="true"><path fill="currentColor" d="M17 3H7a2 2 0 0 0-2 2v16l7-3 7 3V5a2 ' +
+      '2 0 0 0-2-2zm0 15.1-5-2.14-5 2.14V5h10v13.1z"/></svg>';
+  }
+
+  /* Where to put the entry, given YouTube's actual guide markup.
+
+     The Shorts row has NO href. Its anchor is `<a id="endpoint" role="link" title="Shorts">`
+     and the navigation is a JS endpoint, so every attempt to find it by link — which is what
+     the first two versions did — was looking for something that does not exist. Home is the
+     one row in that list whose anchor reliably carries an href, and it is `/`.
+
+     So: find the Home row by its href, then step one row past it. In every build seen that
+     row is Shorts, which is where this was asked to go. A guide with no second row leaves the
+     entry under Home, which is the honest fallback rather than a guess. Nothing here depends
+     on a label, so it survives translation. */
+  function guideItemsList() {
+    return document.querySelector('ytd-guide-section-renderer #items') ||
+           document.querySelector('ytd-guide-renderer #items');
+  }
+
+  function rowHref(row) {
+    const a = row.querySelector('a[href]');
+    if (!a) return null;
+    try { return new URL(a.getAttribute('href'), location.origin).pathname; }
+    catch (e) { return null; }
+  }
+
+  function guideAnchorFor(kind) {
+    if (kind === 'mini') {
+      const mini = document.querySelector('ytd-mini-guide-renderer');
+      if (!mini) return null;
+      const rows = Array.from(mini.querySelectorAll(GUIDE_MINI))
+        .filter((r) => !r.classList.contains('ytc-nav'));
+      return rows[1] || rows[0] || null;
+    }
+    const items = guideItemsList();
+    if (!items) return null;
+    const rows = Array.from(items.querySelectorAll(':scope > ' + GUIDE_FULL));
+    if (!rows.length) return null;
+    const home = rows.find((r) => rowHref(r) === '/') || rows[0];
+    /* One past Home. Our own entry is skipped, so a re-scan measures against YouTube's rows
+       rather than against where we last put ourselves. */
+    let next = home.nextElementSibling;
+    while (next && next.classList && next.classList.contains('ytc-nav')) {
+      next = next.nextElementSibling;
+    }
+    return next || home;
+  }
+
+  function ensurePocketNav() {
+    if (!settings.showPockets) {
+      document.querySelectorAll('.ytc-nav').forEach((n) => n.remove());
+      return;
+    }
+    for (const kind of ['full', 'mini']) {
+      const anchor = guideAnchorFor(kind);
+      if (!anchor || !anchor.parentElement) continue;
+      const cls = 'ytc-nav ytc-nav--' + kind;
+      /* Scoped to this guide, not the document: the full guide and the mini rail both exist
+         at once, and a document-wide check would let whichever was built first satisfy the
+         other. */
+      const already = anchor.parentElement.querySelector('.ytc-nav--' + kind);
+      if (already) {
+        /* Present, but not necessarily still in the right place — an earlier build of this
+           put it above Home. Move it rather than leaving it wherever it landed. */
+        if (already.previousElementSibling !== anchor) {
+          anchor.parentElement.insertBefore(already, anchor.nextSibling);
+        }
+        matchGuideMetrics(already, anchor);
+        continue;
+      }
+      const item = document.createElement('div');
+      item.className = cls;
+      item.setAttribute('role', 'link');
+      item.setAttribute('tabindex', '0');
+      item.title = 'Pockets — your saved channels';
+      item.innerHTML = '<span class="ytc-nav__icon">' + pocketIconSvg() + '</span>' +
+        '<span class="ytc-nav__label">Pockets</span>' +
+        '<span class="ytc-nav__n" hidden></span>';
+      const go = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openPocketsModal();
+      };
+      item.addEventListener('click', go);
+      item.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') go(e);
+      });
+      anchor.parentElement.insertBefore(item, anchor.nextSibling);
+      matchGuideMetrics(item, anchor);
+    }
+    paintPocketNav();
+  }
+
+  /* Take the row's geometry from the row above it rather than restating it.
+
+     Hand-matching YouTube's numbers put this 12px narrower than its neighbours and shifted it
+     12px right: their entry is `width: calc(100% - 12px)` with no margin, and ours was a
+     margin with no width. Guessing again would only survive until the next redesign. So the
+     real Shorts row is measured and copied — width, margins, radius, the icon's inset from
+     the left edge and the gap between icon and label — which is correct now and stays correct
+     when those values change, because it never knew them in the first place.
+
+     Everything is guarded: a collapsed guide measures zero, and writing zeros would collapse
+     the row we just built. */
+  function matchGuideMetrics(item, anchor) {
+    try {
+      const row = anchor.getBoundingClientRect();
+      if (!row.height || !row.width) return;
+      const cs = getComputedStyle(anchor);
+      item.style.width = cs.width;
+      item.style.marginLeft = cs.marginLeft;
+      item.style.marginRight = cs.marginRight;
+      item.style.borderRadius = cs.borderRadius;
+      item.style.height = Math.round(row.height) + 'px';
+
+      const icon = anchor.querySelector('yt-icon, svg');
+      const label = anchor.querySelector('yt-formatted-string, .title');
+      if (icon) {
+        const ir = icon.getBoundingClientRect();
+        if (ir.width) {
+          // The icon's own inset is this row's left padding; mirrored on the right so the
+          // count lands where YouTube's own entry counts land.
+          const inset = Math.max(0, Math.round(ir.left - row.left));
+          item.style.paddingLeft = inset + 'px';
+          item.style.paddingRight = inset + 'px';
+          const ours = item.querySelector('.ytc-nav__icon svg');
+          if (ours) {
+            ours.setAttribute('width', Math.round(ir.width));
+            ours.setAttribute('height', Math.round(ir.height));
+          }
+          if (label) {
+            const lr = label.getBoundingClientRect();
+            if (lr.width) item.style.gap = Math.max(0, Math.round(lr.left - ir.right)) + 'px';
+          }
+        }
+      }
+    } catch (e) { /* leave the stylesheet's defaults in place */ }
+  }
+
+  /* How many channels are kept, across all pockets — the size of the collection rather than
+     the number of drawers it is filed into. */
+  let pocketNavCount = -1;
+
+  function paintPocketNav() {
+    const n = pockets.reduce((a, p) => a + ((p.channels || []).length), 0);
+    /* Only a rise pops. Removing a channel lowering the number is not an event to celebrate,
+       and the first paint of a page is not a change at all — without the -1 sentinel every
+       navigation would animate a count that had been sitting there all along. */
+    const grew = pocketNavCount >= 0 && n > pocketNavCount;
+    pocketNavCount = n;
+    document.querySelectorAll('.ytc-nav__n').forEach((el) => {
+      el.textContent = n ? String(n) : '';
+      el.hidden = !n;
+      if (!grew) return;
+      el.classList.remove('ytc-nav__n--pop');
+      // Reading offsetWidth restarts the animation; without it re-adding the class in the
+      // same frame does nothing, and a second pocket added quickly would not move.
+      void el.offsetWidth;
+      el.classList.add('ytc-nav__n--pop');
+    });
+  }
+
+  /* --------------------------------------------------- pocket entry points */
+
+  /* The channel currently being looked at, in the shape the pocket store wants. */
+  function currentChannelForPocket() {
+    const key = channelKeyFromLocation();
+    if (!key) return null;
+    const own = channelOwnStats() || {};
+    const cached = subsByKey.get(key);
+    const avg = (cached && cached.stats && cached.stats.avgViews) || 0;
+    const avatar = document.querySelector(
+      'yt-page-header-view-model img, #channel-header img, tp-yt-app-header img');
+    return {
+      id: own.channelId || channelIdFromKey(key) || '',
+      handle: key.startsWith('@') ? key : (own.handle || ''),
+      title: own.title || key,
+      avatar: (avatar && avatar.src) || '',
+      subscribers: own.subscribers == null ? null : own.subscribers,
+      /* Read from the same cache the header's outlier pill uses: the lifetime totals off the
+         channel's about page, already fetched for the subscriber badge. Absent until that
+         lands, and then stored as unknown rather than as zero — zero would read as "reaches
+         nobody" where the truth is "not measured yet". */
+      avgViews: avg > 0 ? avg : null
+    };
+  }
+
+  function pocketButtonHtml(saved) {
+    return '<span class="ytc-pkbtn__icon" aria-hidden="true">' + (saved ? '★' : '☆') +
+      '</span><span>' + (saved ? 'Pocketed' : 'Pocket') + '</span>';
+  }
+
+  /* Beside Subscribe, in YouTube's own action row — the same host the monetization badge
+     uses, so the two sit together and neither has to know about the other's layout. */
+  function ensurePocketButton() {
+    const key = channelKeyFromLocation();
+    if (!settings.showPockets || !key) {
+      document.querySelectorAll('.ytc-pkbtn').forEach((n) => n.remove());
+      return;
+    }
+    const host = channelHeaderHost();
+    if (!host) return;
+    /* Look for it anywhere, not only under the host we just resolved. YouTube rebuilds the
+       action row on its own, so the host can be a different element than last time — and
+       creating a second button then left the first one in the page, catching clicks that went
+       nowhere. Move the one we have instead. */
+    let btn = document.querySelector('.ytc-pkbtn');
+    if (btn && btn.parentElement !== host) host.appendChild(btn);
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ytc-pkbtn';
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const c = currentChannelForPocket();
+        if (!c) return;
+        openPocketDialog(c, btn, () => paintPocketButton(btn));
+        /* The niche is a round trip, so the dialog opens without it and the seed lands when
+           it does. Anything already typed wins — a suggestion must never overwrite a note. */
+        seedFromNiche((seed) => {
+          if (!seed || !pkDlg || pkTarget !== c) return;
+          pkSeed = seed;
+          pkDlg.querySelectorAll('[data-note]').forEach((f) => {
+            if (f.value) return;
+            f.value = seed;
+            f.dispatchEvent(new Event('blur'));
+          });
+        });
+      });
+      host.appendChild(btn);
+    }
+    paintPocketButton(btn);
+  }
+
+  function paintPocketButton(btn) {
+    if (!btn || !btn.isConnected) return;
+    const c = currentChannelForPocket();
+    const holding = c ? pocketsHolding(c) : [];
+    btn.classList.toggle('ytc-pkbtn--on', holding.length > 0);
+    /* Rewritten only when it actually changes.
+
+       This ran on every scan, and a scan runs on every mutation — so the button's contents
+       were being replaced two or three times a second. A click is only delivered if the
+       element the pointer went DOWN on is still there when it comes up, so a scan landing in
+       that gap threw the click away and the reader had to press again. That is the "sometimes
+       twice" — it was never about the dialog. */
+    const html = pocketButtonHtml(holding.length > 0);
+    if (btn.dataset.state !== html) {
+      btn.dataset.state = html;
+      btn.innerHTML = html;
+    }
+    btn.title = holding.length
+      ? 'Saved in ' + holding.map((p) => p.title).join(', ')
+      : 'Save this channel to a pocket';
+  }
+
+  /* ---------------------------------------------------------- pocket dialog */
+
+  /* One dialog, two callers: the button in the channel header and the one on a row of the
+     similar-channels table. Both are answering the same question — which list does this
+     channel go in — so they get the same thing rather than two that drift apart.
+
+     Fixed to the viewport and parented to <body>, for the reason the hover preview is: it
+     must not be clipped by whatever container it was opened from, and on the channel page
+     that container is YouTube's own header. */
+  let pkDlg = null;
+  let pkTarget = null;      // the channel being saved
+  let pkNewOpen = false;    // the "new pocket" form
+  let pkDone = null;        // called after any change, so the opener can repaint
+  let pkSeed = '';          // the suggested note, from wherever the save was started
+
+  /* What to write in the note before the reader writes anything.
+
+     Where they were standing says most of why they are saving: from the similar table it is
+     whichever preset they were reading — "newly monetized channel" — and from a channel's own
+     page it is what that channel is about, which the index already classifies. Neither is a
+     claim, only a first draft; both are editable and both can be emptied. */
+  function seedFromChip() {
+    const chip = SIM_CHIPS.find((x) => x.key === simFilter.chip);
+    if (!chip || chip.key === 'all') return '';
+    return chip.label.toLowerCase() + ' channel';
+  }
+
+  function seedFromNiche(cb) {
+    const key = channelKeyFromLocation();
+    if (!key) { cb(''); return; }
+    sendMessage({ type: 'ytc-niche', key, title: (channelOwnStats() || {}).title || '',
+                  about: channelAboutText(), videoTitles: channelVideoTitles(10) }, (res) => {
+      if (chrome.runtime.lastError) { cb(''); return; }
+      const label = res && res.ok && res.niche ? String(res.niche) : '';
+      cb(label ? label.toLowerCase() + ' channel' : '');
+    });
+  }
+
+  function closePocketDialog() {
+    if (pkDlg) pkDlg.remove();
+    pkDlg = null;
+    pkTarget = null;
+    pkNewOpen = false;
+    document.removeEventListener('keydown', pocketEsc, true);
+  }
+
+  function pocketEsc(e) {
+    if (e.key !== 'Escape' || !pkDlg) return;
+    e.stopPropagation();
+    closePocketDialog();
+  }
+
+  function pocketRowHtml(p) {
+    const has = pocketHas(p, pkTarget);
+    const n = (p.channels || []).length;
+    const entry = has ? pocketEntry(p, pkTarget) : null;
+    return '<button type="button" class="ytc-pk__opt' + (has ? ' ytc-pk__opt--in' : '') +
+        '" data-pocket="' + escapeHtml(p.id) + '">' +
+      '<span class="ytc-pk__optname">' + escapeHtml(p.title) + '</span>' +
+      '<span class="ytc-pk__optn">' + n + (n === 1 ? ' channel' : ' channels') + '</span>' +
+      '<span class="ytc-pk__tick">' + (has ? '\u2713 Saved' : 'Save') + '</span>' +
+    '</button>' +
+    /* Only under the pocket it belongs to. A note is about this channel IN this pocket — the
+       same channel can be kept in two lists for two different reasons — so one field at the
+       bottom of the dialog would have had to guess which. */
+    (has
+      /* A <label> wrapping the field, so the text is bound to the input without an id — ids
+         in a page we do not own are a collision waiting to happen. Says "optional" outright:
+         a lone box under a row that just saved reads like something still owed. */
+      ? '<label class="ytc-pk__noterow">' +
+          '<span class="ytc-pk__notelbl">Notes about channel (optional)</span>' +
+          '<input class="ytc-pk__note" type="text" maxlength="' + POCKET_NOTE_MAX + '"' +
+          ' data-note="' + escapeHtml(p.id) + '" placeholder="Why this one?"' +
+          ' value="' + escapeHtml((entry && entry.note) || '') + '">' +
+        '</label>'
+      : '');
+  }
+
+  function renderPocketDialog() {
+    if (!pkDlg) return;
+    const name = pkTarget ? (pkTarget.title || pkTarget.handle || 'this channel') : '';
+    pkDlg.innerHTML =
+      '<div class="ytc-pk__head">' +
+        '<b>Save to pocket</b>' +
+        '<button type="button" class="ytc-pk__x" aria-label="Close">×</button>' +
+      '</div>' +
+      '<p class="ytc-pk__who">' + escapeHtml(name) + '</p>' +
+      (pockets.length
+        ? '<div class="ytc-pk__list">' + pockets.map(pocketRowHtml).join('') + '</div>'
+        : '<p class="ytc-pk__none">No pockets yet. Make one below.</p>') +
+      (pkNewOpen
+        ? '<div class="ytc-pk__form">' +
+            '<input class="ytc-pk__title" type="text" maxlength="' + POCKET_TITLE_MAX + '"' +
+              ' placeholder="Pocket name" aria-label="Pocket name">' +
+            '<textarea class="ytc-pk__desc" rows="2" maxlength="' + POCKET_DESC_MAX + '"' +
+              ' placeholder="Description (optional)" aria-label="Pocket description">' +
+            '</textarea>' +
+            '<div class="ytc-pk__formrow">' +
+              '<button type="button" class="ytc-pk__create">Create and save</button>' +
+              '<button type="button" class="ytc-pk__cancel">Cancel</button>' +
+            '</div>' +
+          '</div>'
+        : '<button type="button" class="ytc-pk__new">+ New pocket</button>') +
+      (pockets.length >= POCKET_MAX
+        ? '<p class="ytc-pk__none">' + POCKET_MAX + ' pockets is the limit.</p>' : '');
+
+    pkDlg.querySelector('.ytc-pk__x').addEventListener('click', closePocketDialog);
+
+    pkDlg.querySelectorAll('[data-pocket]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const p = pockets.find((x) => x.id === b.dataset.pocket);
+        if (!p) return;
+        /* The row toggles. It is the only thing on screen saying whether this channel is in
+           that pocket, so it has to be the thing that takes it back out — otherwise saving to
+           the wrong list means going to find the Pockets tab to undo it. */
+        if (pocketHas(p, pkTarget)) pocketRemove(p, pocketChannelKey(pkTarget));
+        else if (pocketAdd(p, Object.assign({}, pkTarget, { note: pkSeed }))) {
+          maybeShowPocketHint();
+        }
+        savePockets();
+        renderPocketDialog();
+        paintPocketNav();
+        if (pkDone) pkDone();
+      });
+    });
+
+    pkDlg.querySelectorAll('[data-note]').forEach((f) => {
+      // Saved as it is typed, debounced. A note behind a Save button is a note nobody writes.
+      let t = 0;
+      const commit = () => {
+        const p = pockets.find((x) => x.id === f.dataset.note);
+        const entry = p && pocketEntry(p, pkTarget);
+        if (!entry) return;
+        entry.note = String(f.value || '').slice(0, POCKET_NOTE_MAX);
+        savePockets();
+        if (pkDone) pkDone();
+      };
+      f.addEventListener('input', () => { clearTimeout(t); t = setTimeout(commit, 400); });
+      f.addEventListener('blur', () => { clearTimeout(t); commit(); });
+      f.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); clearTimeout(t); commit(); f.blur(); }
+      });
+    });
+
+    const newBtn = pkDlg.querySelector('.ytc-pk__new');
+    if (newBtn) {
+      newBtn.addEventListener('click', () => { pkNewOpen = true; renderPocketDialog(); });
+    }
+    const cancel = pkDlg.querySelector('.ytc-pk__cancel');
+    if (cancel) {
+      cancel.addEventListener('click', () => { pkNewOpen = false; renderPocketDialog(); });
+    }
+
+    const create = pkDlg.querySelector('.ytc-pk__create');
+    if (create) {
+      const title = pkDlg.querySelector('.ytc-pk__title');
+      const desc = pkDlg.querySelector('.ytc-pk__desc');
+      const commit = () => {
+        const t = String(title.value || '').trim();
+        // A pocket with no name cannot be picked out of a list. Ask again rather than guess.
+        if (!t) {
+          title.focus();
+          title.classList.add('ytc-pk__title--bad');
+          setTimeout(() => title.classList.remove('ytc-pk__title--bad'), 900);
+          return;
+        }
+        if (pockets.length >= POCKET_MAX) return;
+        const p = newPocket(t, desc.value);
+        if (pocketAdd(p, Object.assign({}, pkTarget, { note: pkSeed }))) maybeShowPocketHint();
+        savePockets();
+        pkNewOpen = false;
+        renderPocketDialog();
+        paintPocketNav();
+        if (pkDone) pkDone();
+      };
+      create.addEventListener('click', commit);
+      title.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); commit(); }
+        if (e.key === 'Escape') { pkNewOpen = false; renderPocketDialog(); }
+      });
+      desc.addEventListener('keydown', (e) => e.stopPropagation());
+      setTimeout(() => { title.focus(); }, 0);
+    }
+    placePocketDialog();
+  }
+
+  function placePocketDialog() {
+    if (!pkDlg || !pkDlg.dataset.anchorX) return;
+    const w = pkDlg.offsetWidth;
+    const h = pkDlg.offsetHeight;
+    const ax = Number(pkDlg.dataset.anchorX);
+    const ay = Number(pkDlg.dataset.anchorY);
+    const ab = Number(pkDlg.dataset.anchorBottom);
+    const left = Math.max(8, Math.min(ax, window.innerWidth - w - 8));
+    let top = ab + 8;
+    if (top + h > window.innerHeight - 8) top = Math.max(8, ay - h - 8);
+    pkDlg.style.left = Math.round(left) + 'px';
+    pkDlg.style.top = Math.round(top) + 'px';
+  }
+
+  function openPocketDialog(channel, anchor, onChange, seed) {
+    closePocketDialog();
+    if (!channel || !pocketChannelKey(channel)) return;
+    pkTarget = channel;
+    pkDone = onChange || null;
+    pkSeed = String(seed || '');
+    pkNewOpen = !pockets.length;      // nothing to choose from: go straight to the form
+    pkDlg = document.createElement('div');
+    pkDlg.className = 'ytc-pk';
+    pkDlg.setAttribute('role', 'dialog');
+    pkDlg.setAttribute('aria-label', 'Save channel to a pocket');
+    if (anchor && anchor.getBoundingClientRect) {
+      const r = anchor.getBoundingClientRect();
+      pkDlg.dataset.anchorX = String(r.left);
+      pkDlg.dataset.anchorY = String(r.top);
+      pkDlg.dataset.anchorBottom = String(r.bottom);
+    }
+    document.body.appendChild(pkDlg);
+    // Anything outside closes it, but not the click that opened it.
+    setTimeout(() => {
+      document.addEventListener('click', function away(e) {
+        if (!pkDlg) { document.removeEventListener('click', away, true); return; }
+        if (pkDlg.contains(e.target)) return;
+        document.removeEventListener('click', away, true);
+        closePocketDialog();
+      }, true);
+    }, 0);
+    document.addEventListener('keydown', pocketEsc, true);
+    renderPocketDialog();
+  }
 
   /* ------------------------------------------------------- saved presets */
 
@@ -5651,6 +6773,10 @@
 
   function presetChipHtml(pz, i, cut) {
     const cls = (FILTER_STATE.preset === pz.key ? ' on' : '') +
+      /* Marks the rows that carry a ⋮, so the chip can reserve room for it without every
+         built-in row reserving room for a button it does not have. */
+      (pz.mine ? ' ytc-fm__chipwrap--mine' : '') +
+      (pmMenu === pz.key ? ' ytc-fm__chipwrap--menu' : '') +
       (pmForm && pmForm.mode === 'edit' && pmForm.id === pz.id ? ' ytc-fm__chipwrap--editing' : '') +
       (i === cut ? ' ytc-fm__chipwrap--peek' : i > cut ? ' ytc-fm__chipwrap--extra' : '');
 
@@ -6145,6 +7271,21 @@
        downloading here, a click is forwarded to the real button on the source card, which
        already knows how to do both. */
     modal.querySelector('.ytc-fm__results').addEventListener('click', (e) => {
+      /* The channel name goes to the channel, not to the video.
+
+         The whole row is one <a> pointing at the watch page, and a real link to the channel
+         cannot be nested inside it — an anchor inside an anchor is invalid and the browser
+         unnests it. So the name is a plain element that carries the channel key, and this
+         turns a click on it into the navigation it obviously means. Opened in a new tab like
+         the row itself, so a click never costs the reader the list they are working through. */
+      const chan = e.target.closest && e.target.closest('[data-chan]');
+      if (chan && chan.dataset.chan) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.open('https://www.youtube.com/' + encodeURI(chan.dataset.chan),
+                    '_blank', 'noopener');
+        return;
+      }
       const btn = e.target.closest && e.target.closest('.ytc-btn, .ytc-thumb');
       if (!btn) return;
       e.preventDefault();
@@ -7710,6 +8851,15 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && selectMode) setSelectMode(false);
   });
+
+  /* Last, deliberately. Both of these read module state declared further up the file, and
+     placing the call above those declarations does not merely delay them — it throws.
+     loadPockets swallows its own failure and runs the callback regardless, so a temporal-dead-
+     zone error on the storage key became an uncaught one in the callback, and that killed the
+     whole content script at evaluation: no badges, no tabs, no buttons, nothing after the
+     call site. Startup work goes here, next to the first scan, where everything exists. */
+  loadPresets();
+  loadPockets(() => refreshPocketMarks());
 
   scan();
 })();

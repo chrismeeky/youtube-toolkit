@@ -1117,16 +1117,41 @@ html[dark] .ytc-fm__chipwrap--editing .ytc-fm__chip {
 .ytc-fm__chipwrap--over { box-shadow: inset 0 3px 0 -1px #065fd4; border-radius: 8px; }
 html[dark] .ytc-fm__chipwrap--over { box-shadow: inset 0 3px 0 -1px #3ea6ff; }
 
+/* Over the chip, not beside it. As a flex sibling it took 24px plus the gap out of the row,
+   so a saved preset was visibly narrower than every built-in one next to it — the one
+   difference between them that carries no meaning. Absolute keeps every row the same width;
+   the padding below keeps the title off it. */
 .ytc-fm__dots {
-  flex: 0 0 24px;
+  position: absolute;
+  right: 4px;
+  top: 0;
+  bottom: 0;
+  width: 24px;
   border: 0;
   background: none;
   border-radius: 6px;
   color: #606060;
   font: 600 15px/1 Roboto, Arial, sans-serif;
   cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s ease;
 }
+/* Shown on hover, like the drag grip. Kept visible while its own menu is open, since the
+   pointer has to leave the row to reach the items, and on keyboard focus so it is reachable
+   without a mouse at all. */
+.ytc-fm__chipwrap:hover .ytc-fm__dots,
+.ytc-fm__chipwrap--menu .ytc-fm__dots,
+.ytc-fm__dots:focus-visible { opacity: 1; }
+.ytc-fm__chipwrap--mine .ytc-fm__chip { padding-right: 30px; }
 .ytc-fm__dots:hover { background: rgba(0, 0, 0, .08); color: #0f0f0f; }
+/* The active row is a dark slab, so the button has to invert with it — same as the grip. */
+.ytc-fm__chipwrap.on .ytc-fm__dots { color: #fff; }
+.ytc-fm__chipwrap.on .ytc-fm__dots:hover { background: rgba(255, 255, 255, .18); color: #fff; }
+html[dark] .ytc-fm__chipwrap.on .ytc-fm__dots { color: #0f0f0f; }
+html[dark] .ytc-fm__chipwrap.on .ytc-fm__dots:hover {
+  background: rgba(0, 0, 0, .14); color: #0f0f0f;
+}
+@media (prefers-reduced-motion: reduce) { .ytc-fm__dots { transition: none; } }
 html[dark] .ytc-fm__dots { color: #aaa; }
 html[dark] .ytc-fm__dots:hover { background: rgba(255, 255, 255, .12); color: #f1f1f1; }
 
@@ -1544,7 +1569,9 @@ html[dark] .ytc-fm__count, html[dark] .ytc-fm__lbl, html[dark] .ytc-fm__x,
    video, so without this the name looks like the rest of the row's metadata and nobody would
    think to rest on it. Underlined on hover only — a name that is permanently decorated reads
    as a second link competing with the row. */
-.ytc-fm__chan[data-chan] { cursor: help; }
+/* It previews on hover and opens the channel on click, so it is a pointer — `help` said
+   "there is a tooltip here", which stopped being the whole truth once it became clickable. */
+.ytc-fm__chan[data-chan] { cursor: pointer; }
 .ytc-fm__chan[data-chan]:hover { text-decoration: underline; }
 
 html[dark] .ytc-fm__nums, html[dark] .ytc-fm__chan, html[dark] .ytc-fm__none { color: #aaa; }
@@ -2140,3 +2167,359 @@ html[dark] .ytc-pv__thumb { background: rgba(255, 255, 255, .1); }
 @media (prefers-reduced-motion: reduce) {
   .ytc-pv { box-shadow: 0 4px 14px rgba(0, 0, 0, .3); }
 }
+
+/* ------------------------------------------------------------------- pockets */
+
+/* Beside Subscribe, in YouTube's own action row, so it has to look like it belongs there
+   without pretending to be one of YouTube's own buttons. */
+.ytc-pkbtn {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: 8px; padding: 0 14px; height: 36px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .15));
+  border-radius: 18px; background: transparent; color: inherit; cursor: pointer;
+  font: 500 14px/1 Roboto, Arial, sans-serif; white-space: nowrap;
+}
+.ytc-pkbtn:hover { background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, .05)); }
+.ytc-pkbtn--on { border-color: #065fd4; color: #065fd4; }
+.ytc-pkbtn__icon { font-size: 15px; line-height: 1; }
+html[dark] .ytc-pkbtn { border-color: rgba(255, 255, 255, .2); }
+html[dark] .ytc-pkbtn:hover { background: rgba(255, 255, 255, .1); }
+html[dark] .ytc-pkbtn--on { border-color: #3ea6ff; color: #3ea6ff; }
+
+/* The star on a similar-channels row. It lives inside the row's own link, so it is a button
+   that stops the click rather than a second link competing with it. */
+/* Sits in the name line beside the monetization pill, so it needs to hold its own baseline
+   there rather than fill a grid cell. */
+.ytc-t__star {
+  flex: 0 0 auto; border: 0; background: none; cursor: pointer;
+  padding: 0 4px; border-radius: 6px; line-height: 1; font-size: 14px;
+  color: var(--yt-spec-text-secondary, #909090);
+}
+.ytc-t__star:hover { background: rgba(0, 0, 0, .08); color: #0f0f0f; }
+.ytc-t__star--on { color: #065fd4; }
+html[dark] .ytc-t__star:hover { background: rgba(255, 255, 255, .12); color: #f1f1f1; }
+html[dark] .ytc-t__star--on { color: #3ea6ff; }
+
+/* The chooser. Fixed and parented to <body> for the same reason the hover preview is: it must
+   not be clipped by the header it was opened from. */
+.ytc-pk {
+  position: fixed; z-index: 2147483000; width: 320px; max-width: calc(100vw - 16px);
+  padding: 12px; box-sizing: border-box;
+  background: #fff; border: 1px solid #e5e5e5; border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .22);
+  font-family: Roboto, Arial, sans-serif;
+}
+.ytc-pk__head { display: flex; align-items: center; gap: 8px; }
+.ytc-pk__head b { font: 500 14px/1.2 Roboto, Arial, sans-serif; }
+.ytc-pk__x {
+  margin-left: auto; border: 0; background: none; cursor: pointer;
+  font-size: 18px; line-height: 1; color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-pk__who {
+  margin: 2px 0 10px; font: 400 12px/1.3 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ytc-pk__list { max-height: 240px; overflow-y: auto; margin-bottom: 8px; }
+.ytc-pk__opt {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 8px 10px; margin-bottom: 4px; cursor: pointer; color: inherit;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .12));
+  border-radius: 8px; background: transparent;
+  font: 400 13px/1.3 Roboto, Arial, sans-serif;
+}
+.ytc-pk__opt:hover { background: rgba(0, 0, 0, .05); }
+.ytc-pk__optname { flex: 1 1 auto; min-width: 0; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ytc-pk__optn { flex: 0 0 auto; font-size: 11px; color: var(--yt-spec-text-secondary, #909090); }
+.ytc-pk__tick { flex: 0 0 auto; font-size: 11px; font-weight: 500; color: #065fd4; }
+.ytc-pk__opt--in { border-color: #065fd4; }
+/* Under the pocket it belongs to, indented so it reads as part of that row rather than as a
+   field for the dialog as a whole. */
+.ytc-pk__noterow { display: block; margin: -2px 0 8px; padding-left: 10px; cursor: text; }
+.ytc-pk__notelbl {
+  display: block; margin: 0 0 4px 2px;
+  font: 500 11px/1.2 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-pk__notelbl { color: #aaa; }
+.ytc-pk__note {
+  width: 100%; box-sizing: border-box; padding: 6px 9px; border-radius: 7px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .18));
+  background: transparent; color: inherit; font: 400 12px/1.3 Roboto, Arial, sans-serif;
+}
+.ytc-pk__note:focus { outline: none; border-color: #065fd4; }
+html[dark] .ytc-pk__note { border-color: rgba(255, 255, 255, .22); }
+html[dark] .ytc-pk__note:focus { border-color: #3ea6ff; }
+
+.ytc-pk__none {
+  margin: 6px 0; font: 400 12px/1.4 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-pk__new, .ytc-pk__create, .ytc-pk__cancel {
+  padding: 8px 12px; border-radius: 8px; cursor: pointer;
+  font: 500 12px/1.2 Roboto, Arial, sans-serif;
+}
+.ytc-pk__new {
+  width: 100%; border: 1px dashed rgba(0, 0, 0, .28); background: none; color: inherit;
+}
+.ytc-pk__new:hover { background: rgba(0, 0, 0, .05); }
+.ytc-pk__form { display: flex; flex-direction: column; gap: 6px; }
+.ytc-pk__title, .ytc-pk__desc {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .18));
+  background: transparent; color: inherit; font: 400 13px/1.35 Roboto, Arial, sans-serif;
+}
+.ytc-pk__title { font-weight: 500; }
+.ytc-pk__desc { resize: vertical; min-height: 38px; }
+.ytc-pk__title:focus, .ytc-pk__desc:focus { outline: none; border-color: #065fd4; }
+.ytc-pk__title--bad { border-color: #c00 !important; }
+.ytc-pk__formrow { display: flex; gap: 6px; }
+.ytc-pk__create { flex: 1 1 auto; border: 0; background: #065fd4; color: #fff; }
+.ytc-pk__cancel { border: 0; background: none; color: var(--yt-spec-text-secondary, #606060); }
+html[dark] .ytc-pk { background: #212121; border-color: #3f3f3f; }
+html[dark] .ytc-pk__opt { border-color: rgba(255, 255, 255, .2); }
+html[dark] .ytc-pk__opt:hover { background: rgba(255, 255, 255, .08); }
+html[dark] .ytc-pk__opt--in, html[dark] .ytc-pk__title:focus,
+html[dark] .ytc-pk__desc:focus { border-color: #3ea6ff; }
+html[dark] .ytc-pk__tick { color: #3ea6ff; }
+html[dark] .ytc-pk__new { border-color: rgba(255, 255, 255, .3); }
+html[dark] .ytc-pk__new:hover { background: rgba(255, 255, 255, .08); }
+html[dark] .ytc-pk__title, html[dark] .ytc-pk__desc { border-color: rgba(255, 255, 255, .22); }
+html[dark] .ytc-pk__create { background: #3ea6ff; color: #0f0f0f; }
+
+/* The sidebar entry, under Shorts. Built to match YouTube's own guide rows rather than to
+   stand out from them — it is a destination, not an advertisement. */
+.ytc-nav {
+  display: flex; align-items: center; cursor: pointer;
+  font-family: Roboto, Arial, sans-serif; color: inherit;
+}
+/* Defaults only. matchGuideMetrics overwrites width, margins, padding, radius, height and
+   gap from the real row above, so these are what shows for the instant before it measures —
+   and what stays if the guide is collapsed and cannot be measured at all. box-sizing is the
+   one that must be right here: YouTube sizes its entry with width + inner padding, so a
+   content-box would come out wider than the row it is copying. */
+.ytc-nav--full {
+  box-sizing: border-box;
+  width: calc(100% - 12px);
+  gap: 24px; height: 40px; padding: 0 12px; margin: 0; border-radius: 10px;
+  font-size: 14px;
+}
+.ytc-nav--full:hover { background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, .05)); }
+.ytc-nav--mini {
+  box-sizing: border-box;
+  flex-direction: column; justify-content: center; gap: 6px;
+  width: 74px; height: 74px; border-radius: 10px; font-size: 10px; text-align: center;
+}
+.ytc-nav--mini:hover { background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, .05)); }
+.ytc-nav__icon { display: flex; align-items: center; }
+.ytc-nav--mini .ytc-nav__icon svg { width: 24px; height: 24px; }
+.ytc-nav__label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ytc-nav__n {
+  margin-left: auto; font-size: 11px; padding: 1px 7px; border-radius: 10px;
+  background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, .08));
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-nav--mini .ytc-nav__n { display: none; }
+/* Pops when a pocket is added, so the count is seen changing rather than just being
+   different next time you look at it. Scale only — moving it would shift the row. */
+.ytc-nav__n--pop { animation: ytc-nav-pop .45s cubic-bezier(.34, 1.56, .64, 1) both; }
+@keyframes ytc-nav-pop {
+  0%   { transform: scale(1); }
+  35%  { transform: scale(1.55); background: #065fd4; color: #fff; }
+  70%  { transform: scale(.92); }
+  100% { transform: scale(1); }
+}
+html[dark] .ytc-nav__n--pop { animation-name: ytc-nav-pop-dark; }
+@keyframes ytc-nav-pop-dark {
+  0%   { transform: scale(1); }
+  35%  { transform: scale(1.55); background: #3ea6ff; color: #0f0f0f; }
+  70%  { transform: scale(.92); }
+  100% { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ytc-nav__n--pop { animation: none; }
+}
+html[dark] .ytc-nav--full:hover, html[dark] .ytc-nav--mini:hover { background: rgba(255,255,255,.1); }
+html[dark] .ytc-nav__n { background: rgba(255, 255, 255, .12); color: #aaa; }
+
+/* The first-save callout. Slides out of the sidebar it is pointing at, with an arrow on its
+   left edge, and takes itself away after a few seconds. */
+.ytc-hint {
+  position: fixed; z-index: 2147483001; max-width: 260px;
+  display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+  border-radius: 12px; background: #0f0f0f; color: #fff;
+  font: 400 13px/1.4 Roboto, Arial, sans-serif;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .32);
+  opacity: 0; transform: translateX(-10px);
+  transition: opacity .22s ease, transform .22s ease;
+}
+.ytc-hint--in { opacity: 1; transform: translateX(0); }
+.ytc-hint::before {
+  content: ''; position: absolute; left: -6px; top: 50%; width: 12px; height: 12px;
+  margin-top: -6px; background: inherit; transform: rotate(45deg); border-radius: 2px;
+}
+.ytc-hint__star { font-size: 16px; line-height: 1; animation: ytc-hint-pop .5s ease both; }
+.ytc-hint__text b { font-weight: 500; }
+.ytc-hint__x {
+  margin-left: 2px; border: 0; background: none; color: rgba(255, 255, 255, .6);
+  font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px;
+}
+.ytc-hint__x:hover { color: #fff; }
+@keyframes ytc-hint-pop {
+  0% { transform: scale(.4) rotate(-25deg); opacity: 0; }
+  60% { transform: scale(1.25) rotate(6deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0); opacity: 1; }
+}
+html[dark] .ytc-hint { background: #f1f1f1; color: #0f0f0f; }
+html[dark] .ytc-hint__x { color: rgba(0, 0, 0, .5); }
+html[dark] .ytc-hint__x:hover { color: #0f0f0f; }
+/* An animation that draws the eye is the one thing this setting is most clearly about, so it
+   goes straight to its resting state rather than moving at all. */
+@media (prefers-reduced-motion: reduce) {
+  .ytc-hint { transition: none; opacity: 1; transform: none; }
+  .ytc-hint__star { animation: none; }
+}
+
+/* The pockets modal, opened from the sidebar and over whatever page you are on. */
+.ytc-pkm__veil {
+  position: fixed; inset: 0; z-index: 2900; background: rgba(0, 0, 0, .6);
+}
+.ytc-pkm {
+  position: fixed; z-index: 2901; inset: 6vh 8vw; display: flex; flex-direction: column;
+  background: var(--yt-spec-base-background, #fff); color: inherit;
+  border-radius: 14px; overflow: hidden; box-shadow: 0 16px 48px rgba(0, 0, 0, .35);
+  font-family: Roboto, Arial, sans-serif;
+}
+.ytc-pkm__head {
+  display: flex; align-items: center; gap: 12px; flex: 0 0 auto; padding: 14px 20px;
+  border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .1));
+}
+.ytc-pkm__head b { font: 500 16px/1.2 Roboto, Arial, sans-serif; }
+.ytc-pkm__count { font-size: 12px; color: var(--yt-spec-text-secondary, #909090); }
+.ytc-pkm__find {
+  margin-left: auto; width: 260px; max-width: 40%; box-sizing: border-box;
+  padding: 7px 12px; border-radius: 18px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .15));
+  background: transparent; color: inherit; font: 400 13px/1.2 Roboto, Arial, sans-serif;
+}
+.ytc-pkm__find:focus { outline: none; border-color: #065fd4; }
+html[dark] .ytc-pkm__find { border-color: rgba(255, 255, 255, .2); }
+html[dark] .ytc-pkm__find:focus { border-color: #3ea6ff; }
+
+.ytc-pkm__x {
+  margin-left: 12px; border: 0; background: none; cursor: pointer;
+  font-size: 22px; line-height: 1; color: inherit;
+}
+.ytc-pkm__body { flex: 1 1 auto; overflow-y: auto; padding: 16px 20px 24px; }
+html[dark] .ytc-pkm { background: #212121; }
+html[dark] .ytc-pkm__head { border-bottom-color: rgba(255, 255, 255, .12); }
+.ytc-pkv__pocket {
+  margin-bottom: 18px; border: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .12));
+  border-radius: 12px; overflow: hidden;
+}
+.ytc-pkv__head {
+  display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px;
+  background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, .03));
+}
+.ytc-pkv__meta { flex: 1 1 auto; min-width: 0; }
+.ytc-pkv__meta b { font: 500 15px/1.3 Roboto, Arial, sans-serif; }
+.ytc-pkv__count {
+  margin-left: 8px; font: 400 12px/1 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #909090);
+}
+.ytc-pkv__meta i {
+  display: block; margin-top: 3px; font-style: normal; font-size: 12px;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-pkv__acts { display: flex; gap: 6px; flex: 0 0 auto; }
+.ytc-pkv__edit, .ytc-pkv__del, .ytc-pkv__delno, .ytc-pkv__cancel {
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .15));
+  background: transparent; color: inherit; border-radius: 16px; padding: 6px 12px;
+  cursor: pointer; font: 500 12px/1 Roboto, Arial, sans-serif;
+}
+.ytc-pkv__del:hover, .ytc-pkv__delyes { color: #c00; border-color: #c00; }
+.ytc-pkv__warn {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 14px; background: rgba(204, 0, 0, .07);
+  font: 400 13px/1.4 Roboto, Arial, sans-serif;
+}
+.ytc-pkv__warnacts { display: flex; gap: 6px; margin-left: auto; }
+.ytc-pkv__delyes {
+  background: #c00; color: #fff; border: 1px solid #c00; border-radius: 16px;
+  padding: 6px 12px; cursor: pointer; font: 500 12px/1 Roboto, Arial, sans-serif;
+}
+.ytc-pkv__form { flex: 1 1 auto; display: flex; flex-direction: column; gap: 6px; }
+.ytc-pkv__title, .ytc-pkv__desc {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .18));
+  background: transparent; color: inherit; font: 400 13px/1.35 Roboto, Arial, sans-serif;
+}
+.ytc-pkv__title { font-weight: 500; }
+.ytc-pkv__desc { resize: vertical; }
+.ytc-pkv__title:focus, .ytc-pkv__desc:focus { outline: none; border-color: #065fd4; }
+.ytc-pkv__formrow { display: flex; gap: 6px; }
+.ytc-pkv__savep {
+  border: 0; background: #065fd4; color: #fff; border-radius: 16px; padding: 7px 14px;
+  cursor: pointer; font: 500 12px/1 Roboto, Arial, sans-serif;
+}
+/* Same grid shape as the similar-channels table, so a saved channel reads the same as a
+   considered one: name on the left, figures in fixed columns on the right. */
+.ytc-pkv__row {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.6fr) minmax(120px, 1.4fr) .8fr .8fr .8fr .6fr 40px;
+  align-items: center; gap: 8px; padding: 8px 14px;
+  border-top: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .08));
+}
+.ytc-pkv__row--head {
+  font: 500 11px/1 Roboto, Arial, sans-serif; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--yt-spec-text-secondary, #909090); border-top: 0;
+}
+.ytc-pkv__row:not(.ytc-pkv__row--head):hover { background: rgba(0, 0, 0, .03); }
+.ytc-pkv__chan { display: flex; align-items: center; gap: 10px; min-width: 0;
+  text-decoration: none; color: inherit; }
+/* The note column. Left-aligned against the right-aligned figures, because it is prose —
+   and the pencil only on hover, so a column of edit affordances does not compete with the
+   text it is offering to edit. */
+.ytc-pkv__note {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  text-align: left !important; border: 0; background: none; color: inherit;
+  font: 400 12px/1.35 Roboto, Arial, sans-serif; cursor: text; padding: 4px 6px;
+  border-radius: 6px;
+}
+.ytc-pkv__note:hover { background: rgba(0, 0, 0, .06); }
+.ytc-pkv__notetext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ytc-pkv__noteempty { font-style: normal; color: var(--yt-spec-text-secondary, #909090); }
+.ytc-pkv__pencil {
+  flex: 0 0 auto; opacity: 0; font-size: 12px;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-pkv__note:hover .ytc-pkv__pencil { opacity: .8; }
+.ytc-pkv__noteinput {
+  width: 100%; box-sizing: border-box; padding: 5px 8px; border-radius: 6px;
+  border: 1px solid #065fd4; background: transparent; color: inherit;
+  font: 400 12px/1.3 Roboto, Arial, sans-serif;
+}
+.ytc-pkv__noteinput:focus { outline: none; }
+html[dark] .ytc-pkv__note:hover { background: rgba(255, 255, 255, .08); }
+html[dark] .ytc-pkv__noteinput { border-color: #3ea6ff; }
+
+.ytc-pkv__drop {
+  border: 0; background: none; cursor: pointer; border-radius: 6px; padding: 2px 6px;
+  font-size: 16px; line-height: 1; color: var(--yt-spec-text-secondary, #909090);
+}
+.ytc-pkv__drop:hover { background: rgba(204, 0, 0, .12); color: #c00; }
+.ytc-pkv__empty {
+  margin: 0; padding: 16px 14px; font: 400 13px/1.5 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-pkv__pocket { border-color: rgba(255, 255, 255, .16); }
+html[dark] .ytc-pkv__head { background: rgba(255, 255, 255, .05); }
+html[dark] .ytc-pkv__row { border-top-color: rgba(255, 255, 255, .1); }
+html[dark] .ytc-pkv__row:not(.ytc-pkv__row--head):hover { background: rgba(255, 255, 255, .05); }
+html[dark] .ytc-pkv__edit, html[dark] .ytc-pkv__del,
+html[dark] .ytc-pkv__delno, html[dark] .ytc-pkv__cancel { border-color: rgba(255, 255, 255, .2); }
+html[dark] .ytc-pkv__title, html[dark] .ytc-pkv__desc { border-color: rgba(255, 255, 255, .22); }
+html[dark] .ytc-pkv__savep { background: #3ea6ff; color: #0f0f0f; }
+html[dark] .ytc-pkv__warn { background: rgba(255, 138, 128, .12); }
+html[dark] .ytc-pkv__del:hover, html[dark] .ytc-pkv__drop:hover { color: #ff8a80; border-color: #ff8a80; }

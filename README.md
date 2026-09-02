@@ -267,6 +267,47 @@ is the one that was hidden rather than whatever the selector resolves to by then
 re-asserts whichever view is open, since YouTube rebuilds the body on its own tabs and on
 hydration.
 
+## Pockets
+
+Named lists of channels, kept in the browser. Open a channel and press **☆ Pocket** beside
+Subscribe, or press the **☆** on any row of the Similar channels table — both open the same
+chooser: pick an existing pocket, or make one with a name and an optional description. Clicking
+a pocket you are already in takes the channel back out, since that row is the only thing on
+screen saying it is in there.
+
+**Pockets live in YouTube's own sidebar, under Shorts** — they belong to you, not to whatever
+channel happens to be on screen, so they sit beside YouTube's other global destinations rather
+than in a channel's tab row. Clicking it opens a modal over whatever page you are on. The entry
+is anchored to the Shorts row by its href and never by its label, since the guide is translated
+and matching text is one locale away from landing in the wrong place. Both guides get it: the
+full one, and the mini rail that is left when the window is narrow.
+
+The first time you ever save anything, a callout slides out of the sidebar saying where it
+went — once, ever. The save happens in a dialog anchored to a button elsewhere on the page, and
+without it the first pocket is created and then lost, because nothing gives you a reason to
+look down the sidebar for something you have never seen there.
+
+The modal lists every pocket. Each channel shows its
+avatar, channel id, subscribers, average views and outlier score — the same figures the
+similar-channels table shows, from the same helpers, so a saved channel reads identically to a
+considered one. Pockets can be renamed and re-described, channels removed one at a time, and a
+pocket deleted — with a confirmation that names how many channels go with it, because "delete
+this pocket" and "delete the 23 channels I collected" are different sentences and only the
+second is true.
+
+A pocket stores a **snapshot** of each channel's figures rather than a reference to resolve
+later. The numbers are already on screen when you save, so keeping them costs nothing, where
+re-resolving forty channels on opening the list would be forty lookups and a quota bill. And a
+saved list is a record of what you saw: a channel doing 3× its subscriber count when you
+pocketed it is *why* it is in there, and quietly rewriting that to today's figure loses the
+thing worth keeping. A figure that was unknown at save time stays unknown rather than being
+invented.
+
+One channel is one channel however it was reached — the id decides when there is one and the
+lower-cased handle when there is not, so saving from the channel page and from the similar list
+cannot produce two entries. Stored in `chrome.storage.local`; 50 pockets, 500 channels each.
+Saving in one tab updates the stars in every other. Turn it off in the popup.
+
 ## Channel preview
 
 Hover a card's **channel name** and a popover lists that channel's recent uploads — thumbnail,

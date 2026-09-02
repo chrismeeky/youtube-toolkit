@@ -21,6 +21,9 @@
     /* Hovering a card's channel link lists that channel's recent uploads. Costs a
        request per channel, so it is gated behind hover intent rather than proximity. */
     showPreview: true,            // channel preview popover on hover
+    /* Pockets: named lists of channels, kept in the browser. The button is injected
+       into YouTube's own header, so it has to be switchable off like every other one. */
+    showPockets: true,            // "Pocket" save button and the Pockets tab
     showFilter: true,             // "Filter" button over search results, home and channel grids
     showCompanion: true,          // search-term panel beside search results
     showThumb: true,              // thumbnail download button

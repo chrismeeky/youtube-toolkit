@@ -1042,6 +1042,10 @@ async function getSimilarChannels(key, titles, about, force, opts) {
       return {
         channels: (out.channels || []).map((c) => ({
           handle: c.handle || c.title,
+          /* Carried through so a channel saved from this list is identifiable the same way as
+             one saved from its own page. Dropping it left the two routes with different
+             identifiers for the same channel. */
+          id: c.id || '',
           title: c.title,
           avatar: c.avatar_url,
           /* The index's score, raised where YouTube's own results agree. Kept as one number
