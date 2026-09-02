@@ -248,6 +248,25 @@ saved is the slider *positions* plus the video type and sort — not a rule of i
 saved preset stays visible and adjustable in the drawer exactly like a built-in one. Saving in
 one tab updates any other tab with the modal open.
 
+### When the tab lights up but nothing appears
+
+The panel is inserted as a **sibling** of the channel body and the body is then hidden. That
+only works while the two really are siblings, and `pageContent()` used to be one
+`querySelector` with three comma-separated selectors — which returns the element earliest in
+*document order* matching any of them, not the first selector that matches. `#contents` is a
+bare id YouTube reuses across a channel page, so the answer changed between calls. When a
+later call returned an element that happened to be an *ancestor* of the panel, hiding the body
+hid the panel with it: tab lit, body blank. The panel was then found and reused by class
+alone, so the bad placement stuck until the page was reloaded — which is why it looked
+intermittent.
+
+Three things hold it together now: the selectors are tried in an explicit order and the
+outermost match within one wins; a panel found by class is re-homed beside the current body
+before use; and the element that was hidden is remembered, so the one restored on the way out
+is the one that was hidden rather than whatever the selector resolves to by then. Every scan
+re-asserts whichever view is open, since YouTube rebuilds the body on its own tabs and on
+hydration.
+
 ## Channel preview
 
 Hover a card's **channel name** and a popover lists that channel's recent uploads — thumbnail,
@@ -362,6 +381,20 @@ Search results are handed to the server with the request and enriched before the
 so a channel discovered a second ago is ranked in the same answer rather than the next one.
 That is also the defence against a weak topic: a query that drifts returns channels whose
 vectors do not match, and the similarity floor drops them.
+
+### Handle URLs and id URLs are the same channel
+
+A channel opens as `/@handle` or as `/channel/UC…` depending only on which link was followed,
+and the key the extension carries differs accordingly. That difference used to leak everywhere:
+`/similar` prefixed `@` to whatever it was given, turning `channel/UC…` into `@channel/UC…`
+and matching nothing; the row lookup had no id path even though the id was being sent
+alongside; and both the ingest call and the sighting report were gated on the key starting
+with `@`. So a channel opened by its id URL was never added to the corpus, and one that had
+been indexed for weeks reported itself unindexed on every visit and was ranked from its page
+text instead — worse results, and paying to embed text it already had a vector for.
+
+The id is now extracted from either form, the row is looked up by handle and then by id, and
+both the ingest and the sighting accept an id-only channel.
 
 ### Filling the index
 

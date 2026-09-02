@@ -704,6 +704,8 @@
     /* Kept out of decorateChannelHeader deliberately: that function returns early when the
        monetization badge is switched off, which would silently take the tab with it. */
     ensureSimilarTab();
+    /* After the tabs, because a rebuild there drops the active class and this puts it back. */
+    try { reassertPanels(); } catch (e) { /* keep the rest of the scan */ }
     ensureFilterButton();
     /* Wrapped because it runs before noteChannelSeen and the stats card, and a throw here
        would silently stop both — the same failure the badge row was wrapped against. */
@@ -2063,11 +2065,101 @@
   const TAB_LABEL = 'Similar Channels';
 
 
+  /* Which element the panels stand in front of.
+
+     This was one querySelector with three comma-separated selectors, which does NOT mean
+     "the first selector that matches" — it means the element earliest in DOCUMENT ORDER
+     matching any of them. So what came back depended on what YouTube had rendered at that
+     instant, and it changed between calls. `#contents` is the dangerous one: it is a bare id
+     YouTube reuses all over a channel page, in the header and inside shelves as well as
+     around the grid.
+
+     That is what made the panel open onto nothing. The host is inserted as a SIBLING of
+     whatever this returned at the time. If a later call returned a different element that
+     happened to be an ANCESTOR of the host, `content.style.display = 'none'` hid the panel
+     along with the page — tab lit, body blank — and since the host was then found and reused
+     by class alone, the bad placement stuck for the rest of the page's life.
+
+     Now: an explicit priority order, and within the winning selector the OUTERMOST match, so
+     no other candidate can be nested around the panel. */
+  const PAGE_CONTENT_SELECTORS = [
+    'ytd-two-column-browse-results-renderer',
+    'ytd-browse[page-subtype="channels"] ytd-section-list-renderer',
+    'ytd-browse[page-subtype="channels"] #contents'
+  ];
+
   function pageContent() {
-    return document.querySelector(
-      'ytd-browse[page-subtype="channels"] #contents, ' +
-      'ytd-browse[page-subtype="channels"] ytd-section-list-renderer, ' +
-      'ytd-two-column-browse-results-renderer');
+    for (const sel of PAGE_CONTENT_SELECTORS) {
+      const all = Array.from(document.querySelectorAll(sel));
+      if (!all.length) continue;
+      return all.find((el) => !all.some((o) => o !== el && o.contains(el))) || all[0];
+    }
+    return null;
+  }
+
+  /* Keep a panel a sibling of the content it replaces.
+
+     YouTube re-renders the channel body on its own tabs and when hydration finishes, which
+     can leave a panel inserted next to an element that is no longer the one being hidden.
+     Re-homing makes the two siblings again, and siblings are the whole guarantee: an element
+     cannot be an ancestor of its own sibling, so hiding one can never hide the other. */
+  function homePanel(host, content) {
+    if (!host || !content || !content.parentElement) return;
+    if (host.parentElement !== content.parentElement) {
+      content.parentElement.insertBefore(host, content);
+    }
+  }
+
+  /* Hide the page for a panel, but never hide the panel with it. The re-home above should
+     make this unreachable; it is here because the symptom it prevents is silent — an empty
+     panel under a lit tab, with nothing in the console to say why. */
+  /* Which element we actually hid, remembered rather than looked up again on the way out.
+     Restoring "whatever pageContent() returns now" is how a channel page gets left
+     permanently blank: if the answer moved while the panel was open, the element still
+     carrying display:none is not the one that gets cleared. */
+  let hiddenContent = null;
+
+  function hideForPanel(content, host) {
+    if (!content) return;
+    if (host && content.contains(host)) return;
+    if (hiddenContent && hiddenContent !== content) hiddenContent.style.display = '';
+    hiddenContent = content;
+    content.style.display = 'none';
+  }
+
+  function showPageContent() {
+    if (hiddenContent) { hiddenContent.style.display = ''; hiddenContent = null; }
+    const now = pageContent();
+    if (now) now.style.display = '';
+  }
+
+  /* Put the open view back after YouTube has rebuilt the page underneath it.
+
+     The channel body is re-rendered on YouTube's own tabs, when hydration finishes, and on
+     navigations that do not change the URL — any of which can restore the content we hid,
+     move the container the panel lives in, or rebuild the tab row without our active class.
+     Called from every scan; when nothing has moved it is a few property reads. */
+  function reassertPanels() {
+    if (!settings.showSimilar || !channelKeyFromLocation()) return;
+    if (!simFilter.open && !analyticsOpen) return;
+    const content = pageContent();
+    const host = simFilter.open ? similarHost() : analyticsHost();
+    if (!host) return;
+    homePanel(host, content);
+    hideForPanel(content, host);
+    host.style.display = '';
+    // Same selectors the open functions use, so a rebuilt tab row lights up the same way.
+    const sel = simFilter.open ? '.ytc-tab' : '.ytc-tab--an';
+    document.querySelectorAll(sel).forEach((t) => t.classList.add('ytc-tab--on'));
+
+    /* A host that was destroyed with the container comes back from similarHost() empty, and
+       an empty panel under a lit tab is the very thing this function exists to prevent. Fill
+       it once — the skeleton lands synchronously, so the next scan sees children and stops. */
+    if (!host.childNodes.length) {
+      delete host.dataset.loaded;
+      if (simFilter.open) { host.innerHTML = similarSkeleton(); askSimilar(false); }
+      else { host.innerHTML = analyticsSkeleton(); askAnalytics(false); }
+    }
   }
 
   /* ------------------------------------------------------- analytics panel */
@@ -2075,9 +2167,9 @@
   const ANALYTICS_LABEL = 'Analytics';
 
   function analyticsHost() {
-    let host = document.querySelector('.ytc-an');
-    if (host) return host;
     const content = pageContent();
+    let host = document.querySelector('.ytc-an');
+    if (host) { homePanel(host, content); return host; }
     if (!content || !content.parentElement) return null;
     host = document.createElement('div');
     host.className = 'ytc-an';
@@ -2088,8 +2180,7 @@
 
   function closeAnalyticsView() {
     analyticsOpen = false;
-    const content = pageContent();
-    if (content) content.style.display = '';
+    showPageContent();
     document.querySelectorAll('.ytc-tab--an').forEach((t) => t.classList.remove('ytc-tab--on'));
     const host = document.querySelector('.ytc-an');
     if (host) host.style.display = 'none';
@@ -2100,11 +2191,12 @@
   function openAnalyticsView() {
     closeSimilarView();
     analyticsOpen = true;
-    const content = pageContent();
-    if (content) content.style.display = 'none';
-    document.querySelectorAll('.ytc-tab--an').forEach((t) => t.classList.add('ytc-tab--on'));
     const host = analyticsHost();
     if (!host) return;
+    const content = pageContent();
+    homePanel(host, content);
+    hideForPanel(content, host);
+    document.querySelectorAll('.ytc-tab--an').forEach((t) => t.classList.add('ytc-tab--on'));
     host.style.display = '';
     if (!host.dataset.loaded) host.innerHTML = analyticsSkeleton();
     askAnalytics(false);
@@ -2843,6 +2935,16 @@
      to click. Once per channel per page session; the server ignores ids it already holds. */
   const seenChannels = new Set();
 
+  /* The channel id behind a location key, when the key is the id form.
+
+     A channel key is "@handle" or "channel/UC…" depending only on which URL the reader
+     happened to arrive by, and several places treated the second as "not a real channel".
+     Same channel, same page, different link. */
+  function channelIdFromKey(key) {
+    const m = /^(?:channel\/)?(UC[\w-]{20,24})$/.exec(key || '');
+    return m ? m[1] : '';
+  }
+
   function noteChannelSeen(handle, id) {
     // Switching the feature off has to stop the reporting, not just hide the tab. Anything
     // else makes the toggle a lie: the user believes it is off while their browsing still
@@ -2852,9 +2954,13 @@
        nothing there and watching a video used to index nothing at all. The player knows whose
        video it is, so on a watch page that answer is passed in. */
     const key = handle || channelKeyFromLocation();
-    if (!key || !key.startsWith('@') || seenChannels.has(key)) return;
+    /* An id-form key counts. Gating this on "@" meant a channel opened by its /channel/UC…
+       link was never reported, so the corpus never learned about it however often it was
+       visited — and it then reported itself unindexed forever. */
+    if (!key || seenChannels.has(key)) return;
+    if (!key.startsWith('@') && !channelIdFromKey(key)) return;
     seenChannels.add(key);
-    let channelId = id || '';
+    let channelId = id || channelIdFromKey(key) || '';
     if (!channelId) {
       try { channelId = (channelOwnStats() || {}).channelId || ''; } catch (e) { channelId = ''; }
     }
@@ -2907,9 +3013,13 @@
   }
 
   function similarHost() {
-    let host = document.querySelector('.ytc-simview');
-    if (host) return host;
     const content = pageContent();
+    let host = document.querySelector('.ytc-simview');
+    if (host) {
+      // Existing, but not necessarily still beside the element it is meant to replace.
+      homePanel(host, content);
+      return host;
+    }
     if (!content || !content.parentElement) return null;
     host = document.createElement('div');
     host.className = 'ytc-simview';
@@ -2920,23 +3030,24 @@
   function openSimilarView() {
     closeAnalyticsView();
     simFilter.open = true;
-    const content = pageContent();
-    if (content) content.style.display = 'none';
-    document.querySelectorAll('.ytc-tab').forEach((t) => t.classList.add('ytc-tab--on'));
+    /* Host first, page second. Hiding the content before the panel exists meant the panel was
+       then created — and re-homed — against a container that was already display:none, and
+       there was no longer anything to check the panel against. Build it, put it in the right
+       place, and only then hide what it stands in front of. */
     const host = similarHost();
-    if (host) {
-      host.style.display = '';
-      if (!host.dataset.loaded) {
-        host.innerHTML = similarSkeleton();
-      }
-    }
+    if (!host) return;                     // nothing to show it in; leave the page alone
+    const content = pageContent();
+    homePanel(host, content);
+    hideForPanel(content, host);
+    document.querySelectorAll('.ytc-tab').forEach((t) => t.classList.add('ytc-tab--on'));
+    host.style.display = '';
+    if (!host.dataset.loaded) host.innerHTML = similarSkeleton();
     askSimilar(false);
   }
 
   function closeSimilarView() {
     simFilter.open = false;
-    const content = pageContent();
-    if (content) content.style.display = '';
+    showPageContent();
     document.querySelectorAll('.ytc-tab').forEach((t) => t.classList.remove('ytc-tab--on'));
     const host = document.querySelector('.ytc-simview');
     if (host) host.style.display = 'none';

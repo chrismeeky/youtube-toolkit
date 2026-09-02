@@ -1005,8 +1005,16 @@ async function getSimilarChannels(key, titles, about, force, opts) {
      cares about — and it was the only one never being added. Ingest ran solely on the search
      fallback, and only for channels search turned up, so visiting Bellator taught the index
      nothing about Bellator: its niche stayed one-sided, and UFC could not find it back. */
-  if (base && key.startsWith('@')) {
-    pushToIndex(base, [{ id: (opts && opts.channelId) || '', handle: key }]);
+  /* Handle or id — whichever the address bar gave. This was gated on "@", so a channel
+     opened by its /channel/UC… link was never handed to the index at all: it stayed
+     unindexed no matter how many times it was visited, and every visit then paid to embed
+     its page text instead of using the vector it should have had. */
+  if (base) {
+    const idMatch = /^(?:channel\/)?(UC[\w-]{20,24})$/.exec(key || '');
+    const chanId = (opts && opts.channelId) || (idMatch ? idMatch[1] : '');
+    if (key.startsWith('@') || chanId) {
+      pushToIndex(base, [{ id: chanId, handle: key.startsWith('@') ? key : '' }]);
+    }
   }
 
   /* Both halves, every time — not one or the other.

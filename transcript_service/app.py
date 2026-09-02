@@ -118,8 +118,23 @@ def embed(text):
 def indexed_channel(handle):
     """Look up a channel by handle. Case-insensitively — the YouTube API returns customUrl
     lowercased, so what is stored rarely matches what appears in the address bar."""
+    return _channel_row("handle=ilike." + urllib.parse.quote(handle), handle)
+
+
+def indexed_by_id(channel_id):
+    """The same row, found by channel id.
+
+    A /channel/UC… URL names the channel by id and carries no handle at all, and the
+    extension sends the id alongside. Without this the row was simply never found: a channel
+    that had been indexed for weeks reported itself unindexed and got ranked from its page
+    text every single visit, which is both worse and more expensive.
+    """
+    return _channel_row("id=eq." + urllib.parse.quote(channel_id), channel_id)
+
+
+def _channel_row(match, label):
     query = ("/rest/v1/channels?select=id,handle,title,embedding,topic_coherence"
-             "&handle=ilike." + urllib.parse.quote(handle) + "&limit=1")
+             "&" + match + "&limit=1")
     req = urllib.request.Request(
         SUPABASE_URL + query,
         headers={"apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY})
@@ -134,8 +149,8 @@ def indexed_channel(handle):
             # Never silently. A failure here does not stop an answer being produced, so
             # swallowing it turned a broken lookup into quietly worse results that still
             # claimed to come from the index.
-            print("  indexed_channel(%s) attempt %d failed: %s: %s"
-                  % (handle, attempt, type(e).__name__, e), flush=True)
+            print("  channel lookup(%s) attempt %d failed: %s: %s"
+                  % (label, attempt, type(e).__name__, e), flush=True)
     return None
 
 
@@ -375,6 +390,9 @@ def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity, ch
     lives in one place and the vector never crosses the network twice.
     """
     known = indexed_channel(handle) if handle else None
+    # No handle, or a handle nobody has stored: the id is the other name for the same row.
+    if not known and channel_id:
+        known = indexed_by_id(channel_id)
     vector = None
     # Exclusion must not hang on the lookup succeeding. When it comes back empty — the row was
     # written moments ago by ingest, or the lookup itself failed and was swallowed — the source
@@ -422,7 +440,7 @@ def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity, ch
     # Last line of defence: the id may be absent or stale, but the handle came from the URL.
     want = (handle or "").lstrip("@").lower()
     out = [r for r in (rows or [])
-           if (r.get("handle") or "").lstrip("@").lower() != want]
+           if not want or (r.get("handle") or "").lstrip("@").lower() != want]
     # A channel that covers several unrelated subjects has an average vector sitting between
     # all of them, near none. The neighbours it returns are then arbitrary, and the only
     # honest thing to do is say so rather than rank noise — @valorreviews produced six
@@ -2033,10 +2051,18 @@ class Handler(BaseHTTPRequestHandler):
             if not INDEX_READY:
                 self._send(200, {"ok": False, "reason": "channel index not configured"})
                 return
-            handle = str(body.get("channel") or "").strip()
-            if handle and not handle.startswith("@"):
-                handle = "@" + handle
-            if not handle:
+            raw = str(body.get("channel") or "").strip()
+            given_id = str(body.get("channelId") or "").strip() or None
+            handle = ""
+            # A /channel/UC… URL names the channel by id and has no handle in it. Prefixing
+            # "@" to that produced "@channel/UC…", which matches nothing — so a channel that
+            # had been indexed for weeks looked unindexed every time it was opened that way.
+            by_id = re.match(r"^(?:channel/)?(UC[\w-]{20,24})$", raw)
+            if by_id:
+                given_id = given_id or by_id.group(1)
+            elif raw:
+                handle = raw if raw.startswith("@") else "@" + raw
+            if not handle and not given_id:
                 self._send(400, {"ok": False, "reason": "channel required"})
                 return
 
@@ -2085,9 +2111,9 @@ class Handler(BaseHTTPRequestHandler):
             result = similar_channels(
                 handle, text, max(1, min(100, limit)),
                 as_int("minSubs"), as_int("maxSubs"), max(0.0, min(1.0, floor)),
-                channel_id=body.get("channelId") or None)
+                channel_id=given_id)
             # Growing the corpus is a side effect of being asked, never a precondition.
-            record_sighting(body.get("channelId"), handle)
+            record_sighting(given_id, handle)
             self._send(200, result)
             return
 
