@@ -353,6 +353,94 @@ html[dark] .ytc-an__tip {
 }
 html[dark] .ytc-an__tip span, html[dark] .ytc-an__axis { color: #aaa; }
 
+/* Posting time vs views. Two series, two rows: the metric across the top, the upload count
+   that produced it on a short strip beneath. They are not given a shared scale because they
+   have no shared unit — twenty uploads drawn against a views axis is just the tallest thing
+   on screen, and would be read as the finding rather than as the caveat on it. */
+.ytc-tm {
+  margin: 12px 0 0; padding: 14px 16px 10px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1)); border-radius: 12px;
+  background: var(--yt-spec-general-background-a, #fff);
+}
+.ytc-tm__toggles { display: inline-flex; gap: 18px; flex-wrap: wrap; align-items: center; }
+.ytc-tm__grp { display: inline-flex; align-items: center; gap: 7px; }
+.ytc-tm__grplab {
+  font: 400 11px/1 Roboto, Arial, sans-serif; white-space: nowrap;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-tm__legend {
+  display: flex; gap: 14px; flex-wrap: wrap; margin: 0 0 10px;
+  font: 400 11.5px/1.4 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-tm__key { display: inline-flex; align-items: center; gap: 6px; }
+.ytc-tm__key::before {
+  content: ''; width: 10px; height: 10px; border-radius: 2px; background: #7c3aed; flex: none;
+}
+.ytc-tm__key--c::before { background: #3ea6ff; }
+.ytc-tm__key--t::before { background: #7c3aed; opacity: .34; }
+.ytc-tm__key--o::before {
+  background: #7c3aed;
+  border-top: 2px dashed var(--yt-spec-general-background-a, #fff);
+}
+
+.ytc-tm__plot { position: relative; }
+.ytc-tm__cols, .ytc-tm__crow, .ytc-tm__xaxis, .ytc-tm__hits {
+  display: flex; gap: 3px; align-items: flex-end;
+}
+/* The bars do not take the pointer; the overlay below does, so an hour with nothing in it is
+   still hoverable — "has this channel ever posted at 4am" is answered on the way past. */
+.ytc-tm__cols, .ytc-tm__crow, .ytc-tm__xaxis { pointer-events: none; }
+.ytc-tm__cols { height: 150px; }
+.ytc-tm__crow {
+  height: 30px; margin-top: 5px; padding-top: 4px;
+  border-top: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+}
+.ytc-tm__col { position: relative; flex: 1 1 0; min-width: 0; height: 100%; }
+/* Inset rather than flush, so neighbouring bars stay separate columns at seven across and
+   still read as bars at twenty-four. */
+.ytc-tm__bar, .ytc-tm__cbar {
+  position: absolute; left: 6%; right: 6%; bottom: 0; min-height: 2px;
+  background: #7c3aed; border-radius: 3px 3px 0 0;
+}
+/* An average over one upload is that upload. Faint rather than absent: something posted
+   there, and the reader needs to see it without reading it as a peak. */
+.ytc-tm__bar--thin { opacity: .34; }
+/* Clamped at the ceiling because it runs past it. The dashes say the top is cut, not flat. */
+.ytc-tm__bar--over { border-top: 2px dashed var(--yt-spec-general-background-a, #fff); }
+.ytc-tm__cbar { background: #3ea6ff; border-radius: 2px 2px 0 0; }
+
+.ytc-tm__xaxis { margin-top: 5px; }
+.ytc-tm__x {
+  flex: 1 1 0; min-width: 0; text-align: center; overflow: hidden;
+  font: 400 10.5px/1.2 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-tm__hits { position: absolute; inset: 0; align-items: stretch; }
+.ytc-tm__hit { flex: 1 1 0; min-width: 0; cursor: pointer; border-radius: 4px; }
+.ytc-tm__hit:hover, .ytc-tm__hit.on { background: rgba(124, 58, 237, .1); }
+
+.ytc-tm__best {
+  margin: 12px 0 0; font: 400 12.5px/1.5 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+.ytc-tm__best b { font-weight: 500; color: #7c3aed; }
+.ytc-tm__best--flat { color: var(--yt-spec-text-secondary, #606060); }
+.ytc-tm__foot { margin: 6px 0 0; font-size: 11.5px; }
+
+html[dark] .ytc-tm { background: transparent; border-color: rgba(255,255,255,.12); }
+html[dark] .ytc-tm__crow { border-top-color: rgba(255,255,255,.12); }
+html[dark] .ytc-tm__grplab,
+html[dark] .ytc-tm__legend, html[dark] .ytc-tm__x,
+html[dark] .ytc-tm__best--flat { color: #aaa; }
+html[dark] .ytc-tm__best { color: #f1f1f1; }
+html[dark] .ytc-tm__key::before, html[dark] .ytc-tm__bar { background: #b083f0; }
+html[dark] .ytc-tm__key--o::before { background: #b083f0; }
+html[dark] .ytc-tm__key--c::before, html[dark] .ytc-tm__cbar { background: #3ea6ff; }
+html[dark] .ytc-tm__bar--over, html[dark] .ytc-tm__key--o::before { border-top-color: #0f0f0f; }
+html[dark] .ytc-tm__best b { color: #b083f0; }
+html[dark] .ytc-tm__hit:hover, html[dark] .ytc-tm__hit.on { background: rgba(176,131,240,.16); }
+
 /* Monetization badge. Inferred from ad placements, so the palette is deliberately calmer
    than the ratio pill's — green/grey rather than the ratio scale, because "no ads found"
    is genuinely uncertain and should not read as a red verdict. */

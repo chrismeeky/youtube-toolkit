@@ -2416,7 +2416,11 @@
      a sufficient key: walking from one channel to the next reused the first one's videos under
      the second one's name, which is a wrong chart rather than a stale one. The range choice
      resets too — it was picked for a channel whose upload rate the next one need not share. */
-  const anChart = { key: '', range: null, byRange: {}, loading: false, error: '' };
+  /* timeAxis/timeMetric are reader preferences rather than channel data, so resetChart
+     leaves them alone: someone who reads every channel by weekday should not have to
+     press Weekday again on each one. */
+  const anChart = { key: '', range: null, byRange: {}, loading: false, error: '',
+                    timeAxis: 'hour', timeMetric: 'avg' };
 
   function resetChart(key) {
     anChart.key = key;
@@ -2566,6 +2570,311 @@
           'the whole ' + escapeHtml(range.label.toLowerCase()) + '.</p>'
         : '') +
     '</div>';
+  }
+
+  /* ---------------------------------------------- posting time vs views */
+
+  /* A different question from the chart above. That one is a timeline — how is this channel
+     doing lately. This one has no chronology in it at all: every upload ever seen is folded
+     onto a single 24-hour clock (or a single week) to ask whether the hour a video goes out
+     changes how it does. The two cannot share a plot, because one axis is a date and the
+     other is a time of day.
+
+     The two series live in one chart on purpose, rather than behind a toggle. Total views by
+     hour is not an answer on its own: a channel that posts most often at 3pm earns most of
+     its views at 3pm whatever that hour is worth, so the tall bar is measuring the schedule
+     rather than the audience. Average views per upload is the honest measure — and it is only
+     readable beside the upload count that produced it, because an average over one video is
+     that video, not a pattern. So the count rides in front of every bar, and the buttons are
+     there to isolate a series, not to make the reader hold two charts in their head. */
+
+  const TIME_METRICS = [
+    { key: 'avg', label: 'Avg views' },
+    { key: 'total', label: 'Total views' },
+    { key: 'count', label: 'Uploads' }
+  ];
+
+  const TIME_AXES = [
+    { key: 'hour', label: 'Hour' },
+    { key: 'dow', label: 'Weekday' }
+  ];
+
+  /* Everything the panel has ever loaded for this channel, not just the selected range. The
+     range buttons above narrow on purpose — a timeline of the last week should show the last
+     week. This chart wants the opposite: twenty-four slots split between fifty uploads leaves
+     two apiece, and two is not a pattern. Whatever a range fetch already paid for is reused
+     here for free, so pressing Year above sharpens this chart as a side effect. */
+  function allKnownVideos(res) {
+    const seen = new Set(), out = [];
+    const push = (list) => {
+      for (const v of list || []) {
+        const id = v.id || (v.publishedAt + '|' + v.views);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push(v);
+      }
+    };
+    // Fetched ranges first: they are the larger sets, so the sample only adds what they miss.
+    for (const k of Object.keys(anChart.byRange)) push(anChart.byRange[k].videos);
+    push((res && res.videos) || []);
+    return out;
+  }
+
+  /* Monday first. getDay() counts from Sunday, which puts the weekend on both ends of the
+     axis and splits the run of working days a posting schedule is actually built around. */
+  function slotIndex(d, axis) {
+    return axis === 'dow' ? (d.getDay() + 6) % 7 : d.getHours();
+  }
+
+  function slotLabels(axis) {
+    const out = [];
+    if (axis === 'dow') {
+      // 2024-01-01 was a Monday, so this walks Mon..Sun in the reader's own locale.
+      for (let i = 0; i < 7; i++) {
+        out.push(new Date(2024, 0, 1 + i).toLocaleDateString(undefined, { weekday: 'short' }));
+      }
+      return out;
+    }
+    for (let h = 0; h < 24; h++) {
+      out.push(new Date(2024, 0, 1, h).toLocaleTimeString(undefined, { hour: 'numeric' }));
+    }
+    return out;
+  }
+
+  /* Every upload folded onto one clock. Empty slots are kept: an hour this channel never
+     posts in is a fact about the schedule, and closing the gap would slide the remaining bars
+     into hours they do not belong to. */
+  function timeSlots(videos, axis) {
+    const labels = slotLabels(axis);
+    const slots = labels.map((label, i) =>
+      ({ i, label, views: 0, count: 0, list: [] }));
+    for (const v of videos) {
+      if (!v.publishedAt || v.views == null) continue;
+      const d = new Date(v.publishedAt);
+      if (isNaN(d.getTime())) continue;
+      const s = slots[slotIndex(d, axis)];
+      if (!s) continue;
+      s.views += v.views;
+      s.count++;
+      s.list.push(v.views);
+    }
+    for (const s of slots) {
+      s.avg = s.count ? s.views / s.count : 0;
+      s.med = medianOf(s.list);
+    }
+    return slots;
+  }
+
+  function slotValue(s, metric) {
+    return metric === 'count' ? s.count : metric === 'total' ? s.views : s.avg;
+  }
+
+  /* The payoff line. Guarded rather than always printed: with two uploads in a slot the top
+     of the ranking is whichever one got lucky, and stating that as "best time to post" would
+     dress noise up as advice. A floor on the winning slot and a margin over the rest of the
+     schedule is the least that makes the sentence true. */
+  function bestSlotNote(slots, axis, totalCount) {
+    if (totalCount < 8) return '';
+    /* Three uploads in a slot before it can win, dropping to two only if nothing reaches
+       three — a channel posting twice an hour around the clock has a real pattern in it and
+       should not be met with silence for failing an arbitrary floor. */
+    let pool = slots.filter((s) => s.count >= 3);
+    if (!pool.length) pool = slots.filter((s) => s.count >= 2);
+    if (pool.length < 2) return '';
+
+    /* The baseline is the median of those slots' own averages, not the channel's overall
+       average. One 900k outlier posted at 3am drags a mean baseline up until the hour that
+       genuinely earns six times the rest fails the test — the comparison has to be as robust
+       as the claim resting on it. */
+    const base = medianOf(pool.map((s) => s.avg));
+    if (!base) return '';
+    let best = null;
+    for (const s of pool) if (!best || s.avg > best.avg) best = s;
+    const ratio = best.avg / base;
+    const noun = axis === 'dow' ? 'day' : 'hour';
+
+    if (ratio < 1.25) {
+      return '<p class="ytc-tm__best ytc-tm__best--flat">No ' + noun +
+        ' stands out — across ' + totalCount + ' uploads this channel’s results do not ' +
+        'track ' + (axis === 'dow' ? 'the day it posts' : 'the time of day it posts') +
+        '.</p>';
+    }
+    return '<p class="ytc-tm__best"><b>' + (axis === 'dow' ? 'Best day to post: ' : 'Best hour to post: ') +
+      escapeHtml(best.label) + '</b> — ' + F.compact(Math.round(best.avg)) +
+      ' avg views across ' + best.count + ' upload' + (best.count === 1 ? '' : 's') + ', ' +
+      ratio.toFixed(1) + '× the typical ' + noun + ' for this channel.</p>';
+  }
+
+  function timeChartHtml(res) {
+    const axis = anChart.timeAxis;
+    const metric = anChart.timeMetric;
+    const videos = allKnownVideos(res);
+    const slots = timeSlots(videos, axis);
+    const totalCount = slots.reduce((a, s) => a + s.count, 0);
+
+    /* Each group is named and spaced away from the other. Unlabelled and 6px apart they read
+       as one five-button control with two buttons lit, which looks like a bug rather than
+       like two questions — a reader who sees Weekday and Uploads both highlighted has no way
+       to tell that one picks the axis and the other picks what the bars measure. */
+    const group = (cls, name, items, current, attr) =>
+      '<span class="ytc-tm__grp"><span class="ytc-tm__grplab">' + name + '</span>' +
+      '<span class="ytc-an__ranges ' + cls + '" role="group" aria-label="' + name + '">' +
+      items.map((it) => {
+        const on = it.key === current;
+        return '<button type="button" class="ytc-an__range' + (on ? ' on' : '') +
+          '" aria-pressed="' + on + '" ' + attr + '="' + it.key + '">' +
+          it.label + '</button>';
+      }).join('') + '</span></span>';
+
+    const head = '<div class="ytc-an__charthead">' +
+      '<span class="ytc-an__label">Posting time vs views</span>' +
+      '<span class="ytc-tm__toggles">' +
+        group('ytc-tm__axes', 'Group by', TIME_AXES, axis, 'data-tmaxis') +
+        group('ytc-tm__metrics', 'Show', TIME_METRICS, metric, 'data-tmmetric') +
+      '</span></div>';
+
+    if (totalCount < 3) {
+      return '<div class="ytc-tm">' + head +
+        '<p class="ytc-an__note">Only ' + totalCount + ' upload' +
+        (totalCount === 1 ? '' : 's') + ' carried both a publish time and a view count — ' +
+        'not enough to read a pattern. Pick a longer range on the chart above to load more.' +
+        '</p></div>';
+    }
+
+    /* The scale ignores slots holding a single upload when the metric is an average, because
+       an average of one is that video. One 900k fluke posted once at 3am otherwise sets the
+       ceiling for all twenty-four bars and presses the hour that genuinely earns 50k into a
+       stub two pixels tall — the chart then shows the outlier and hides the pattern. Those
+       bars are still drawn, clamped at the top and marked as running past it, so nothing is
+       silently dropped. */
+    const scaleFrom = metric === 'avg' ? slots.filter((s) => s.count >= 2) : slots;
+    const maxMain = Math.max.apply(null,
+      (scaleFrom.length ? scaleFrom : slots).map((s) => slotValue(s, metric))) || 1;
+    const maxCount = Math.max.apply(null, slots.map((s) => s.count)) || 1;
+    const showCount = metric !== 'count';
+
+    let anyThin = false, anyOver = false;
+    const col = (inner, s) =>
+      '<div class="ytc-tm__col' + (s.count ? '' : ' ytc-tm__col--empty') + '">' + inner + '</div>';
+
+    const bars = slots.map((s) => {
+      const raw = (slotValue(s, metric) / maxMain) * 100;
+      const over = raw > 100.5;
+      const thin = metric === 'avg' && s.count === 1;
+      if (thin) anyThin = true;
+      if (over) anyOver = true;
+      return col(s.count
+        ? '<i class="ytc-tm__bar' + (thin ? ' ytc-tm__bar--thin' : '') +
+          (over ? ' ytc-tm__bar--over' : '') +
+          '" style="height:' + Math.min(100, raw).toFixed(1) + '%"></i>'
+        : '', s);
+    }).join('');
+
+    /* The upload count gets its own strip under the bars rather than a second bar inside
+       them. Sharing one plot means sharing one scale, and these two have nothing in common to
+       scale by: twenty uploads drawn against a views axis simply becomes the tallest thing on
+       screen and is read as the answer, when its whole job is to qualify the bar above it. */
+    const counts = showCount ? slots.map((s) =>
+      col(s.count
+        ? '<i class="ytc-tm__cbar" style="height:' +
+          Math.max(8, (s.count / maxCount) * 100).toFixed(1) + '%"></i>'
+        : '', s)).join('') : '';
+
+    /* Hour labels every third slot; twenty-four of them cannot fit, and a crowded axis is
+       read as no axis at all. Weekdays are seven and all fit. */
+    const xs = slots.map((s) => {
+      const show = axis === 'dow' || s.i % 3 === 0;
+      const text = axis === 'dow' ? s.label : String(s.i).padStart(2, '0');
+      return '<span class="ytc-tm__x">' + (show ? escapeHtml(text) : '') + '</span>';
+    }).join('');
+
+    const hits = slots.map((s) =>
+      '<div class="ytc-tm__hit" data-i="' + s.i + '"></div>').join('');
+
+    const metricName = metric === 'count' ? 'Uploads'
+      : metric === 'total' ? 'Total views' : 'Avg views per upload';
+    const peak = metric === 'count' ? String(maxMain) : F.compact(Math.round(maxMain));
+    const legend = '<div class="ytc-tm__legend">' +
+      '<span class="ytc-tm__key ytc-tm__key--v">' + escapeHtml(metricName) +
+        ' · peak ' + peak + '</span>' +
+      (showCount ? '<span class="ytc-tm__key ytc-tm__key--c">Uploads · peak ' +
+        maxCount + '</span>' : '') +
+      (anyThin ? '<span class="ytc-tm__key ytc-tm__key--t">Faint · a single upload</span>'
+        : '') +
+      (anyOver ? '<span class="ytc-tm__key ytc-tm__key--o">Dashed top · runs past the ' +
+        'scale</span>' : '') +
+      '</div>';
+
+    return '<div class="ytc-tm">' + head + legend +
+      '<div class="ytc-tm__plot">' +
+        '<div class="ytc-tm__cols">' + bars + '</div>' +
+        (showCount ? '<div class="ytc-tm__crow">' + counts + '</div>' : '') +
+        '<div class="ytc-tm__xaxis">' + xs + '</div>' +
+        '<div class="ytc-tm__hits">' + hits + '</div>' +
+        '<div class="ytc-an__tip" hidden></div>' +
+      '</div>' +
+      bestSlotNote(slots, axis, totalCount) +
+      '<p class="ytc-an__note ytc-tm__foot">' + totalCount + ' upload' +
+        (totalCount === 1 ? '' : 's') + ' with a known publish time, folded onto one ' +
+        (axis === 'dow' ? 'week' : '24-hour clock') +
+        '. Times are your own timezone, not the channel’s.</p>' +
+    '</div>';
+  }
+
+  function wireTimeChart(host, res) {
+    const chart = host.querySelector('.ytc-tm');
+    if (!chart) return;
+
+    chart.querySelectorAll('[data-tmaxis]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        anChart.timeAxis = b.dataset.tmaxis;
+        renderAnalytics(res);
+      });
+    });
+    chart.querySelectorAll('[data-tmmetric]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        anChart.timeMetric = b.dataset.tmmetric;
+        renderAnalytics(res);
+      });
+    });
+
+    const plot = chart.querySelector('.ytc-tm__plot');
+    const tip = chart.querySelector('.ytc-an__tip');
+    if (!plot || !tip) return;
+    const slots = timeSlots(allKnownVideos(res), anChart.timeAxis);
+
+    /* The whole column is the target, not the bar. An hour with no uploads is exactly the
+       thing a reader wants to hover to confirm, and a zero-height bar cannot be hovered. */
+    const show = (col) => {
+      const s = slots[Number(col.dataset.i)];
+      if (!s) return;
+      tip.innerHTML = '<b>' + escapeHtml(s.label) + '</b>' +
+        '<span>' + s.count + ' upload' + (s.count === 1 ? '' : 's') + '</span>' +
+        (s.count
+          ? '<span>' + F.compact(s.views) + ' views total' +
+            (s.med == null ? '' : ' · median ' + F.compact(Math.round(s.med))) + '</span>' +
+            '<em>' + F.compact(Math.round(s.avg)) + ' avg per upload</em>'
+          : '<span>Nothing posted in this slot</span>');
+      tip.hidden = false;
+      const box = plot.getBoundingClientRect();
+      const d = col.getBoundingClientRect();
+      const left = d.left - box.left + d.width / 2;
+      const flip = left > box.width * 0.6;
+      tip.style.left = flip ? 'auto' : left + 12 + 'px';
+      tip.style.right = flip ? (box.width - left + 12) + 'px' : 'auto';
+      tip.style.top = '0px';
+      col.classList.add('on');
+    };
+    const hide = (col) => { tip.hidden = true; if (col) col.classList.remove('on'); };
+
+    chart.querySelectorAll('.ytc-tm__hit').forEach((col) => {
+      col.addEventListener('mouseenter', () => show(col));
+      col.addEventListener('mouseleave', () => hide(col));
+      col.addEventListener('click', (e) => { e.preventDefault(); show(col); });
+    });
+    plot.addEventListener('mouseleave', () => hide(null));
   }
 
   /* Derived once, so the cards read from one place and cannot disagree with each other. */
@@ -2725,6 +3034,7 @@
       '</div>' +
 
       (m.sampled ? viewsChartHtml(res) : '') +
+      (m.sampled ? timeChartHtml(res) : '') +
 
         '<div class="ytc-an__panel">' +
           '<span class="ytc-an__label">Videos vs Shorts views</span>' +
@@ -2763,6 +3073,7 @@
         'niche does, so treat it as a scale rather than a figure.</p>';
 
     wireChart(host, res);
+    wireTimeChart(host, res);
 
     const refresh = host.querySelector('.ytc-an__refresh');
     if (refresh) {
