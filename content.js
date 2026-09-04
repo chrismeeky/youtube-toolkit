@@ -2108,20 +2108,77 @@
      by class alone, the bad placement stuck for the rest of the page's life.
 
      Now: an explicit priority order, and within the winning selector the OUTERMOST match, so
-     no other candidate can be nested around the panel. */
+     no other candidate can be nested around the panel.
+
+     And one more thing document order gets wrong, which is what made the tabs look dead when
+     the reader arrived from the home feed. The SPA does not throw the previous page away: it
+     parks it in the document, hidden, and builds the new one after it. So on a channel opened
+     by clicking a video's channel name, the home feed's own
+     `ytd-two-column-browse-results-renderer` is still there — matching the first selector,
+     and EARLIER in document order than the channel's. The panel was then inserted beside a
+     parked page and hidden along with it: the click registered, the tab did not light, and
+     nothing was drawn. Loading the same channel URL directly left only one match, so it
+     worked, which is what made this look intermittent.
+
+     So: search the live channel browse first, and never accept a candidate that is sitting
+     inside a parked page. Every other lookup in this file has learned the same lesson —
+     `CHANNEL_SCOPES` filters `[hidden]`, `tabBarCandidates` checks the box — this one had
+     not. */
+  const CHANNEL_BROWSE = 'ytd-browse[page-subtype="channels"]';
+
+  /* Relative to the channel browse, so `#contents` is no longer the bare id it was. */
   const PAGE_CONTENT_SELECTORS = [
     'ytd-two-column-browse-results-renderer',
-    'ytd-browse[page-subtype="channels"] ytd-section-list-renderer',
-    'ytd-browse[page-subtype="channels"] #contents'
+    'ytd-section-list-renderer',
+    '#contents'
   ];
 
+  /* Which element we actually hid, remembered rather than looked up again on the way out.
+     Restoring "whatever pageContent() returns now" is how a channel page gets left
+     permanently blank: if the answer moved while the panel was open, the element still
+     carrying display:none is not the one that gets cleared.
+
+     Declared up here because parked() reads it. */
+  let hiddenContent = null;
+
+  /* Is this element part of a page the SPA has parked?
+
+     Two ways YouTube puts one aside, and both have to count: the `hidden` attribute on the
+     page element, and a plain display:none. The second is why this measures the box rather
+     than only reading attributes — with one exception, the content WE hid to make room for a
+     panel. That one is not stale, it is the very element the open panel stands in front of,
+     and treating it as stale would send every re-home to a different element and hide the
+     page twice over. */
+  function parked(el) {
+    if (!el || !el.isConnected) return true;
+    if (el.closest('[hidden]')) return true;
+    if (el === hiddenContent) return false;
+    const r = el.getBoundingClientRect();
+    return r.width === 0 && r.height === 0;
+  }
+
+  function outermost(list) {
+    return list.find((el) => !list.some((o) => o !== el && o.contains(el))) || list[0] || null;
+  }
+
+  function liveChannelBrowse() {
+    return Array.from(document.querySelectorAll(CHANNEL_BROWSE)).find((el) => !parked(el)) || null;
+  }
+
   function pageContent() {
-    for (const sel of PAGE_CONTENT_SELECTORS) {
-      const all = Array.from(document.querySelectorAll(sel));
-      if (!all.length) continue;
-      return all.find((el) => !all.some((o) => o !== el && o.contains(el))) || all[0];
+    const scope = liveChannelBrowse();
+    if (scope) {
+      for (const sel of PAGE_CONTENT_SELECTORS) {
+        const all = Array.from(scope.querySelectorAll(sel)).filter((el) => !parked(el));
+        if (all.length) return outermost(all);
+      }
+      return null;
     }
-    return null;
+    /* No page-subtype to scope by — re-skinned or not yet hydrated markup. Only the first
+       selector is safe unscoped; `#contents` on its own is the bare id this all started with. */
+    const all = Array.from(document.querySelectorAll(PAGE_CONTENT_SELECTORS[0]))
+      .filter((el) => !parked(el));
+    return all.length ? outermost(all) : null;
   }
 
   /* Keep a panel a sibling of the content it replaces.
@@ -2140,12 +2197,6 @@
   /* Hide the page for a panel, but never hide the panel with it. The re-home above should
      make this unreachable; it is here because the symptom it prevents is silent — an empty
      panel under a lit tab, with nothing in the console to say why. */
-  /* Which element we actually hid, remembered rather than looked up again on the way out.
-     Restoring "whatever pageContent() returns now" is how a channel page gets left
-     permanently blank: if the answer moved while the panel was open, the element still
-     carrying display:none is not the one that gets cleared. */
-  let hiddenContent = null;
-
   function hideForPanel(content, host) {
     if (!content) return;
     if (host && content.contains(host)) return;
@@ -2158,6 +2209,157 @@
     if (hiddenContent) { hiddenContent.style.display = ''; hiddenContent = null; }
     const now = pageContent();
     if (now) now.style.display = '';
+  }
+
+  /* Which of our two tabs is which. `.ytc-tab` alone is NOT "the Similar Channels tab": the
+     Analytics tab carries both classes, so every place that lit `.ytc-tab` lit the pair, and
+     the two underlines met to read as one wide selection across both. */
+  const TAB_SIM_SELECTOR = '.ytc-tab:not(.ytc-tab--an)';
+  const TAB_AN_SELECTOR = '.ytc-tab--an';
+
+  /* YouTube's own selected tab, across the markups the row has worn. A selector that matches
+     nothing costs nothing — YouTube's tab is simply left as it was. */
+  const YT_SELECTED_TAB = ['yt-tab-shape[aria-selected="true"]',
+                           'yt-tab-shape[tab-selected]',
+                           '.yt-tab-shape-wiz--sel',
+                           'tp-yt-paper-tab.iron-selected',
+                           'tp-yt-paper-tab[aria-selected="true"]'].join(', ');
+
+  /* How YouTube marks the selected tab, rather than how it draws it.
+
+     Overriding the drawing was the wrong lever and it only half worked: the label dimmed,
+     because the label's weight and colour sit on the element our selector reached, but the
+     underline stayed. The bar is a child element whose look YouTube owns, and guessing which
+     property paints it — opacity, background, border, a pseudo-element — is a guess that has
+     to be re-made every time the tab row is re-skinned.
+
+     So do not fight the drawing. Take away the marker it keys off and let YouTube draw the
+     tab as unselected itself, which is exactly the look we want and is by definition correct
+     for whatever markup ships. Both class names are stripped:
+
+       <div class="ytTabShapeTab ytTabShapeTabSelected">Home</div>
+       <div class="ytTabShapeTabBar ytTabShapeTabBarSelected"></div>
+
+     Every class removed is recorded with the element it came off, so putting the tab back is
+     exact rather than reconstructed. Note the MutationObserver watches childList only, not
+     attributes — so our own class edits cannot feed back into a scan and loop. */
+  const YT_SELECTED_CLASSES = ['ytTabShapeTabSelected', 'ytTabShapeTabBarSelected',
+                               'yt-tab-shape-wiz--sel', 'iron-selected'];
+  const YT_TAB_PARTS = '.ytTabShapeTab, .ytTabShapeTabBar, .yt-tab-shape-wiz__tab, .indicator';
+
+  /* And the other half of the marker, which is the half that was still showing.
+
+     Stripping the classes alone did not put the underline out, and neither did overriding the
+     paint before that — so the rule that draws it is not keyed on a class we can see. That
+     leaves the attribute: `yt-tab-shape[aria-selected="true"] …` styles the tab from the host,
+     and no amount of work on the children reaches it.
+
+     Rather than hunt for the one declaration that paints the bar, take away every marker a
+     selected-state rule could possibly key on and let YouTube draw an unselected tab. The
+     label going quiet while the underline stayed was the tell: that was OUR font-weight
+     override landing, not YouTube's selected styling lifting. */
+  /* [element, className] pairs, to be added back exactly as they were. */
+  let mutedClasses = [];
+  /* [element, attribute, previousValue] triples, same idea. */
+  let mutedAttrs = [];
+
+  /* And the underline itself, which is not part of the tab at all — the reason three passes
+     at quieting <yt-tab-shape> changed the label and never touched the line.
+
+     Read off a live channel page: the tab's own bar measures 0px tall and transparent, and
+     the row draws a single shared one instead —
+
+       <div class="tabGroupShapeSlider tabGroupShapeSliderTransition"></div>   48x2, #0f0f0f
+
+     absolutely positioned, a sibling of the tabs, slid under whichever tab is selected. So
+     the underline lives outside the element every previous selector was scoped to. Hide the
+     slider and the row carries no selection mark at all, which is the truth while our panel
+     is the thing on screen — our own tab draws its own.
+
+     Inline and !important, because this is a one-element override against a stylesheet we do
+     not control, and the previous inline value is kept so the restore is exact. */
+  const YT_SLIDER = '.tabGroupShapeSlider, .yt-tab-group-shape-wiz__slider, #selectionBar';
+
+  /* [element, previousInlineOpacity, previousPriority] triples. */
+  let mutedSliders = [];
+
+  function muteYtSlider(bar) {
+    for (const el of bar.querySelectorAll(YT_SLIDER)) {
+      // Candidate rows nest, so the same slider can be reached twice in one pass.
+      if (el.style.getPropertyValue('opacity') === '0') continue;
+      mutedSliders.push([el, el.style.getPropertyValue('opacity'),
+                         el.style.getPropertyPriority('opacity')]);
+      el.style.setProperty('opacity', '0', 'important');
+    }
+  }
+
+  function unmuteYtTabs() {
+    for (const [el, cls] of mutedClasses) el.classList.add(cls);
+    mutedClasses = [];
+    for (const [el, attr, was] of mutedAttrs) el.setAttribute(attr, was);
+    mutedAttrs = [];
+    for (const [el, was, pri] of mutedSliders) {
+      if (was) el.style.setProperty('opacity', was, pri);
+      else el.style.removeProperty('opacity');
+    }
+    mutedSliders = [];
+    document.querySelectorAll('.ytc-yt-tab--muted')
+      .forEach((t) => t.classList.remove('ytc-yt-tab--muted'));
+  }
+
+  function muteYtTab(tab) {
+    tab.classList.add('ytc-yt-tab--muted');
+    for (const el of [tab, ...tab.querySelectorAll(YT_TAB_PARTS)]) {
+      for (const cls of YT_SELECTED_CLASSES) {
+        if (!el.classList.contains(cls)) continue;
+        el.classList.remove(cls);
+        mutedClasses.push([el, cls]);
+      }
+    }
+    /* aria-selected is a real tri-state string, so it is set rather than removed. This is
+       also the more truthful value while a panel is up: YouTube's tab is not the one showing
+       its content, and our own tab below says aria-selected="true" in its place. */
+    if (tab.getAttribute('aria-selected') === 'true') {
+      mutedAttrs.push([tab, 'aria-selected', 'true']);
+      tab.setAttribute('aria-selected', 'false');
+    }
+    /* The rest are boolean attributes, where presence is the whole signal. */
+    for (const attr of ['selected', 'tab-selected']) {
+      if (!tab.hasAttribute(attr)) continue;
+      mutedAttrs.push([tab, attr, tab.getAttribute(attr)]);
+      tab.removeAttribute(attr);
+    }
+  }
+
+  /* One writer for the lit state of the row, derived from the open flags.
+
+     There were five, each toggling a class at its own call site, and they did not agree —
+     which is how a single open panel could leave two tabs underlined. Deriving the whole row
+     from `simFilter.open` and `analyticsOpen` makes disagreement impossible: whatever the
+     flags say is what the row shows, every time it is called. */
+  function syncTabState() {
+    const simOn = simFilter.open;
+    const anOn = analyticsOpen;
+    /* Our tabs carry role="tab" inside YouTube's own role="tablist", so aria-selected moves
+       with the underline — otherwise muting YouTube's tab would leave the row claiming that
+       nothing at all is selected. */
+    const light = (sel, on) => document.querySelectorAll(sel).forEach((t) => {
+      t.classList.toggle('ytc-tab--on', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    light(TAB_SIM_SELECTOR, simOn);
+    light(TAB_AN_SELECTOR, anOn);
+
+    /* And YouTube's own tab, which went on claiming to be selected while our panel stood in
+       front of the content it names — the third underline in the row. Muted for as long as we
+       are the thing on screen; it is still a live tab, with its aria-selected untouched, and
+       clicking it still puts the page back. */
+    unmuteYtTabs();
+    if (!simOn && !anOn) return;
+    for (const bar of tabBarCandidates()) {
+      bar.querySelectorAll(YT_SELECTED_TAB).forEach(muteYtTab);
+      muteYtSlider(bar);
+    }
   }
 
   /* Put the open view back after YouTube has rebuilt the page underneath it.
@@ -2175,9 +2377,8 @@
     homePanel(host, content);
     hideForPanel(content, host);
     host.style.display = '';
-    // Same selectors the open functions use, so a rebuilt tab row lights up the same way.
-    const sel = simFilter.open ? '.ytc-tab' : '.ytc-tab--an';
-    document.querySelectorAll(sel).forEach((t) => t.classList.add('ytc-tab--on'));
+    // The same writer the open functions use, so a rebuilt tab row lights up the same way.
+    syncTabState();
 
     /* A host that was destroyed with the container comes back from similarHost() empty, and
        an empty panel under a lit tab is the very thing this function exists to prevent. Fill
@@ -2208,22 +2409,36 @@
   function closeAnalyticsView() {
     analyticsOpen = false;
     showPageContent();
-    document.querySelectorAll('.ytc-tab--an').forEach((t) => t.classList.remove('ytc-tab--on'));
+    syncTabState();
     const host = document.querySelector('.ytc-an');
     if (host) host.style.display = 'none';
   }
 
   let analyticsOpen = false;
 
+  /* A click that cannot place its panel yet must not read as a dead tab.
+
+     Both open functions set their open flag before they look for a host, so reassertPanels()
+     finishes the job on the next scan. But scans are driven by mutations, and a channel page
+     that has gone quiet may not produce one — so the flag sat there true and the click looked
+     ignored. These are the retries that make it mean something, plus a line in the console so
+     the next report of this has something to stand on. */
+  const OPEN_RETRIES = [150, 400, 1000, 2500];
+
+  function retryOpenPanel(what) {
+    console.warn('[YouTube Toolkit] ' + what + ' has nowhere to open yet \u2014 retrying.');
+    for (const delay of OPEN_RETRIES) setTimeout(scan, delay);
+  }
+
   function openAnalyticsView() {
     closeSimilarView();
     analyticsOpen = true;
     const host = analyticsHost();
-    if (!host) return;
+    if (!host) { retryOpenPanel('Analytics'); return; }
     const content = pageContent();
     homePanel(host, content);
     hideForPanel(content, host);
-    document.querySelectorAll('.ytc-tab--an').forEach((t) => t.classList.add('ytc-tab--on'));
+    syncTabState();
     host.style.display = '';
     if (!host.dataset.loaded) host.innerHTML = analyticsSkeleton();
     askAnalytics(false);
@@ -3314,8 +3529,8 @@
 
       /* Both or neither. Finding one is not proof the other survived a rebuild, and a pass
          that replaced only the missing one could place it in a different row. */
-      const existing = document.querySelector('.ytc-tab:not(.ytc-tab--an)');
-      const existingAn = document.querySelector('.ytc-tab--an');
+      const existing = document.querySelector(TAB_SIM_SELECTOR);
+      const existingAn = document.querySelector(TAB_AN_SELECTOR);
       if (existing && existingAn && tabIsVisible(existing) && tabIsVisible(existingAn)) return;
       document.querySelectorAll('.ytc-tab').forEach((n) => n.remove());
 
@@ -3373,11 +3588,11 @@
        there was no longer anything to check the panel against. Build it, put it in the right
        place, and only then hide what it stands in front of. */
     const host = similarHost();
-    if (!host) return;                     // nothing to show it in; leave the page alone
+    if (!host) { retryOpenPanel('Similar channels'); return; }
     const content = pageContent();
     homePanel(host, content);
     hideForPanel(content, host);
-    document.querySelectorAll('.ytc-tab').forEach((t) => t.classList.add('ytc-tab--on'));
+    syncTabState();
     host.style.display = '';
     if (!host.dataset.loaded) host.innerHTML = similarSkeleton();
     askSimilar(false);
@@ -3386,7 +3601,7 @@
   function closeSimilarView() {
     simFilter.open = false;
     showPageContent();
-    document.querySelectorAll('.ytc-tab').forEach((t) => t.classList.remove('ytc-tab--on'));
+    syncTabState();
     const host = document.querySelector('.ytc-simview');
     if (host) host.style.display = 'none';
   }
@@ -5048,6 +5263,7 @@
   let pkConfirm = '';     // id of the pocket awaiting a delete confirmation
   let pkFind = '';        // the search box's text
   let pkNoteEdit = '';    // "<pocketId>|<channelKey>" of the note being edited inline
+  let pkOpen = '';        // id of the pocket the detail pane is showing
 
   /* One box, both levels.
 
@@ -5091,6 +5307,7 @@
     pkConfirm = '';
     pkFind = '';
     pkNoteEdit = '';
+    pkOpen = '';
   }
 
   function pocketsModalEsc(e) {
@@ -5177,7 +5394,43 @@
     '</div>';
   }
 
-  function pocketBlock(p, shown) {
+  /* A folder, drawn twice.
+
+     The rail is a list of folders, and the open one has to be readable at a glance from the
+     icon alone rather than only from the highlight behind it — a tinted row is easy to lose
+     against YouTube's own dark surface. Filled means open, outlined means closed. */
+  function pocketFolderIcon(on) {
+    return '<svg class="ytc-pkv__ico" viewBox="0 0 24 24" width="20" height="20" ' +
+      'aria-hidden="true" focusable="false">' +
+      (on
+        ? '<path fill="currentColor" d="M10.2 4H4.5A1.5 1.5 0 0 0 3 5.5v13A1.5 1.5 0 0 0 4.5 20h15a1.5 1.5 0 0 0 1.5-1.5v-10A1.5 1.5 0 0 0 19.5 7h-7.1l-2.2-3z"/>'
+        : '<path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" d="M10.2 4.75H4.5a.75.75 0 0 0-.75.75v13c0 .41.34.75.75.75h15a.75.75 0 0 0 .75-.75v-10a.75.75 0 0 0-.75-.75h-7.1l-2.2-3z"/>') +
+      '</svg>';
+  }
+
+  /* One row of the rail. Under a search the count reads "2/7" — the pocket still holds seven,
+     and hiding that would make a filtered view look like channels had gone missing. */
+  function pocketSideItem(p, shown, on) {
+    const n = (p.channels || []).length;
+    const m = (shown || []).length;
+    return '<button type="button" class="ytc-pkv__folder' +
+        (on ? ' ytc-pkv__folder--on' : '') + '" data-open="' + escapeHtml(p.id) + '"' +
+        (on ? ' aria-current="true"' : '') + '>' +
+      pocketFolderIcon(on) +
+      '<span class="ytc-pkv__foldertext">' +
+        '<span class="ytc-pkv__foldername">' + escapeHtml(p.title) + '</span>' +
+        (p.desc
+          ? '<span class="ytc-pkv__folderdesc">' + escapeHtml(p.desc) + '</span>'
+          : '') +
+      '</span>' +
+      '<span class="ytc-pkv__foldercount">' +
+        (pkFind && m !== n ? m + '/' + n : n) +
+      '</span>' +
+    '</button>';
+  }
+
+  /* The pane beside the rail: everything about the one pocket that is open. */
+  function pocketDetail(p, shown) {
     const list = shown || p.channels || [];
     const n = (p.channels || []).length;
     const editing = pkEdit === p.id;
@@ -5231,16 +5484,18 @@
            bare spans, so every heading sat left in its column while the figure under it sat
            right — the columns were correct and looked broken. Only "Channel" stays plain,
            because that column is left-aligned on both rows. */
-        ? '<div class="ytc-pkv__row ytc-pkv__row--head">' +
-            '<span>Channel</span>' +
-            PK_COLS.map((c) => '<span class="ytc-t__c' + (c.cls ? ' ' + c.cls : '') + '">' +
-              c.label + '</span>').join('') +
-            '<span class="ytc-t__c"></span>' +
-          '</div>' +
-          list.map((c) => pocketChannelRow(p, c)).join('')
+        ? '<div class="ytc-pkv__table">' +
+            '<div class="ytc-pkv__row ytc-pkv__row--head">' +
+              '<span>Channel</span>' +
+              PK_COLS.map((c) => '<span class="ytc-t__c' + (c.cls ? ' ' + c.cls : '') + '">' +
+                c.label + '</span>').join('') +
+              '<span class="ytc-t__c"></span>' +
+            '</div>' +
+            list.map((c) => pocketChannelRow(p, c)).join('') +
+          '</div>'
         : '<p class="ytc-pkv__empty">' + (n
             ? 'No channel in here matches that search.'
-            : 'Nothing saved here yet. Use the \u2606 on a channel page or in Similar ' +
+            : 'Nothing saved here yet. Use the ☆ on a channel page or in Similar ' +
               'channels.') + '</p>') +
     '</section>';
   }
@@ -5250,12 +5505,17 @@
     if (!modal) return;
     const found = pocketSearch(pockets, pkFind);
     const total = pockets.reduce((a, p) => a + ((p.channels || []).length), 0);
+    /* The rail is the navigation, so something in it is always open. A search that hides the
+       pocket you were reading, or a delete that removes it, moves the selection to the first
+       row still standing rather than leaving an empty pane beside a list of results. */
+    const cur = found.find((f) => f.pocket.id === pkOpen) || found[0] || null;
+    pkOpen = cur ? cur.pocket.id : '';
     modal.innerHTML =
       '<div class="ytc-pkm__head">' +
         '<b>Pockets</b>' +
         (pockets.length
           ? '<span class="ytc-pkm__count">' + pockets.length +
-            (pockets.length === 1 ? ' pocket' : ' pockets') + ' \u00b7 ' + total +
+            (pockets.length === 1 ? ' pocket' : ' pockets') + ' · ' + total +
             (total === 1 ? ' channel' : ' channels') + '</span>'
           : '') +
         (pockets.length
@@ -5263,17 +5523,26 @@
             'channels" aria-label="Search pockets and channels" value="' +
             escapeHtml(pkFind) + '">'
           : '') +
-        '<button type="button" class="ytc-pkm__x" aria-label="Close">\u00d7</button>' +
+        '<button type="button" class="ytc-pkm__x" aria-label="Close">×</button>' +
       '</div>' +
-      '<div class="ytc-pkm__body">' +
+      '<div class="ytc-pkm__body' + (pockets.length ? ' ytc-pkm__body--split' : '') + '">' +
         (!pockets.length
           ? '<p class="ytc-pkv__empty">No pockets yet. Open a channel and press ' +
-            '<b>\u2606 Pocket</b> beside Subscribe, or use the \u2606 on a row of the ' +
+            '<b>☆ Pocket</b> beside Subscribe, or use the ☆ on a row of the ' +
             'Similar channels table.</p>'
-          : found.length
-            ? found.map((f) => pocketBlock(f.pocket, f.channels)).join('')
-            : '<p class="ytc-pkv__empty">Nothing matches \u201c' + escapeHtml(pkFind) +
-              '\u201d \u2014 not a pocket name, a description, a channel or a note.</p>') +
+          : '<nav class="ytc-pkv__side" aria-label="Your pockets">' +
+              (found.length
+                ? found.map((f) =>
+                    pocketSideItem(f.pocket, f.channels, f.pocket.id === pkOpen)).join('')
+                : '<p class="ytc-pkv__sideempty">Nothing matches “' +
+                  escapeHtml(pkFind) + '”.</p>') +
+            '</nav>' +
+            '<div class="ytc-pkv__main">' +
+              (cur
+                ? pocketDetail(cur.pocket, cur.channels)
+                : '<p class="ytc-pkv__empty">Nothing matches “' + escapeHtml(pkFind) +
+                  '” — not a pocket name, a description, a channel or a note.</p>') +
+            '</div>') +
       '</div>';
     modal.querySelector('.ytc-pkm__x').addEventListener('click', closePocketsModal);
 
@@ -5304,6 +5573,18 @@
 
   function wirePockets(host) {
     const byId = (el) => pockets.find((p) => p.id === el.dataset.pocket);
+
+    /* Opening another folder abandons whatever was half-done in the one being left — an edit
+       form or a delete warning belongs to the pocket it was opened on, and carrying either
+       across to the next one would arm it against the wrong pocket. */
+    host.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => {
+      if (pkOpen === b.dataset.open) return;
+      pkOpen = b.dataset.open;
+      pkEdit = '';
+      pkConfirm = '';
+      pkNoteEdit = '';
+      renderPockets();
+    }));
 
     host.querySelectorAll('.ytc-pkv__edit').forEach((b) => b.addEventListener('click', () => {
       pkEdit = b.dataset.pocket; pkConfirm = ''; renderPockets();

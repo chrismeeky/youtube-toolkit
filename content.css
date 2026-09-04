@@ -645,6 +645,41 @@ html[dark] .ytc-tab { color: #aaa; }
 html[dark] .ytc-tab:hover, html[dark] .ytc-tab--on { color: #f1f1f1; }
 html[dark] .ytc-tab--on { border-bottom-color: #f1f1f1; }
 
+/* YouTube's own selected tab, quieted while one of our panels stands in front of the content
+   that tab names. Without this the row shows two selections at once — Home still underlined
+   under a channel body that is no longer on screen.
+
+   The work is done in JS, not here: muteYtTab() strips the classes YouTube's own selected
+   styling keys off, so YouTube draws the tab as unselected itself. That is what actually
+   removes the underline, and it stays right through a re-skin.
+
+   What is left below is a fallback for markup whose selected look is NOT carried by a class
+   we know to strip. It is deliberately about the label, which is the half a wrong guess can
+   still reach — overriding the underline from here is what half worked before, because the
+   bar is a child element whose paint YouTube owns. A rule that matches nothing costs nothing;
+   a rule that matches lands on a tab that already reads as unselected. */
+.ytc-yt-tab--muted .ytTabShapeTabBar,
+.ytc-yt-tab--muted .ytTabShapeTabBarSelected,
+.ytc-yt-tab--muted::after,
+.ytc-yt-tab--muted .yt-tab-shape-wiz__tab-bar,
+.ytc-yt-tab--muted .indicator,
+.ytc-yt-tab--muted #selectionBar { opacity: 0 !important; }
+.ytc-yt-tab--muted { border-bottom-color: transparent !important; }
+
+/* The label carries the selection too — it goes bold and darkens — so it has to come down
+   with the underline, or a "muted" tab still reads as the active one. */
+.ytc-yt-tab--muted .ytTabShapeTab,
+.ytc-yt-tab--muted .ytTabShapeTabSelected,
+.ytc-yt-tab--muted .yt-tab-shape-wiz__tab,
+.ytc-yt-tab--muted {
+  color: var(--yt-spec-text-secondary, #606060) !important;
+  font-weight: 400 !important;
+}
+html[dark] .ytc-yt-tab--muted .ytTabShapeTab,
+html[dark] .ytc-yt-tab--muted .ytTabShapeTabSelected,
+html[dark] .ytc-yt-tab--muted .yt-tab-shape-wiz__tab,
+html[dark] .ytc-yt-tab--muted { color: #aaa !important; }
+
 /* Width is declared rather than left to the content. YouTube lays this container's parent
    out as a centred flex row, so a child sizes to its own content: the loaded table only
    filled the page because names and numbers made it wide, and the skeleton — whose bars are
@@ -2500,16 +2535,68 @@ html[dark] .ytc-pkm__find:focus { border-color: #3ea6ff; }
   font-size: 22px; line-height: 1; color: inherit;
 }
 .ytc-pkm__body { flex: 1 1 auto; overflow-y: auto; padding: 16px 20px 24px; }
+/* Two panes, each scrolling on its own: the rail of folders keeps its place while a long
+   pocket is read beside it. The body itself never scrolls, so the split runs full height. */
+.ytc-pkm__body--split { display: flex; align-items: stretch; overflow: hidden; padding: 0; }
 html[dark] .ytc-pkm { background: #212121; }
 html[dark] .ytc-pkm__head { border-bottom-color: rgba(255, 255, 255, .12); }
-.ytc-pkv__pocket {
-  margin-bottom: 18px; border: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .12));
-  border-radius: 12px; overflow: hidden;
+
+/* ------------------------------------------------------------- the folder rail */
+.ytc-pkv__side {
+  flex: 0 0 262px; min-width: 0; overflow-y: auto; padding: 10px 8px 16px;
+  border-right: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .1));
 }
+.ytc-pkv__folder {
+  display: flex; align-items: center; gap: 12px; width: 100%; box-sizing: border-box;
+  margin-bottom: 2px; padding: 9px 12px; border: 0; border-radius: 10px;
+  background: none; color: inherit; cursor: pointer; text-align: left;
+  font-family: Roboto, Arial, sans-serif;
+}
+.ytc-pkv__folder:hover { background: rgba(0, 0, 0, .05); }
+/* The open folder is named by a filled icon as well as by the tint, because a tinted row is
+   easy to lose against YouTube's own surfaces — dark mode especially. */
+.ytc-pkv__folder--on { background: rgba(0, 0, 0, .08); }
+.ytc-pkv__folder--on .ytc-pkv__foldername { font-weight: 500; }
+.ytc-pkv__ico { flex: 0 0 auto; color: var(--yt-spec-text-secondary, #606060); }
+.ytc-pkv__folder--on .ytc-pkv__ico { color: #065fd4; }
+.ytc-pkv__foldertext { flex: 1 1 auto; min-width: 0; }
+.ytc-pkv__foldername {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 400 14px/1.35 Roboto, Arial, sans-serif;
+}
+.ytc-pkv__folderdesc {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 400 12px/1.35 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-pkv__foldercount {
+  flex: 0 0 auto; font: 400 12px/1 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #909090);
+}
+.ytc-pkv__sideempty {
+  margin: 0; padding: 14px 12px; font: 400 13px/1.5 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-pkv__side { border-right-color: rgba(255, 255, 255, .12); }
+html[dark] .ytc-pkv__folder:hover { background: rgba(255, 255, 255, .08); }
+html[dark] .ytc-pkv__folder--on { background: rgba(255, 255, 255, .12); }
+html[dark] .ytc-pkv__folder--on .ytc-pkv__ico { color: #3ea6ff; }
+
+/* ------------------------------------------------------- the open pocket's pane */
+.ytc-pkv__main { flex: 1 1 auto; min-width: 0; overflow-y: auto; }
+.ytc-pkv__pocket { display: block; }
+/* Stays put while the channels scroll under it: the name of the pocket you are deleting from
+   is the one thing that must not scroll away mid-list. */
 .ytc-pkv__head {
-  display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px;
-  background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, .03));
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: flex-start; gap: 12px; padding: 16px 20px 14px;
+  background: var(--yt-spec-base-background, #fff);
+  border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .1));
 }
+.ytc-pkv__meta b { font-size: 17px !important; }
+/* Narrow panes scroll the table sideways rather than crushing the columns into each other. */
+.ytc-pkv__table { overflow-x: auto; }
+.ytc-pkv__table .ytc-pkv__row { min-width: 720px; }
 .ytc-pkv__meta { flex: 1 1 auto; min-width: 0; }
 .ytc-pkv__meta b { font: 500 15px/1.3 Roboto, Arial, sans-serif; }
 .ytc-pkv__count {
@@ -2529,7 +2616,7 @@ html[dark] .ytc-pkm__head { border-bottom-color: rgba(255, 255, 255, .12); }
 .ytc-pkv__del:hover, .ytc-pkv__delyes { color: #c00; border-color: #c00; }
 .ytc-pkv__warn {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  padding: 10px 14px; background: rgba(204, 0, 0, .07);
+  padding: 12px 20px; background: rgba(204, 0, 0, .07);
   font: 400 13px/1.4 Roboto, Arial, sans-serif;
 }
 .ytc-pkv__warnacts { display: flex; gap: 6px; margin-left: auto; }
@@ -2556,7 +2643,7 @@ html[dark] .ytc-pkm__head { border-bottom-color: rgba(255, 255, 255, .12); }
 .ytc-pkv__row {
   display: grid;
   grid-template-columns: minmax(170px, 1.6fr) minmax(120px, 1.4fr) .8fr .8fr .8fr .6fr 40px;
-  align-items: center; gap: 8px; padding: 8px 14px;
+  align-items: center; gap: 8px; padding: 8px 20px;
   border-top: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .08));
 }
 .ytc-pkv__row--head {
@@ -2598,11 +2685,10 @@ html[dark] .ytc-pkv__noteinput { border-color: #3ea6ff; }
 }
 .ytc-pkv__drop:hover { background: rgba(204, 0, 0, .12); color: #c00; }
 .ytc-pkv__empty {
-  margin: 0; padding: 16px 14px; font: 400 13px/1.5 Roboto, Arial, sans-serif;
+  margin: 0; padding: 20px; font: 400 13px/1.5 Roboto, Arial, sans-serif;
   color: var(--yt-spec-text-secondary, #606060);
 }
-html[dark] .ytc-pkv__pocket { border-color: rgba(255, 255, 255, .16); }
-html[dark] .ytc-pkv__head { background: rgba(255, 255, 255, .05); }
+html[dark] .ytc-pkv__head { background: #212121; border-bottom-color: rgba(255, 255, 255, .12); }
 html[dark] .ytc-pkv__row { border-top-color: rgba(255, 255, 255, .1); }
 html[dark] .ytc-pkv__row:not(.ytc-pkv__row--head):hover { background: rgba(255, 255, 255, .05); }
 html[dark] .ytc-pkv__edit, html[dark] .ytc-pkv__del,
