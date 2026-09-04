@@ -62,6 +62,10 @@
          its channel link can still name the previous video's channel, which is how a
          monetization verdict carried over from one video to the next. */
       channelHandle: (String(mf.ownerProfileUrl || '').match(/@[\w.-]+/) || [''])[0],
+      /* The channel's display name, which the page does not reliably render anywhere the
+         content script can reach on Shorts — the overlay there labels the channel with its
+         handle. Free, exact, and already in the response being read. */
+      channelName: mf.ownerChannelName || vd.author || '',
       channelId: vd.channelId || mf.externalChannelId || '',
       // Real Shorts report isShortsEligible true (checked against 36s and 74s Shorts, and
       // against long videos which report false). The URL is definitive when it is present.
@@ -70,22 +74,54 @@
     };
   }
 
+  /* Which video the caller is looking at, according to the address bar. Both URL shapes,
+     because Shorts names the video in the path and watch pages in the query. */
+  function currentVideoId() {
+    const short = location.pathname.match(/\/shorts\/([\w-]{6,})/);
+    if (short) return short[1];
+    try { return new URL(location.href).searchParams.get('v') || ''; } catch (e) { return ''; }
+  }
+
+  function responseFrom(id) {
+    const el = document.getElementById(id);
+    if (!el || typeof el.getPlayerResponse !== 'function') return null;
+    try {
+      const live = el.getPlayerResponse();
+      if (live && live.videoDetails && live.videoDetails.videoId) return live;
+    } catch (e) {
+      /* player not ready yet, or not the one driving this page */
+    }
+    return null;
+  }
+
   /* ytInitialPlayerResponse is assigned when the document loads and is NOT reliably rewritten
      when YouTube navigates between videos without a reload — so on a soft navigation it can
      still describe the previous video, or a video the caller is no longer looking at. The
      player element answers for whatever is actually loaded right now, so ask it first and
-     keep the global only as a fallback for the moments before the player exists. */
+     keep the global only as a fallback for the moments before the player exists.
+
+     Shorts is served by a DIFFERENT player element, and this is why nothing here worked on
+     it. `#movie_player` exists on a Shorts page — it is the long-form player, mounted and
+     idle — and calling getPlayerResponse() on it THROWS rather than returning nothing, so the
+     catch swallowed it and fell through to the global. On Shorts that global is null. Between
+     them, every field this file reads came back empty on the format the reader is most likely
+     to be researching. `#shorts-player` is the one actually playing, and it answers with the
+     current Short even after scrolling to the next one.
+
+     Both are asked, and an answer naming the video in the address bar wins outright — with
+     two players mounted, "the first one that replies" is a coin toss. */
+  const PLAYER_IDS = ['shorts-player', 'movie_player'];
+
   function currentPlayerResponse() {
-    const el = document.getElementById('movie_player');
-    if (el && typeof el.getPlayerResponse === 'function') {
-      try {
-        const live = el.getPlayerResponse();
-        if (live && live.videoDetails && live.videoDetails.videoId) return live;
-      } catch (e) {
-        /* player not ready yet — fall through to the global */
-      }
+    const wanted = currentVideoId();
+    const answered = [];
+    for (const id of PLAYER_IDS) {
+      const live = responseFrom(id);
+      if (!live) continue;
+      if (wanted && live.videoDetails.videoId === wanted) return live;
+      answered.push(live);
     }
-    return window.ytInitialPlayerResponse || {};
+    return answered[0] || window.ytInitialPlayerResponse || {};
   }
 
   /* The search page's own result list, straight from ytInitialData.
@@ -193,7 +229,7 @@
       // Bumped when the payload shape changes, so the content script can tell a stale
       // MAIN-world injection (which survives an extension reload in an open tab) from a
       // genuine read failure.
-      v: 5,
+      v: 6,
       apiKey: cfg ? cfg.get('INNERTUBE_API_KEY') || '' : '',
       clientVersion: cfg ? cfg.get('INNERTUBE_CLIENT_VERSION') || '' : '',
       visitorData: cfg ? cfg.get('VISITOR_DATA') || '' : '',

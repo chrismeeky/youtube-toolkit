@@ -708,6 +708,9 @@
     ensureSimilarTab();
     /* After the tabs, because a rebuild there drops the active class and this puts it back. */
     try { reassertPanels(); } catch (e) { /* keep the rest of the scan */ }
+    /* Wrapped like its neighbours: a throw here would take the filter button, the companion
+       and the stats card down with it. */
+    try { ensureShortsPanel(); } catch (e) { /* keep the rest of the scan */ }
     ensureFilterButton();
     /* Wrapped because it runs before noteChannelSeen and the stats card, and a throw here
        would silently stop both — the same failure the badge row was wrapped against. */
@@ -3298,6 +3301,392 @@
       });
     }
   }
+
+  /* ---------------------------------------------------------- shorts panel */
+
+  /* Everything this extension shows about a video lives somewhere the Shorts player does not
+     have. There is no sidebar to hang the stats card on, no description block, no tab row —
+     the whole page is one column with a viewport-tall video in the middle of it. So the
+     figures that a watch page gets for free were simply absent on Shorts, which is the format
+     the reader is most likely to be researching.
+
+     They go in the gutter instead. At any usable window width the reel is centred in a column
+     far wider than itself, leaving a few hundred empty pixels to its left; the panel takes
+     that space, and stands down when there is not enough of it. */
+
+  const SH_ICONS = {
+    eye: 'M1 8s2.7-4.5 7-4.5S15 8 15 8s-2.7 4.5-7 4.5S1 8 1 8Z M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z',
+    heart: 'M8 13.5S2 10 2 6.2A2.7 2.7 0 0 1 8 4.8a2.7 2.7 0 0 1 6 1.4C14 10 8 13.5 8 13.5Z',
+    speed: 'M1.5 11.5 6 7l3 3 5.5-5.5 M10.5 4.5h4v4',
+    cal: 'M2.5 3.5h11v11h-11Z M2.5 6.5h11 M5.5 1.5v3 M10.5 1.5v3',
+    stack: 'M8 1.5 14.5 5 8 8.5 1.5 5Z M1.5 8 8 11.5 14.5 8 M1.5 11 8 14.5 14.5 11',
+    clock: 'M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Z M8 4.5V8l2.5 1.5',
+    chart: 'M2 14V9 M6 14V4 M10 14v-7 M14 14V2'
+  };
+
+  function shIcon(name) {
+    const d = SH_ICONS[name];
+    if (!d) return '';
+    return '<svg class="ytc-sh__ico" viewBox="0 0 16 16" aria-hidden="true"><path d="' +
+      d + '"/></svg>';
+  }
+
+  const SHORTS_OPEN_KEY = 'ytc:shortsOpen';
+
+  /* Two sources, arriving at different times and failing independently: the live player
+     answers for this Short in milliseconds, the channel lookup is a network round trip that
+     may not answer at all. Each has its own pending flag so a value can fill in as soon as it
+     is known instead of the whole panel waiting on the slower half. */
+  const shortsState = {
+    videoId: '', key: '',
+    video: null,          // { views, likes, publishDate } from the live player
+    channel: null,        // { subs, videoCount, joinedAt, shortsAvg, shortsSampled }
+    who: null,            // { name, avatar } read off the reel
+    pending: { video: true, channel: true },
+    open: true, openRead: false, giveUp: 0
+  };
+
+  /* Long past both retry chains. A placeholder promising a number that is never coming reads
+     as a hung panel; a dash reads as "not available", which is the truth. Same reasoning, and
+     the same budget, as the watch page's stats card. */
+  const SHORTS_GIVE_UP_MS = 30000;
+
+  function shortsIdFromLocation() {
+    const m = location.pathname.match(/^\/shorts\/([\w-]{6,})/);
+    return m ? m[1] : '';
+  }
+
+  /* Which reel is actually on screen. Shorts keeps a stack of renderers mounted — the one
+     above and the one below are already built — so "the first one" is regularly the previous
+     video, and reading the channel off it names the wrong creator. The one crossing the
+     middle of the viewport is the one being watched. */
+  function activeReel() {
+    const reels = document.querySelectorAll('ytd-reel-video-renderer');
+    const mid = window.innerHeight / 2;
+    for (const r of reels) {
+      const b = r.getBoundingClientRect();
+      if (b.height > 0 && b.top <= mid && b.bottom >= mid) return r;
+    }
+    return reels[0] || null;
+  }
+
+  /* Name and avatar for the header, read from the overlay rather than fetched. Neither is
+     worth a request: the channel lookup this panel already makes returns counts, not
+     identity, and the reader is looking at both on screen. Missing ones degrade to the
+     handle and a letter tile. */
+  function shortsWho() {
+    const reel = activeReel();
+    if (!reel) return null;
+    let name = '';
+    for (const sel of ['.ytReelChannelBarViewModelChannelName',
+                       'yt-reel-channel-bar-view-model a',
+                       '#channel-info #text-container',
+                       'a[href^="/@"] span']) {
+      const el = reel.querySelector(sel);
+      const t = el && text(el);
+      if (t && t.length < 60) { name = t; break; }
+    }
+    let avatar = '';
+    for (const img of reel.querySelectorAll('img')) {
+      const src = img.getAttribute('src') || '';
+      // The avatar is the only small square image in the overlay that is actually loaded.
+      if (/yt\d\.(ggpht|googleusercontent)\.com/.test(src) && img.getBoundingClientRect().width > 0) {
+        avatar = src;
+        break;
+      }
+    }
+    return { name, avatar };
+  }
+
+  function resetShorts(id) {
+    shortsState.videoId = id;
+    shortsState.key = '';
+    shortsState.video = null;
+    shortsState.channel = null;
+    shortsState.who = null;
+    shortsState.pending = { video: true, channel: true };
+    clearTimeout(shortsState.giveUp);
+    shortsState.giveUp = setTimeout(() => {
+      if (shortsState.videoId !== id) return;
+      shortsState.pending = { video: false, channel: false };
+      renderShortsPanel();
+    }, SHORTS_GIVE_UP_MS);
+  }
+
+  /* Mean views across the Shorts in the sample.
+
+     The sample is the channel's most recent uploads, capped by the service — so this is not a
+     lifetime average and must not be labelled as one. The count it was taken over travels
+     with it, and the tooltip says so. */
+  function shortsAverage(videos) {
+    const shorts = (videos || []).filter((v) => v.shorts && v.views != null);
+    if (!shorts.length) return { avg: null, sampled: 0 };
+    const total = shorts.reduce((a, v) => a + v.views, 0);
+    return { avg: Math.round(total / shorts.length), sampled: shorts.length };
+  }
+
+  async function loadShorts(id) {
+    /* The player global is not rewritten the instant the URL changes, and on Shorts the URL
+       changes on every scroll — so asking too early answers for the Short the reader just
+       scrolled past. freshPage waits for the payload to name the video in the address bar,
+       which is the same guard the watch page needs for the same reason. */
+    const page = await freshPage(id);
+    if (shortsState.videoId !== id) return;          // scrolled on while waiting
+
+    const stats = page && page.stats;
+    if (stats) {
+      shortsState.video = {
+        views: stats.views, likes: stats.likes, publishDate: stats.publishDate
+      };
+      /* The player names the channel outright, so the header does not have to settle for the
+         handle the overlay renders. Kept separate from the avatar, which really is only
+         readable from the DOM. */
+      if (stats.channelName) {
+        shortsState.who = Object.assign({}, shortsState.who, { name: stats.channelName });
+      }
+    }
+    shortsState.pending.video = false;
+    renderShortsPanel();
+
+    const key = (stats && stats.channelHandle) || '';
+    shortsState.key = key;
+    if (!key) {
+      shortsState.pending.channel = false;
+      renderShortsPanel();
+      return;
+    }
+
+    sendMessage({ type: 'ytc-analytics', key }, (res) => {
+      if (chrome.runtime.lastError) { shortsState.pending.channel = false; renderShortsPanel(); return; }
+      if (shortsState.videoId !== id) return;
+      const st = (res && res.stats) || {};
+      const avg = shortsAverage(res && res.videos);
+      shortsState.channel = {
+        subs: (res && res.subs) || null,
+        videoCount: st.videoCount || null,
+        joinedAt: st.joinedAt || null,
+        shortsAvg: avg.avg,
+        shortsSampled: avg.sampled
+      };
+      shortsState.pending.channel = false;
+      renderShortsPanel();
+    });
+  }
+
+  function shortsHost() {
+    const root = document.querySelector('ytd-shorts');
+    if (!root) return null;
+    let host = document.querySelector('.ytc-sh');
+    if (!host) {
+      host = document.createElement('div');
+      host.className = 'ytc-sh';
+    }
+    if (host.parentElement !== root) root.appendChild(host);
+    return host;
+  }
+
+  /* The gutter is not a constant: it grows and shrinks with the window, and with YouTube's
+     guide opening and closing. Measured every scan, and the panel stands down rather than
+     covering the video it is describing — a stats panel over the Short is worse than none. */
+  const SHORTS_MIN_ROOM = 232;
+  const SHORTS_MAX_WIDTH = 300;
+
+  function fitShortsPanel(host) {
+    const root = document.querySelector('ytd-shorts');
+    const reel = activeReel();
+    if (!root || !reel) return false;
+    const gutter = reel.getBoundingClientRect().left - root.getBoundingClientRect().left;
+    const room = gutter - 32;                       // 16px of margin either side
+    if (!(room >= SHORTS_MIN_ROOM)) { host.hidden = true; return false; }
+    host.hidden = false;
+    host.style.width = Math.min(SHORTS_MAX_WIDTH, Math.floor(room)) + 'px';
+    return true;
+  }
+
+  function shRow(icon, label, value, title) {
+    return '<div class="ytc-sh__row"' +
+      (title ? ' title="' + escapeHtml(title) + '"' : '') + '>' +
+      '<span class="ytc-sh__label">' + shIcon(icon) + escapeHtml(label) + '</span>' +
+      '<b class="ytc-sh__value">' + value + '</b></div>';
+  }
+
+  const SH_SKEL = '<span class="ytc-sh__skel"></span>';
+
+  /* A dash once the answer has settled, a skeleton bar while it is still coming. The two say
+     different things and the reader can tell them apart at a glance, which is the whole point
+     of drawing a skeleton rather than spinning something. */
+  function shValue(pending, value) {
+    if (pending) return SH_SKEL;
+    return value == null || value === '' ? '—' : value;
+  }
+
+  function shNum(n) {
+    return n == null ? null : Math.round(n).toLocaleString();
+  }
+
+  function shortsPanelHtml() {
+    const s = shortsState;
+    const v = s.video || {};
+    const c = s.channel || {};
+    const waitV = s.pending.video;
+    const waitC = s.pending.channel;
+
+    const who = s.who || {};
+    const name = who.name || s.key || '';
+    const avatar = who.avatar
+      ? '<img class="ytc-sh__av" src="' + escapeHtml(who.avatar) + '" alt="">'
+      : (name
+          ? '<span class="ytc-sh__av ytc-sh__av--letter">' +
+            escapeHtml(name.replace(/^@/, '').charAt(0).toUpperCase()) + '</span>'
+          : '<span class="ytc-sh__av ytc-sh__skel"></span>');
+
+    const subs = waitC ? SH_SKEL
+      : c.subs ? escapeHtml(F.compact(c.subs)) + ' subscribers'
+      : 'Subscribers unavailable';
+
+    const head =
+      '<div class="ytc-sh__card ytc-sh__who">' +
+        avatar +
+        '<span class="ytc-sh__ident">' +
+          '<b class="ytc-sh__name">' + (name ? escapeHtml(name) : SH_SKEL) + '</b>' +
+          '<span class="ytc-sh__subs">' + subs + '</span>' +
+        '</span>' +
+        '<button type="button" class="ytc-sh__toggle" aria-expanded="' + (s.open ? 'true' : 'false') +
+          '" title="' + (s.open ? 'Hide stats' : 'Show stats') + '">' +
+          '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 6 4.5 4.5L12.5 6"/></svg>' +
+        '</button>' +
+      '</div>';
+
+    if (!s.open) return head;
+
+    /* Likes over views. YouTube publishes both on the overlay, so this is the one engagement
+       figure on Shorts that is not a guess — and it is the number the format is judged on. */
+    const liked = v.likes != null && v.views
+      ? (v.likes / v.views * 100).toFixed(1) + '%' : null;
+    /* A lifetime rate since publishing, not current velocity. A Short that did 80M in its
+       first week still reports the average across every hour since. */
+    const hours = v.publishDate
+      ? (Date.now() - Date.parse(v.publishDate)) / 3600000 : null;
+    const vph = hours && hours > 0 && v.views ? shNum(v.views / hours) : null;
+    const published = v.publishDate && !isNaN(Date.parse(v.publishDate))
+      ? new Date(v.publishDate).toLocaleDateString(undefined,
+          { month: 'short', day: 'numeric', year: 'numeric' })
+      : null;
+    const days = c.joinedAt ? daysSince(new Date(c.joinedAt).toISOString()) : null;
+
+    const thisShort =
+      '<div class="ytc-sh__card">' +
+        '<div class="ytc-sh__head">' + shIcon('chart') +
+          '<span class="ytc-sh__ident">' +
+            '<b>This Short</b>' +
+            '<span class="ytc-sh__subs">' +
+              (waitV ? SH_SKEL : (shNum(v.views) ? shNum(v.views) + ' views' : 'Views unavailable')) +
+            '</span>' +
+          '</span>' +
+        '</div>' +
+        '<div class="ytc-sh__rows">' +
+          shRow('heart', 'Viewers Liked', shValue(waitV, liked),
+            v.likes != null && v.views
+              ? v.likes.toLocaleString() + ' likes on ' + v.views.toLocaleString() +
+                ' views. Comments are not counted'
+              : 'Likes are hidden on this Short') +
+          shRow('speed', 'Views Per Hour', shValue(waitV, vph),
+            'Averaged over every hour since publishing — a lifetime rate, not current velocity') +
+        '</div>' +
+      '</div>';
+
+    const channel =
+      '<div class="ytc-sh__card">' +
+        '<div class="ytc-sh__rows">' +
+          shRow('cal', 'Published On', shValue(waitV, published),
+            'When this Short went up') +
+          shRow('stack', 'Total Uploads', shValue(waitC, shNum(c.videoCount)),
+            'Everything on the channel, Shorts and long form together') +
+          shRow('clock', 'Days Since Start', shValue(waitC, shNum(days)),
+            'Since the channel was created') +
+          shRow('eye', 'Avg. Shorts Views', shValue(waitC, shNum(c.shortsAvg)),
+            c.shortsSampled
+              ? 'Mean across the ' + c.shortsSampled + ' most recent Shorts we could read, ' +
+                'not the channel’s lifetime average'
+              : 'No Shorts found in the recent uploads we could read') +
+        '</div>' +
+      '</div>';
+
+    return head + thisShort + channel;
+  }
+
+  function renderShortsPanel() {
+    const host = document.querySelector('.ytc-sh');
+    if (!host) return;
+    const html = shortsPanelHtml();
+    if (host.dataset.sig === html) return;      // scan() runs on every mutation
+    host.dataset.sig = html;
+    host.innerHTML = html;
+  }
+
+  /* Remembered across Shorts and across sessions. Collapsing it on one video and finding it
+     open again on the next would make the control feel like it had not worked. */
+  function readShortsOpen() {
+    if (shortsState.openRead) return;
+    shortsState.openRead = true;
+    try {
+      chrome.storage.local.get(SHORTS_OPEN_KEY, (out) => {
+        if (chrome.runtime.lastError) return;
+        const saved = out && out[SHORTS_OPEN_KEY];
+        if (saved === false || saved === true) {
+          shortsState.open = saved;
+          renderShortsPanel();
+        }
+      });
+    } catch (e) { /* storage unavailable; the session default stands */ }
+  }
+
+  function ensureShortsPanel() {
+    const id = shortsIdFromLocation();
+    if (!settings.showShorts || !id) {
+      const stray = document.querySelector('.ytc-sh');
+      if (stray) stray.remove();
+      if (shortsState.videoId) {
+        shortsState.videoId = '';
+        clearTimeout(shortsState.giveUp);
+      }
+      return;
+    }
+
+    const host = shortsHost();
+    if (!host) return;                      // Shorts container not built yet
+    readShortsOpen();
+    if (!fitShortsPanel(host)) return;      // no room; nothing to draw into
+
+    if (shortsState.videoId !== id) {
+      resetShorts(id);
+      loadShorts(id);
+    }
+
+    /* The overlay hydrates after the reel is mounted, so the name and avatar are regularly
+       absent on the first pass and present a moment later. Re-read until they arrive rather
+       than committing to the first, empty answer. */
+    const known = shortsState.who || {};
+    if (!known.name || !known.avatar) {
+      const who = shortsWho() || {};
+      // The player's name outranks the overlay's; the overlay is the only source for the avatar.
+      const merged = { name: known.name || who.name || '', avatar: known.avatar || who.avatar || '' };
+      if (merged.name !== known.name || merged.avatar !== known.avatar) shortsState.who = merged;
+    }
+
+    renderShortsPanel();
+  }
+
+  /* One listener on the container rather than one per render, so a redraw cannot lose it. */
+  document.addEventListener('click', (e) => {
+    const toggle = e.target.closest && e.target.closest('.ytc-sh__toggle');
+    if (!toggle) return;
+    e.preventDefault();
+    e.stopPropagation();
+    shortsState.open = !shortsState.open;
+    try { chrome.storage.local.set({ [SHORTS_OPEN_KEY]: shortsState.open }); } catch (err) { /* fine */ }
+    renderShortsPanel();
+  }, true);
 
   function tabIsVisible(el) {
     if (!el || !el.isConnected) return false;

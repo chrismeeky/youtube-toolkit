@@ -18,6 +18,9 @@
     showMoney: true,              // monetization badge (inferred from ad placements)
     showStats: true,              // views/hour, engagement and an earnings estimate
     showSimilar: true,            // "Similar channels" button on channel pages
+    /* Shorts have no sidebar and no description, so the figures every other page shows have
+       nowhere to go. This puts them in the empty gutter beside the player. */
+    showShorts: true,             // stats panel beside the Shorts player
     /* Hovering a card's channel link lists that channel's recent uploads. Costs a
        request per channel, so it is gated behind hover intent rather than proximity. */
     showPreview: true,            // channel preview popover on hover
