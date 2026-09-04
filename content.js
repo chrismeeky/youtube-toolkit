@@ -3559,12 +3559,12 @@
 
     const head =
       '<div class="ytc-sh__card ytc-sh__who">' +
+        shortsBrandIcon() +
         avatar +
         '<span class="ytc-sh__ident">' +
           '<b class="ytc-sh__name">' + (name ? escapeHtml(name) : SH_SKEL) + '</b>' +
           '<span class="ytc-sh__subs">' + subs + '</span>' +
         '</span>' +
-        shortsBrandIcon() +
         '<button type="button" class="ytc-sh__toggle" aria-expanded="' + (s.open ? 'true' : 'false') +
           '" title="' + (s.open ? 'Hide stats' : 'Show stats') + '">' +
           '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 6 4.5 4.5L12.5 6"/></svg>' +
