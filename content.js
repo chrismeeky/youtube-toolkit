@@ -3333,6 +3333,19 @@
 
   const SHORTS_OPEN_KEY = 'ytc:shortsOpen';
 
+  /* Our own mark on the panel, so a card of figures YouTube never drew is attributable to the
+     thing that drew it — the same reason the channel tabs carry it. Guarded like theirs: after
+     an extension reload getURL throws "Extension context invalidated" in any content script
+     still on an open page, and an uncaught throw here would take the whole panel out while
+     everything drawn earlier stayed put. */
+  function shortsBrandIcon() {
+    let url = '';
+    try { url = chrome.runtime.getURL('icons/icon32.png'); } catch (e) { return ''; }
+    return url
+      ? '<img class="ytc-sh__brand" src="' + url + '" alt="" title="YouTube Toolkit">'
+      : '';
+  }
+
   /* Two sources, arriving at different times and failing independently: the live player
      answers for this Short in milliseconds, the channel lookup is a network round trip that
      may not answer at all. Each has its own pending flag so a value can fill in as soon as it
@@ -3551,6 +3564,7 @@
           '<b class="ytc-sh__name">' + (name ? escapeHtml(name) : SH_SKEL) + '</b>' +
           '<span class="ytc-sh__subs">' + subs + '</span>' +
         '</span>' +
+        shortsBrandIcon() +
         '<button type="button" class="ytc-sh__toggle" aria-expanded="' + (s.open ? 'true' : 'false') +
           '" title="' + (s.open ? 'Hide stats' : 'Show stats') + '">' +
           '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 6 4.5 4.5L12.5 6"/></svg>' +

@@ -2743,6 +2743,12 @@ html[dark] .ytc-pkv__del:hover, html[dark] .ytc-pkv__drop:hover { color: #ff8a80
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* Sits between the channel and the chevron: present enough to say who drew the panel,
+   quiet enough not to compete with the figures beneath it. */
+.ytc-sh__brand {
+  width: 16px; height: 16px; border-radius: 4px; flex: 0 0 auto; opacity: .75;
+}
+
 .ytc-sh__toggle {
   flex: 0 0 auto; width: 28px; height: 28px; padding: 0;
   border: 0; border-radius: 50%; background: none; cursor: pointer;
