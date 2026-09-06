@@ -43,7 +43,37 @@ chrome.commands.onCommand.addListener(async (command) => {
 
 /* --------------------------------------------------------------- subscribers */
 
-const TTL_OK = 7 * 24 * 60 * 60 * 1000;   // counts barely move, and YouTube rounds them
+/* How long a subscriber count stays believable, by how big the channel is.
+ *
+ * This was a flat seven days, on the reasoning that "counts barely move, and YouTube rounds
+ * them". That holds for Inside Edition, which displays 13.8M and needs another hundred
+ * thousand subscribers before the rounded figure changes at all. It is badly wrong for the
+ * channels this extension exists to find: measured against live pages on a trending search,
+ * a week-old cache had Hidden Killers at 336K against a real 344K, Cuomo Crime Time at 38.4K
+ * against 39.3K, and Criminally Obsessed at 209K against 212K — every one low, because a
+ * small channel on a breaking story gains a percent a day and YouTube rounds it finely
+ * enough to show that.
+ *
+ * So the lifetime tracks the rounding, not the calendar. A channel displayed to three
+ * significant figures at 39.3K reveals a change after roughly a hundred new subscribers; one
+ * at 13.8M needs a hundred thousand. The bands below are that idea, coarsely: refresh small
+ * channels within the working day, leave the giants alone for a week.
+ */
+const TTL_BY_SIZE = [
+  [50000, 3 * 60 * 60 * 1000],          // under 50K: hours matter on a trending story
+  [500000, 12 * 60 * 60 * 1000],
+  [5000000, 24 * 60 * 60 * 1000]
+];
+const TTL_OK = 7 * 24 * 60 * 60 * 1000;   // the floor for anything above the last band
+
+function okTtl(text) {
+  const n = F.viewsToNumber(text);
+  if (n == null) return TTL_OK;
+  for (const [ceiling, ttl] of TTL_BY_SIZE) {
+    if (n < ceiling) return ttl;
+  }
+  return TTL_OK;
+}
 const TTL_HIDDEN = 12 * 60 * 60 * 1000;   // channel hides its count: no point retrying soon
 const TTL_TRANSIENT = 2 * 60 * 1000;      // throttled or offline: worth retrying shortly
 /* The count landed but /about never did, so the totals were never on offer. Keep the count —
@@ -69,7 +99,7 @@ const GAP_MS = 150;
 /* Bump whenever a cached value's MEANING changes, not just its shape. Similar-channel
    results are cached for a week, so six rounds of query fixes were invisible to anyone who
    had already opened the panel once — they kept seeing results built by the old logic. */
-const CACHE_VERSION = 15; // niche no longer cached from a single-title guess
+const CACHE_VERSION = 16; // subscriber counts expire by channel size, not on a flat week
                           // (14: analytics sourced from the API, not the videos grid)
 
 const MAX_BYTES = 3000000;      // some channel pages bury the count deep in ytInitialData
@@ -251,7 +281,7 @@ async function readCache(key) {
      half a day is what left the Outlier cell empty for the rest of the day on a channel whose
      totals were there all along. */
   const ttl = hit.text
-    ? (hit.stats ? TTL_OK : (hit.aboutRead ? TTL_HIDDEN : TTL_NO_TOTALS))
+    ? (hit.stats ? okTtl(hit.text) : (hit.aboutRead ? TTL_HIDDEN : TTL_NO_TOTALS))
     : failTtl(hit.reason);
   return Date.now() - hit.t > ttl ? null : hit;
 }
@@ -883,6 +913,53 @@ async function getNiche(key, opts) {
   }
 }
 
+/* ------------------------------------------------- monetization rate by niche */
+
+/* The niche-wide rate, and the verdicts this visit resolved on its way to asking.
+
+   Deliberately not cached here. Every other index call in this file caches because the answer
+   is a property of one channel and does not move; this one is a property of a niche that
+   every visit adds to, so a cached copy would hide the contribution the caller just made and
+   report a figure that is stale by exactly the amount the reader is responsible for. The
+   server read is one indexed query, and the panel asks once per tab open.
+
+   Reporting and reading are one round trip because they are one operation: the rate shown
+   must include what this visit learned, and splitting them would either show a figure a visit
+   behind or cost two calls to avoid it. */
+async function getNicheMonetization(niche, report) {
+  const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+  if (!base) return { ok: false, reason: 'no index' };
+  if (!niche) return { ok: false, reason: 'no niche' };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
+  try {
+    const res = await fetch(base.replace(/\/$/, '') + '/monetization', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      /* Trimmed to what the table stores. The rows the panel holds carry avatars, titles and
+         similarity scores, and posting fifty of those whole would be a payload many times the
+         size of the answer for fields the server drops on arrival. */
+      body: JSON.stringify({
+        niche: niche,
+        report: (report || []).slice(0, 60).map((r) => ({
+          id: r.id, handle: r.handle, state: r.state,
+          subscribers: r.subscribers, checked: r.checked, withAds: r.withAds
+        }))
+      }),
+      signal: controller.signal
+    });
+    if (!res.ok) return { ok: false, reason: 'monetization ' + res.status };
+    return (await res.json()) || { ok: false };
+  } catch (e) {
+    /* An abort and a dead service are the same thing to the panel: no figure this time. It
+       keeps whatever it already drew rather than replacing a real rate with an error. */
+    return { ok: false, reason: 'monetization unreachable' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /* One entry per channel and period. A reader flipping between Week and Year and back should
    pay for each once, not once per click — and the answer only changes when the channel
    uploads again, which the TTL covers. */
@@ -1331,6 +1408,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     getSimilarChannels(msg.key, msg.titles, msg.about, msg.force, msg.opts)
       .then(sendResponse)
       .catch((e) => sendResponse({ channels: [], queries: [], reason: String(e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-mon-niche') {
+    getNicheMonetization(msg.niche, msg.report)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String(e) }));
     return true;
   }
   if (msg.type === 'ytc-thumbs') {

@@ -35,6 +35,41 @@ if [ -z "$YT_KEY" ]; then
   echo "note: no YouTube key found — /ingest will be disabled" >&2
 fi
 
+# An instance already on this port is the failure that does not look like one. Python does not
+# reload a module whose file changed, so the old process keeps answering every route it was
+# built with — and the new one, unable to bind, exits into a log nobody is reading. The symptom
+# is a 404 on the route just added, against a service that is plainly up. Seen twice.
+#
+# lsof rather than a pidfile: it reports whoever actually holds the port, including an instance
+# started from another terminal, which is exactly the case a pidfile misses.
+#
+# -sTCP:LISTEN is not optional. Without it lsof also returns every process with an open
+# connection TO the port — the first version of this listed Chrome, which has the dashboard
+# open, and REPLACE=1 would have killed the browser rather than the server.
+BUSY="$(lsof -ti "tcp:${PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+if [ -n "$BUSY" ]; then
+  echo "Port ${PORT} is already held by pid(s): ${BUSY}" >&2
+  if [ "${REPLACE:-0}" = "1" ]; then
+    echo "REPLACE=1 — stopping it first." >&2
+    # shellcheck disable=SC2086
+    kill $BUSY 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      lsof -ti "tcp:${PORT}" -sTCP:LISTEN >/dev/null 2>&1 || break
+      sleep 0.3
+    done
+    if lsof -ti "tcp:${PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+      echo "It did not stop. Kill it by hand, then run this again." >&2
+      exit 1
+    fi
+  else
+    echo >&2
+    echo "That process is still serving the code it started with, so an edit to app.py" >&2
+    echo "will not appear until it is replaced. Either stop it, or re-run as:" >&2
+    echo "    REPLACE=1 $0" >&2
+    exit 1
+  fi
+fi
+
 echo "index service on http://127.0.0.1:${PORT}"
 echo
 echo "Paste this into the extension popup's \"Index API\" field:"

@@ -270,15 +270,15 @@ html[dark] .ytc-spin { border-color: rgba(255, 255, 255, .25); border-top-color:
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; flex-wrap: wrap; margin-bottom: 10px;
 }
-.ytc-an__ranges { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px;
+.ytc-an__ranges, .ytc-vtabs { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px;
   background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05)); }
-.ytc-an__range {
+.ytc-an__range, .ytc-vtab {
   border: 0; background: none; cursor: pointer; border-radius: 999px;
   padding: 5px 12px; font: 500 12px/1 Roboto, Arial, sans-serif;
   color: var(--yt-spec-text-secondary, #606060);
 }
-.ytc-an__range:hover { color: var(--yt-spec-text-primary, #0f0f0f); }
-.ytc-an__range.on {
+.ytc-an__range:hover, .ytc-vtab:hover { color: var(--yt-spec-text-primary, #0f0f0f); }
+.ytc-an__range.on, .ytc-vtab.on {
   background: var(--yt-spec-general-background-a, #fff);
   color: var(--yt-spec-text-primary, #0f0f0f);
   box-shadow: 0 1px 3px rgba(0,0,0,.14);
@@ -339,10 +339,12 @@ html[dark] .ytc-an__note--cap { color: #aaa; }
 html[dark] .ytc-an__chart {
   background: transparent; border-color: rgba(255,255,255,.12);
 }
-html[dark] .ytc-an__ranges { background: rgba(255,255,255,.08); }
-html[dark] .ytc-an__range { color: #aaa; }
-html[dark] .ytc-an__range:hover, html[dark] .ytc-an__range.on { color: #f1f1f1; }
-html[dark] .ytc-an__range.on { background: rgba(255,255,255,.16); box-shadow: none; }
+html[dark] .ytc-an__ranges, html[dark] .ytc-vtabs { background: rgba(255,255,255,.08); }
+html[dark] .ytc-an__range, html[dark] .ytc-vtab { color: #aaa; }
+html[dark] .ytc-an__range:hover, html[dark] .ytc-an__range.on,
+html[dark] .ytc-vtab:hover, html[dark] .ytc-vtab.on { color: #f1f1f1; }
+html[dark] .ytc-an__range.on, html[dark] .ytc-vtab.on {
+  background: rgba(255,255,255,.16); box-shadow: none; }
 html[dark] .ytc-an__line, html[dark] .ytc-an__median { stroke: #b083f0; }
 html[dark] .ytc-an__pt { fill: #0f0f0f; stroke: #b083f0; }
 html[dark] .ytc-an__pt:hover, html[dark] .ytc-an__pt.on { fill: #b083f0; }
@@ -910,6 +912,19 @@ html[dark] .ytc-t__pic--none { background: rgba(255,255,255,.12); }
 .ytc-sk--chip { height: 32px; border-radius: 16px; }
 .ytc-sk--btn { width: 86px; height: 34px; border-radius: 18px; }
 
+/* The Monetization view's loading shape. Each block stands in for the element that replaces
+   it at roughly its finished size, so the panel does not resize under the reader when the
+   figures land — the rate block is the height of the 44px number, the chart block the height
+   the SVG settles at for its 520x200 viewBox at panel width. */
+.ytc-sk--niche { width: 150px; height: 11px; margin-bottom: 12px; }
+.ytc-sk--rate { width: 140px; height: 48px; border-radius: 8px; }
+.ytc-sk--bar { width: min(340px, 100%); height: 6px; border-radius: 999px; margin: 12px 0 10px; }
+.ytc-sk--sub { width: min(420px, 72%); height: 12px; }
+/* Matches the tile it replaces — same radius, same height as a figure over a label. */
+.ytc-sk--tile { width: 100%; height: 62px; border-radius: 12px; }
+.ytc-sk--graphhead { width: 210px; height: 11px; margin-bottom: 10px; }
+.ytc-sk--chart { width: 100%; aspect-ratio: 520 / 160; height: auto; border-radius: 8px; }
+
 @keyframes ytc-sk-shine {
   from { background-position: -180px 0; }
   to   { background-position: calc(100% + 180px) 0; }
@@ -1135,25 +1150,49 @@ html[dark] .ytc-fm__track { background: rgba(255,255,255,.2); }
 html[dark] .ytc-fm__chip { border-color: rgba(255,255,255,.2); }
 html[dark] .ytc-fm__chip.on { background: #f1f1f1; color: #0f0f0f; border-color: #f1f1f1; }
 
+/* Blurred rather than merely dark, matching the prompt dialog. A flat 60% black reads as a
+   sheet dropped over the page; blurring what is behind it says the page is still there and
+   this is on top of it. */
 .ytc-fm__veil {
-  position: fixed; inset: 0; z-index: 2800; background: rgba(0,0,0,.6);
+  position: fixed; inset: 0; z-index: 2800;
+  background: rgba(0,0,0,.5); backdrop-filter: blur(3px);
+  animation: ytc-fm-veil .16s ease;
 }
+@keyframes ytc-fm-veil { from { opacity: 0 } to { opacity: 1 } }
 .ytc-fm {
   /* Roomier than it was: eleven presets and six sliders down the side need the height, and
      the result rows carry more badges than they used to. */
   position: fixed; z-index: 2801; inset: 3vh 3vw; display: flex; flex-direction: column;
-  border-radius: 14px; overflow: hidden;
+  border-radius: 16px; overflow: hidden;
   background: var(--yt-spec-base-background, #fff);
   color: var(--yt-spec-text-primary, #0f0f0f);
   font-family: Roboto, Arial, sans-serif;
-  box-shadow: 0 20px 60px rgba(0,0,0,.4);
+  box-shadow: 0 24px 60px rgba(0,0,0,.35);
+  animation: ytc-fm-in .2s cubic-bezier(.2,.9,.3,1.15);
 }
+/* Rises and settles rather than appearing. The same curve and duration as the prompt dialog,
+   so the two read as one product opening two of its windows. */
+@keyframes ytc-fm-in {
+  from { opacity: 0; transform: translateY(12px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+/* The one band that names what the window is for, tinted the same way the prompt dialog's is
+   so the family resemblance is doing the work rather than a shared corner radius. */
 .ytc-fm__head {
   display: flex; align-items: center; gap: 12px; flex: 0 0 auto;
   padding: 16px 20px; font-size: 16px;
+  background: linear-gradient(100deg, rgba(124,58,237,.1), rgba(6,95,212,.08) 60%, rgba(15,157,88,.08));
   border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
 }
-.ytc-fm__count { color: var(--yt-spec-text-secondary, #606060); font-size: 13px; }
+html[dark] .ytc-fm__head { border-bottom-color: rgba(255,255,255,.12); }
+/* A pill, like the prompt dialog's count. It is a status, and setting it as plain grey text
+   beside a bold title left it reading as part of the title. */
+.ytc-fm__count {
+  padding: 2px 9px; border-radius: 999px; font-size: 12px;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06));
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-fm__count { background: rgba(255,255,255,.1); color: #aaa; }
 .ytc-fm__x {
   margin-left: auto; border: 0; background: none; cursor: pointer;
   font-size: 24px; line-height: 1; color: var(--yt-spec-text-secondary, #606060);
@@ -1506,13 +1545,29 @@ html[dark] .ytc-fm__progress { color: #aaa; background: rgba(255, 255, 255, .06)
   color: inherit;
 }
 .ytc-fm__row:hover { background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05)); }
+/* The wrapper owns the row's sizing so the runtime badge can be positioned against it; the
+   image just fills it. 200x112 keeps 16:9 exactly — an off-ratio box would letterbox every
+   thumbnail via object-fit and crop the titles that publishers bake into the edges. Still
+   well inside mqdefault's 320x180, so nothing is upscaled. */
+.ytc-fm__shot { position: relative; flex: 0 0 auto; width: 200px; height: 112px; }
 .ytc-fm__thumb {
-  flex: 0 0 auto; width: 168px; height: 94px; border-radius: 8px; object-fit: cover;
+  display: block; width: 100%; height: 100%; border-radius: 8px; object-fit: cover;
   background: rgba(0,0,0,.08);
 }
 /* A card whose thumbnail had not loaded when the page was read: the row still has to keep
    its shape, or the list jumps as it renders. */
 .ytc-fm__thumb--none { display: block; }
+/* The same corner, weight and radius YouTube uses for its own runtime badge, because this
+   list sits on top of YouTube and a different treatment reads as a different kind of fact.
+   Dark in both themes for the same reason it is on the site: it sits on the thumbnail, whose
+   brightness has nothing to do with the page. */
+.ytc-fm__dur {
+  position: absolute; right: 4px; bottom: 4px;
+  padding: 1px 4px; border-radius: 4px;
+  background: rgba(0, 0, 0, .8); color: #fff;
+  font: 500 12px/1.4 Roboto, Arial, sans-serif;
+  letter-spacing: .02em; pointer-events: none;
+}
 .ytc-fm__meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ytc-fm__title { font: 500 15px/1.35 Roboto, Arial, sans-serif; }
 .ytc-fm__nums, .ytc-fm__chan {
@@ -1707,7 +1762,8 @@ html[dark] .ytc-fm__row:hover { background: rgba(255,255,255,.08); }
   .ytc-fm { inset: 2vh 2vw; }
   .ytc-fm__body { flex-direction: column; }
   .ytc-fm__side { flex: 0 0 auto; border-right: 0; border-bottom: 1px solid rgba(0,0,0,.1); }
-  .ytc-fm__thumb { width: 120px; height: 68px; }
+  .ytc-fm__shot { width: 148px; height: 83px; }
+  .ytc-fm__dur { font-size: 11px; }
 }
 
 /* The cloned badge row inside a result. The card lays this out inside a video's text block;
@@ -2828,4 +2884,525 @@ html[dark] .ytc-sh__skel {
   background: linear-gradient(90deg,
     rgba(255,255,255,.08) 25%, rgba(255,255,255,.14) 37%, rgba(255,255,255,.08) 63%);
   background-size: 400% 100%;
+}
+
+/* ---- monetization insight (Overview / Monetization tabs) ---- */
+
+/* The same segmented pill the analytics range switcher uses, sharing its rules outright
+   rather than restating them — two controls a few hundred pixels apart on the same panel,
+   built from copied values, drift the first time one of them is touched. Everything visual
+   lives with .ytc-an__ranges above; only the spacing that is particular to sitting at the
+   top of the panel is set here. */
+.ytc-vtabs { margin: 2px 0 10px; }
+/* Only the view tabs carry a badge, so only they need to lay one out — the analytics range
+   buttons share every other rule and must not inherit this one. */
+.ytc-vtab { display: inline-flex; align-items: center; gap: 5px; }
+/* Small, muted, and the same weight in both pill states: a badge that brightened when its tab
+   was selected would read as a live status rather than as a standing label on the feature. */
+.ytc-beta {
+  font: 600 9px/1 Roboto, Arial, sans-serif;
+  text-transform: uppercase; letter-spacing: .05em;
+  padding: 2px 5px; border-radius: 4px;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-beta { background: rgba(255,255,255,.14); color: #aaa; }
+
+/* Lifted out of the footnote grey it used to share with the method caveat. The two say
+   different things — one is a permanent limit of the method, the other is a temporary state
+   of the data — and setting them identically made the second read as more fine print, which
+   is exactly the sentence a reader looking at a thin sample needs to notice. Blue rather than
+   the panel's green: green already means "monetized" three inches above this, and reusing it
+   for an unrelated note would attach a meaning the sentence does not have. */
+.ytc-mgrow {
+  margin: 14px 12px 0; max-width: 66ch;
+  padding: 10px 12px; border-left: 3px solid #065fd4;
+  border-radius: 0 8px 8px 0;
+  background: rgba(6, 95, 212, .06);
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  font: 400 12.5px/1.6 Roboto, Arial, sans-serif;
+}
+html[dark] .ytc-mgrow {
+  border-left-color: #3ea6ff; background: rgba(62, 166, 255, .1); color: #f1f1f1;
+}
+
+/* ---- the headline rate ---- */
+.ytc-mhead { padding: 6px 2px 14px; }
+.ytc-mhead__t { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ytc-mhead__niche {
+  font: 500 13px/1.4 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-mhead__busy {
+  font: 400 12px/1.4 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #909090);
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.ytc-mhead__rate {
+  font: 500 52px/1 Roboto, Arial, sans-serif; letter-spacing: -.035em;
+  color: var(--yt-spec-text-primary, #0f0f0f); margin: 6px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+.ytc-mhead__pc { font-size: 22px; font-weight: 400; margin-left: 3px; opacity: .45; }
+
+/* The rate as a length. Rounded, thin, and the same green as the curve and the Monetized
+   count — one fact, one colour, wherever it appears. */
+.ytc-mbar {
+  position: relative; height: 6px; border-radius: 999px; margin: 12px 0 10px;
+  max-width: 340px; overflow: hidden;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.09));
+}
+.ytc-mbar__fill {
+  display: block; height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, #0f9d58, #34c77b);
+  transition: width .5s cubic-bezier(.2,.8,.3,1);
+}
+html[dark] .ytc-mbar { background: rgba(255,255,255,.12); }
+html[dark] .ytc-mbar__fill { background: linear-gradient(90deg, #4ecb71, #7ee2a0); }
+.ytc-mhead__sub {
+  font: 400 13px/1.5 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060); max-width: 60ch;
+}
+/* The under-sampled state. Deliberately sized like body text, not like the big number it
+   replaces: a huge "—" reads as a broken figure, where a sentence reads as an explanation. */
+.ytc-mhead__thin {
+  font: 400 13px/1.6 Roboto, Arial, sans-serif; margin-top: 6px; max-width: 60ch;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-mhead__rate { color: #f1f1f1; }
+html[dark] .ytc-mhead__niche,
+html[dark] .ytc-mhead__sub,
+html[dark] .ytc-mhead__thin { color: #aaa; }
+
+/* ---- the four counts behind the rate ---- */
+.ytc-mstats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 8px; margin-bottom: 20px;
+}
+/* Filled surfaces rather than outlined boxes. Four bordered rectangles in a row read as a
+   table with the rules missing; a soft ground groups each figure with its label and lets the
+   headline above stay the loudest thing on the panel. */
+.ytc-ms {
+  padding: 11px 13px; border-radius: 12px; border: 0;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.045));
+}
+.ytc-ms__v {
+  display: flex; align-items: center; gap: 7px;
+  font: 500 21px/1.2 Roboto, Arial, sans-serif; letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+/* Carries the verdict's colour so the four counts are scannable without reading the labels. */
+.ytc-ms__dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.ytc-ms--yes .ytc-ms__dot { background: #0f9d58; }
+.ytc-ms--no  .ytc-ms__dot { background: #c5221f; }
+.ytc-ms--off .ytc-ms__dot { background: #909090; }
+/* Nought not-monetized channels is not a red fact. */
+.ytc-ms--zero { opacity: .6; }
+.ytc-ms--zero .ytc-ms__dot { background: #b0b0b0; }
+.ytc-ms__l {
+  font: 400 11px/1.4 Roboto, Arial, sans-serif; margin-top: 3px;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-ms { background: rgba(255,255,255,.07); }
+html[dark] .ytc-ms__v { color: #f1f1f1; }
+html[dark] .ytc-ms__l { color: #aaa; }
+html[dark] .ytc-ms--yes .ytc-ms__dot { background: #4ecb71; }
+html[dark] .ytc-ms--no  .ytc-ms__dot { background: #ff8a80; }
+html[dark] .ytc-ms--zero .ytc-ms__dot { background: #666; }
+
+/* ---- rate against channel size ---- */
+/* The plot sits on its own ground, which separates it from the counts above without a rule
+   across the panel and gives the axis labels room that is not the panel's padding. */
+.ytc-mgraph {
+  margin-bottom: 6px; padding: 14px 14px 8px; border-radius: 14px;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.035));
+}
+html[dark] .ytc-mgraph { background: rgba(255,255,255,.05); }
+.ytc-mgraph__h {
+  font: 500 12px/1.4 Roboto, Arial, sans-serif; margin-bottom: 10px;
+  letter-spacing: .01em;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-mgraph__h { color: #aaa; }
+.ytc-mc { display: block; width: 100%; height: auto; overflow: visible; }
+.ytc-mc__grid {
+  stroke: var(--yt-spec-10-percent-layer, rgba(0,0,0,.09));
+  stroke-width: 1; shape-rendering: crispEdges;
+}
+/* The quarters between the labelled lines. Present for the eye to measure against, quiet
+   enough not to be read as data. */
+.ytc-mc__grid--faint { stroke-dasharray: 2 4; opacity: .55; }
+.ytc-mc__ylab, .ytc-mc__xlab {
+  fill: var(--yt-spec-text-secondary, #909090);
+  font: 400 10px Roboto, Arial, sans-serif;
+}
+.ytc-mc__ylab { text-anchor: end; }
+.ytc-mc__xlab { text-anchor: middle; }
+/* Green, matching the monetized pill: the curve and the row badges are the same claim at two
+   scales, and colouring them differently would suggest they are not. */
+.ytc-mc__line {
+  fill: none; stroke: #0f9d58; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+/* The two ends of the fade under the curve, as stops rather than as a fill on the shape —
+   that is what lets the gradient be themed like anything else here. */
+.ytc-mc__g0 { stop-color: #0f9d58; stop-opacity: .22; }
+.ytc-mc__g1 { stop-color: #0f9d58; stop-opacity: 0; }
+.ytc-mc__hit { fill: transparent; }
+.ytc-mc__pt { cursor: default; }
+.ytc-mc__dot {
+  fill: #0f9d58; stroke: var(--yt-spec-general-background-a, #fff); stroke-width: 2;
+  vector-effect: non-scaling-stroke; transition: r .12s ease;
+}
+.ytc-mc__pt:hover .ytc-mc__dot { r: 5.5; }
+/* Hollow: the point exists but is drawn from too few channels to carry weight. Same shape and
+   position as a solid one, so the curve still reads continuously. */
+.ytc-mc__dot--thin { fill: var(--yt-spec-general-background-a, #fff); stroke: #0f9d58; }
+html[dark] .ytc-mc__grid { stroke: rgba(255,255,255,.12); }
+html[dark] .ytc-mc__ylab, html[dark] .ytc-mc__xlab { fill: #909090; }
+html[dark] .ytc-mc__line { stroke: #4ecb71; }
+html[dark] .ytc-mc__g0 { stop-color: #4ecb71; stop-opacity: .26; }
+html[dark] .ytc-mc__g1 { stop-color: #4ecb71; stop-opacity: 0; }
+html[dark] .ytc-mc__dot { fill: #4ecb71; stroke: #212121; }
+html[dark] .ytc-mc__dot--thin { fill: #212121; stroke: #4ecb71; }
+
+/* The sentence the curve exists to support, set apart from the caveat below it. */
+.ytc-mgraph__read {
+  font: 500 13px/1.5 Roboto, Arial, sans-serif; margin: 10px 0 2px;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+html[dark] .ytc-mgraph__read { color: #f1f1f1; }
+.ytc-mgraph__note, .ytc-mfoot { max-width: 66ch; }
+
+/* ---- selecting videos for a prompt ---- */
+
+/* Hidden until the row is hovered, and permanently visible once ticked. A checkbox on every
+   row at rest would turn a list people read into a form people fill in; one that vanishes
+   again after being ticked would hide the only evidence of what is selected.
+
+   At the right-hand end of the row, vertically centred. `margin-left: auto` is what puts it
+   there: the metadata column does not grow, so the slack collects here and pushes the tick to
+   the edge — and when a long title does take the width, the tick keeps its size and the title
+   shrinks, which is the right way round. Sized 24px so it stays a comfortable target now that
+   it no longer has a thumbnail corner to sit in. */
+.ytc-fm__pick {
+  position: relative; flex: 0 0 auto; align-self: center; margin-left: auto;
+  width: 24px; height: 24px; border-radius: 7px; cursor: pointer; box-sizing: border-box;
+  border: 2px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.25));
+  background: var(--yt-spec-general-background-a, #fff);
+  opacity: 0; transform: scale(.85);
+  transition: opacity .12s ease, transform .12s ease, background .12s ease,
+              border-color .12s ease;
+}
+.ytc-fm__row:hover .ytc-fm__pick,
+.ytc-fm__pick:focus-visible { opacity: 1; transform: scale(1); }
+.ytc-fm__pick:hover { border-color: #065fd4; }
+.ytc-fm__pick:focus-visible { outline: 2px solid #065fd4; outline-offset: 2px; }
+.ytc-fm__pick.on {
+  opacity: 1; transform: scale(1);
+  background: #065fd4; border-color: #065fd4;
+}
+/* The tick itself: a rotated rectangle with two borders, so no glyph or image is needed and
+   it stays crisp at any zoom. */
+.ytc-fm__pick.on::after {
+  content: ''; position: absolute; left: 7px; top: 2px; width: 5px; height: 11px;
+  border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+html[dark] .ytc-fm__pick { background: #212121; border-color: rgba(255,255,255,.3); }
+html[dark] .ytc-fm__pick:hover { border-color: #3ea6ff; }
+.ytc-fm__row--picked { background: rgba(6,95,212,.07); }
+.ytc-fm__row--picked:hover { background: rgba(6,95,212,.11); }
+html[dark] .ytc-fm__row--picked { background: rgba(62,166,255,.12); }
+html[dark] .ytc-fm__row--picked:hover { background: rgba(62,166,255,.17); }
+html[dark] .ytc-fm__pick.on { background: #3ea6ff; border-color: #3ea6ff; }
+html[dark] .ytc-fm__pick.on::after { border-color: #0f0f0f; }
+
+/* ---- the header button ---- */
+/* The slot takes the free space, not the close button — with `margin-left: auto` on both,
+   flex splits the gap between them and the button lands mid-header instead of at the right
+   edge. The slot pushes itself and everything after it over, which is right whether it holds
+   a button or nothing at all. */
+.ytc-fm__genslot { margin-left: auto; display: flex; align-items: center; }
+.ytc-fm__head .ytc-fm__x { margin-left: 0; }
+.ytc-fm__gen {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 8px 14px; border: 0; border-radius: 999px;
+  font: 500 13px/1 Roboto, Arial, sans-serif; color: #fff;
+  background: linear-gradient(100deg, #7c3aed, #065fd4 55%, #0f9d58);
+  background-size: 200% 100%;
+  box-shadow: 0 2px 10px rgba(124,58,237,.35);
+  animation: ytc-gen-in .22s cubic-bezier(.2,.9,.3,1.3);
+  transition: background-position .5s ease, box-shadow .2s ease, transform .12s ease;
+}
+.ytc-fm__gen:hover { background-position: 100% 0; box-shadow: 0 4px 16px rgba(124,58,237,.45); }
+.ytc-fm__gen:active { transform: translateY(1px); }
+.ytc-fm__gen-spark { font-size: 13px; animation: ytc-spark 2.4s ease-in-out infinite; }
+.ytc-fm__gen-n {
+  min-width: 20px; padding: 2px 6px; border-radius: 999px;
+  background: rgba(255,255,255,.25); font-size: 11px; font-weight: 600; text-align: center;
+}
+@keyframes ytc-gen-in {
+  from { opacity: 0; transform: translateY(-6px) scale(.94); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes ytc-spark {
+  0%, 100% { opacity: 1; transform: scale(1) rotate(0); }
+  50%      { opacity: .55; transform: scale(1.25) rotate(20deg); }
+}
+
+/* ---- the prompt dialog ---- */
+
+/* Above the filter modal, which is itself above the page. Its own backdrop, because the
+   modal's veil is behind the modal and would not dim it. */
+.ytc-ai {
+  position: fixed; inset: 0; z-index: 2147483647;
+  display: flex; align-items: center; justify-content: center; padding: 4vh 4vw;
+  background: rgba(0,0,0,.5); backdrop-filter: blur(3px);
+  animation: ytc-ai-veil .16s ease;
+}
+@keyframes ytc-ai-veil { from { opacity: 0 } to { opacity: 1 } }
+.ytc-ai__card {
+  display: flex; flex-direction: column; width: min(560px, 100%); max-height: 100%;
+  border-radius: 16px; overflow: hidden;
+  background: var(--yt-spec-general-background-a, #fff);
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  box-shadow: 0 24px 60px rgba(0,0,0,.35);
+  animation: ytc-ai-in .2s cubic-bezier(.2,.9,.3,1.15);
+}
+@keyframes ytc-ai-in {
+  from { opacity: 0; transform: translateY(12px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+html[dark] .ytc-ai__card { background: #212121; color: #f1f1f1; }
+
+/* A tinted band rather than a plain bar: it is the one part of the dialog that names what
+   the whole thing is for, and the gradient ties it to the button that opened it. */
+.ytc-ai__head {
+  display: flex; align-items: center; gap: 10px; padding: 16px 18px;
+  font-size: 15px;
+  background: linear-gradient(100deg, rgba(124,58,237,.12), rgba(6,95,212,.1) 60%, rgba(15,157,88,.1));
+  border-bottom: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+}
+html[dark] .ytc-ai__head { border-bottom-color: rgba(255,255,255,.12); }
+.ytc-ai__spark {
+  color: #7c3aed; font-size: 15px; animation: ytc-spark 2.4s ease-in-out infinite;
+}
+html[dark] .ytc-ai__spark { color: #b083f0; }
+.ytc-ai__count {
+  padding: 2px 8px; border-radius: 999px; font-size: 12px;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06));
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-ai__count { background: rgba(255,255,255,.1); color: #aaa; }
+.ytc-ai__x {
+  margin-left: auto; border: 0; background: none; cursor: pointer;
+  font-size: 22px; line-height: 1; color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-ai__x { color: #aaa; }
+
+.ytc-ai__scroll { overflow-y: auto; overscroll-behavior: contain; padding: 4px 18px 18px; }
+.ytc-ai__sec {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin: 16px 0 8px; font: 500 11px/1 Roboto, Arial, sans-serif;
+  letter-spacing: .07em; text-transform: uppercase;
+  color: var(--yt-spec-text-secondary, #909090);
+}
+/* Why the field matters, beside the field rather than under it. Sentence case and no tracking
+   so it reads as a note rather than as a second heading. */
+.ytc-ai__why {
+  font: 400 11px/1.3 Roboto, Arial, sans-serif; letter-spacing: 0; text-transform: none;
+  opacity: .85;
+}
+/* Given more weight than the toggles below it, because it is the input that decides whether
+   the answer is about this video or about the category. */
+.ytc-ai__brief {
+  display: block; width: 100%; box-sizing: border-box; resize: vertical;
+  padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.18));
+  background: var(--yt-spec-general-background-a, #fff);
+  color: inherit; font: 400 13px/1.5 Roboto, Arial, sans-serif;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.ytc-ai__brief::placeholder { color: var(--yt-spec-text-secondary, #909090); opacity: .8; }
+.ytc-ai__brief:focus {
+  outline: none; border-color: #065fd4; box-shadow: 0 0 0 3px rgba(6,95,212,.15);
+}
+html[dark] .ytc-ai__brief { background: #181818; border-color: rgba(255,255,255,.2); }
+html[dark] .ytc-ai__brief:focus {
+  border-color: #3ea6ff; box-shadow: 0 0 0 3px rgba(62,166,255,.2);
+}
+
+/* ---- selected videos ---- */
+.ytc-ai__chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 108px; overflow-y: auto; }
+.ytc-ai__chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+  padding: 4px 4px 4px 10px; border-radius: 999px; font-size: 12px;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06));
+}
+html[dark] .ytc-ai__chip { background: rgba(255,255,255,.1); }
+.ytc-ai__chipt {
+  max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ytc-ai__chipx {
+  border: 0; background: none; cursor: pointer; padding: 0 4px; font-size: 14px; line-height: 1;
+  color: var(--yt-spec-text-secondary, #606060); border-radius: 999px;
+}
+.ytc-ai__chipx:hover { background: rgba(0,0,0,.12); color: #c5221f; }
+html[dark] .ytc-ai__chipx { color: #aaa; }
+html[dark] .ytc-ai__chipx:hover { background: rgba(255,255,255,.16); color: #ff8a80; }
+
+/* ---- what goes in the prompt ---- */
+.ytc-ai__fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.ytc-ai__f {
+  display: grid; grid-template-columns: 18px 1fr; grid-template-rows: auto auto;
+  gap: 1px 9px; align-items: center; text-align: left; cursor: pointer;
+  padding: 9px 11px; border-radius: 10px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12));
+  background: none; color: inherit; font: 400 13px/1.3 Roboto, Arial, sans-serif;
+  transition: border-color .12s ease, background .12s ease;
+}
+.ytc-ai__f:hover { border-color: rgba(6,95,212,.5); }
+.ytc-ai__f.on { border-color: #065fd4; background: rgba(6,95,212,.06); }
+.ytc-ai__f.locked { cursor: default; opacity: .9; }
+.ytc-ai__f.locked:hover { border-color: #065fd4; }
+html[dark] .ytc-ai__f { border-color: rgba(255,255,255,.18); }
+html[dark] .ytc-ai__f.on { border-color: #3ea6ff; background: rgba(62,166,255,.12); }
+html[dark] .ytc-ai__f:hover { border-color: rgba(62,166,255,.5); }
+.ytc-ai__tick {
+  grid-row: 1 / span 2; position: relative; width: 18px; height: 18px; border-radius: 5px;
+  box-sizing: border-box; border: 2px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.25));
+  transition: background .12s ease, border-color .12s ease;
+}
+.ytc-ai__f.on .ytc-ai__tick { background: #065fd4; border-color: #065fd4; }
+.ytc-ai__f.on .ytc-ai__tick::after {
+  content: ''; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px;
+  border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+html[dark] .ytc-ai__tick { border-color: rgba(255,255,255,.3); }
+html[dark] .ytc-ai__f.on .ytc-ai__tick { background: #3ea6ff; border-color: #3ea6ff; }
+html[dark] .ytc-ai__f.on .ytc-ai__tick::after { border-color: #0f0f0f; }
+.ytc-ai__fl { font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.ytc-ai__lock {
+  padding: 1px 5px; border-radius: 4px; font: 600 9px/1.4 Roboto, Arial, sans-serif;
+  text-transform: uppercase; letter-spacing: .05em;
+  background: rgba(6,95,212,.15); color: #065fd4;
+}
+html[dark] .ytc-ai__lock { background: rgba(62,166,255,.2); color: #3ea6ff; }
+.ytc-ai__fh { font-size: 11px; color: var(--yt-spec-text-secondary, #909090); }
+
+/* ---- model ---- */
+.ytc-ai__models { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.ytc-ai__m {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  cursor: pointer; padding: 12px 8px; border-radius: 12px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12));
+  background: none; color: inherit; font: 500 13px/1 Roboto, Arial, sans-serif;
+  transition: border-color .12s ease, background .12s ease, transform .12s ease;
+}
+.ytc-ai__m:hover { transform: translateY(-1px); }
+html[dark] .ytc-ai__m { border-color: rgba(255,255,255,.18); }
+/* A filled dot in each product's own colour: enough to tell them apart at a glance without
+   shipping three logos we have no licence to redraw. */
+.ytc-ai__mlogo { width: 22px; height: 22px; border-radius: 50%; }
+.ytc-ai__m--chatgpt .ytc-ai__mlogo { background: #10a37f; }
+.ytc-ai__m--claude  .ytc-ai__mlogo { background: #d97757; }
+.ytc-ai__m--gemini  .ytc-ai__mlogo { background: linear-gradient(135deg, #4285f4, #9b72cb 60%, #d96570); }
+.ytc-ai__m--chatgpt.on { border-color: #10a37f; background: rgba(16,163,127,.08); }
+.ytc-ai__m--claude.on  { border-color: #d97757; background: rgba(217,119,87,.08); }
+.ytc-ai__m--gemini.on  { border-color: #4285f4; background: rgba(66,133,244,.08); }
+
+/* ---- footer ---- */
+.ytc-ai__foot {
+  display: flex; align-items: center; gap: 10px; padding: 14px 18px;
+  border-top: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+}
+html[dark] .ytc-ai__foot { border-top-color: rgba(255,255,255,.12); }
+.ytc-ai__save {
+  cursor: pointer; padding: 9px 14px; border-radius: 999px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.15));
+  background: none; color: inherit; font: 500 13px/1 Roboto, Arial, sans-serif;
+}
+.ytc-ai__save:hover:not(:disabled) { border-color: currentColor; }
+/* Settled, not broken. The disabled state here means "already saved", which is a success, so
+   it keeps a readable weight instead of the usual greyed-out treatment. */
+.ytc-ai__save:disabled { cursor: default; opacity: .55; }
+html[dark] .ytc-ai__save { border-color: rgba(255,255,255,.2); }
+.ytc-ai__go {
+  margin-left: auto; cursor: pointer; padding: 10px 20px; border: 0; border-radius: 999px;
+  color: #fff; font: 500 14px/1 Roboto, Arial, sans-serif;
+  background: linear-gradient(100deg, #7c3aed, #065fd4 55%, #0f9d58);
+  background-size: 200% 100%;
+  box-shadow: 0 2px 12px rgba(124,58,237,.35);
+  transition: background-position .5s ease, box-shadow .2s ease, transform .12s ease;
+}
+.ytc-ai__go:hover { background-position: 100% 0; box-shadow: 0 4px 18px rgba(124,58,237,.5); }
+.ytc-ai__go:active { transform: translateY(1px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ytc-fm__gen, .ytc-ai, .ytc-ai__card, .ytc-fm__gen-spark, .ytc-ai__spark { animation: none; }
+}
+@media (max-width: 620px) {
+  .ytc-ai__models { grid-template-columns: 1fr; }
+}
+
+/* ---- Filter videos: the same finish as the prompt dialog ---- */
+
+/* Motion on the things that change state, so a click reads as the control responding rather
+   than as the panel redrawing. Kept to colour and transform — nothing here animates a size,
+   which on a list this dense would ripple through the rows below it. */
+.ytc-fm__chip, .ytc-fm__sort, .ytc-fm__srail, .ytc-fm__x, .ytc-fm__row {
+  transition: background .12s ease, border-color .12s ease, color .12s ease,
+              box-shadow .12s ease, transform .12s ease;
+}
+/* Only rows that are neither selected nor loaded into the editor. Those two already own the
+   border to say so, and at equal specificity this rule would otherwise repaint them on hover
+   — a selected preset flickering to a different colour under the pointer reads as the
+   selection coming loose. */
+.ytc-fm__chipwrap:not(.on):not(.ytc-fm__chipwrap--editing) .ytc-fm__chip:hover {
+  border-color: rgba(6,95,212,.45);
+}
+html[dark] .ytc-fm__chipwrap:not(.on):not(.ytc-fm__chipwrap--editing) .ytc-fm__chip:hover {
+  border-color: rgba(62,166,255,.45);
+}
+
+/* The close button gets a target rather than being bare glyph. It sat as a 24px character
+   with no hit area of its own, which is a small thing to aim at in the corner of a window
+   this large. */
+.ytc-fm__x {
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 50%;
+}
+.ytc-fm__x:hover {
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.07));
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+html[dark] .ytc-fm__x:hover { background: rgba(255,255,255,.12); color: #f1f1f1; }
+
+/* The sort pills lift on hover the way the model cards in the prompt dialog do. */
+.ytc-fm__sort:hover { transform: translateY(-1px); }
+.ytc-fm__srail:hover { box-shadow: 0 2px 8px rgba(0,0,0,.16); }
+
+/* A keyboard user gets the same ring everywhere in this window, in the accent the panel
+   already uses for selection. */
+.ytc-fm__chip:focus-visible, .ytc-fm__sort:focus-visible, .ytc-fm__x:focus-visible,
+.ytc-fm__seg button:focus-visible, .ytc-fm__srail:focus-visible {
+  outline: 2px solid #065fd4; outline-offset: 2px;
+}
+html[dark] .ytc-fm__chip:focus-visible, html[dark] .ytc-fm__sort:focus-visible,
+html[dark] .ytc-fm__x:focus-visible, html[dark] .ytc-fm__seg button:focus-visible,
+html[dark] .ytc-fm__srail:focus-visible { outline-color: #3ea6ff; }
+
+/* The side rail reads as a panel of its own rather than a column with a line down it —
+   the same move as putting the chart on its own ground in the monetization view. */
+.ytc-fm__side {
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.025));
+}
+html[dark] .ytc-fm__side { background: rgba(255,255,255,.03); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ytc-fm, .ytc-fm__veil { animation: none; }
+  .ytc-fm__chip, .ytc-fm__sort, .ytc-fm__srail, .ytc-fm__x, .ytc-fm__row { transition: none; }
+  .ytc-fm__sort:hover { transform: none; }
 }

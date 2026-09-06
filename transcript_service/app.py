@@ -82,6 +82,54 @@ EMBED_DIMS = 512                  # must match vector(512) in migration 0003
 INDEX_READY = bool(SUPABASE_URL and SUPABASE_KEY)
 
 
+# ─── staleness ───────────────────────────────────────────────────────────────
+
+# When this process loaded its code. Python does not reload a module because the file under it
+# changed, so an edit to app.py has no effect until the process is restarted — and a service
+# that answers every old route perfectly while missing the one just added is indistinguishable
+# from a service that is broken. It has cost this project twice: /monetization answered 404
+# against a running instance, and a restart that silently failed to take the port left a stale
+# build serving for another half hour.
+#
+# Recorded rather than inferred, and compared against the file at request time, so the process
+# can say for itself that it is out of date.
+try:
+    SOURCE_MTIME = os.path.getmtime(os.path.abspath(__file__))
+except OSError:
+    # Frozen, zipped, or otherwise not on a filesystem we can stat. Nothing to compare.
+    SOURCE_MTIME = None
+
+
+def source_age():
+    """Seconds between the code this process is running and the file on disk. 0 when current.
+
+    None when it cannot be told either way, which is the deployed case: the container's file
+    is the file it started from, and a rebuild replaces the whole process anyway.
+    """
+    if SOURCE_MTIME is None:
+        return None
+    try:
+        now = os.path.getmtime(os.path.abspath(__file__))
+    except OSError:
+        return None
+    return max(0.0, now - SOURCE_MTIME)
+
+
+# A second either way is a filesystem timestamp being imprecise, not an edit.
+STALE_AFTER = 2.0
+
+
+def stale_note():
+    """A sentence for the dashboard, or None when the process is running current code."""
+    age = source_age()
+    if age is None or age < STALE_AFTER:
+        return None
+    mins = int(age // 60)
+    when = ("%d minutes" % mins) if mins >= 1 else "seconds"
+    return ("app.py was edited %s after this process started — it is running the old code. "
+            "Restart the service to pick the changes up." % when)
+
+
 def _post_json(url, payload, headers, timeout=30):
     body = json.dumps(payload).encode()
     hdrs = {"Content-Type": "application/json"}
@@ -381,6 +429,181 @@ def niche_for(vector, top=2):
         "z": round(zscore, 2),
         "rpm": round(rpm, 2)
     }
+
+
+# ─── monetization rate by niche ──────────────────────────────────────────────
+
+# Ad monetization needs 1,000 subscribers, so the curve starts there: below the gate the
+# verdict is a fact about eligibility rather than a measurement of the niche, and plotting it
+# would draw a floor of zeroes that says nothing about how the niche behaves.
+#
+# Bands widen with size because subscriber counts are distributed roughly log-normally —
+# equal-width bands would put four fifths of every niche in the first bucket and leave the
+# rest of the curve drawn from single channels. Each band is [low, high), labelled for the
+# axis, and the midpoint used for the x position is geometric for the same reason.
+SUB_BANDS = [
+    (1000, 5000, "1K"),
+    (5000, 10000, "5K"),
+    (10000, 50000, "10K"),
+    (50000, 100000, "50K"),
+    (100000, 500000, "100K"),
+    (500000, 1000000, "500K"),
+    (1000000, None, "1M+"),
+]
+
+# A band drawn from one or two channels is noise wearing a data point's clothes: one verdict
+# flipping moves it 50 points. Thinner bands are still returned — the panel greys them and
+# routes the curve around them — but they are marked so nothing downstream mistakes them for
+# a measurement.
+BAND_MIN_SAMPLE = 4
+
+# The four verdicts background.js produces. Only the first two are measurements of whether a
+# channel earns ad revenue; the rate is their ratio and nothing else divides into it.
+MON_YES = "likely-monetized"
+MON_NO = "likely-not"
+MON_STATES = (MON_YES, MON_NO, "not-eligible", "unknown")
+
+
+def _supabase_get(query, timeout=30):
+    """A read against the project's REST endpoint, with the same one retry as _channel_row.
+
+    Supabase drops idle keep-alive connections, and a RemoteDisconnected on the aggregate
+    read would otherwise report an empty niche — which is indistinguishable, on the panel,
+    from a niche nobody has ever checked.
+    """
+    req = urllib.request.Request(
+        SUPABASE_URL + query,
+        headers={"apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY})
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as res:
+                return json.loads(res.read().decode("utf-8", "replace")) or []
+        except Exception as e:
+            print("  monetization read attempt %d failed: %s: %s"
+                  % (attempt, type(e).__name__, e), flush=True)
+    return None
+
+
+def record_monetization(niche, rows):
+    """Upsert the verdicts one visit resolved. Keyed on channel id, so a channel seen in ten
+    similar lists holds one row rather than voting ten times.
+
+    Returns how many were stored, for the panel's own accounting only — the rate that comes
+    back is read from the table afterwards, never incremented in memory, so a failed write
+    understates coverage rather than corrupting the figure.
+    """
+    payload = []
+    # Last write wins within a batch. Postgres refuses an ON CONFLICT that touches the same
+    # row twice ("cannot affect row a second time"), which fails the whole upsert with a 500 —
+    # so one duplicated channel in a payload would cost the visit every verdict it collected.
+    # The panel builds its report from a similarity list that should not repeat a channel, but
+    # "should not" is not a guarantee worth a lost batch.
+    seen = set()
+    for r in rows or []:
+        cid = str((r or {}).get("id") or "").strip()
+        state = str((r or {}).get("state") or "").strip()
+        # An unrecognised state is dropped rather than stored: the aggregate counts by exact
+        # string, so one typo would create a silent fifth category nothing ever reads.
+        if not re.match(r"^UC[\w-]{20,24}$", cid) or state not in MON_STATES:
+            continue
+        if cid in seen:
+            continue
+        seen.add(cid)
+        subs = (r or {}).get("subscribers")
+        payload.append({
+            "channel_id": cid,
+            "handle": str((r or {}).get("handle") or "")[:120] or None,
+            "niche": niche,
+            "state": state,
+            "subscribers": int(subs) if isinstance(subs, (int, float)) and subs >= 0 else None,
+            "checked": int((r or {}).get("checked") or 0),
+            "with_ads": int((r or {}).get("withAds") or 0),
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+        })
+    if not payload:
+        return 0
+    try:
+        _supabase("/rest/v1/channel_monetization?on_conflict=channel_id", payload,
+                  timeout=45, prefer="resolution=merge-duplicates,return=minimal")
+        return len(payload)
+    except Exception as e:
+        print("  monetization write failed: %s: %s" % (type(e).__name__, e), flush=True)
+        return 0
+
+
+def _band_for(subs):
+    for i, (low, high, _) in enumerate(SUB_BANDS):
+        if subs >= low and (high is None or subs < high):
+            return i
+    return None
+
+
+def monetization_for_niche(niche, limit=4000):
+    """The pooled rate for a niche, and the curve behind it.
+
+    Pooled over distinct channels rather than averaged over visits. Averaging per-visit rates
+    would weight a six-channel visit the same as a forty-five-channel one, and would count a
+    channel once per list it appears in — which in a well-covered niche is most of them.
+    """
+    rows = _supabase_get(
+        "/rest/v1/channel_monetization?niche=eq." + urllib.parse.quote(niche) +
+        "&select=channel_id,state,subscribers&limit=%d" % limit)
+    if rows is None:
+        return {"ok": False, "reason": "could not read stored verdicts"}
+
+    counts = {s: 0 for s in MON_STATES}
+    # Per band: [monetized, determinate]. Only the two measured states enter either figure,
+    # so a band full of ineligible channels reports no point rather than a zero.
+    bands = [[0, 0] for _ in SUB_BANDS]
+    known = {}
+    for r in rows:
+        state = r.get("state")
+        if state not in counts:
+            continue
+        counts[state] += 1
+        known[r.get("channel_id")] = state
+        if state not in (MON_YES, MON_NO):
+            continue
+        subs = r.get("subscribers")
+        if not isinstance(subs, (int, float)):
+            continue
+        i = _band_for(subs)
+        if i is None:
+            continue
+        bands[i][1] += 1
+        if state == MON_YES:
+            bands[i][0] += 1
+
+    eligible = counts[MON_YES] + counts[MON_NO]
+    out = {
+        "ok": True,
+        "niche": niche,
+        # None, not 0. A niche nobody has checked has no rate, and zero is a claim.
+        "rate": round(counts[MON_YES] / eligible, 4) if eligible else None,
+        "monetized": counts[MON_YES],
+        "notMonetized": counts[MON_NO],
+        "notEligible": counts["not-eligible"],
+        "unknown": counts["unknown"],
+        "eligible": eligible,
+        "channels": len(rows),
+        "known": known,
+        "bands": [],
+    }
+    for (low, high, label), (yes, seen) in zip(SUB_BANDS, bands):
+        out["bands"].append({
+            "label": label,
+            "low": low,
+            "high": high,
+            # Geometric midpoint, matching the log x-axis the panel draws. The open top band
+            # has no upper bound, so it sits at a fixed multiple of its floor rather than at
+            # infinity — otherwise the last point could never be placed.
+            "mid": int((low * high) ** 0.5) if high else low * 3,
+            "rate": round(yes / seen, 4) if seen else None,
+            "monetized": yes,
+            "sample": seen,
+            "thin": seen < BAND_MIN_SAMPLE,
+        })
+    return out
 
 
 def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity, channel_id=None):
@@ -769,14 +992,18 @@ DASHBOARD_HTML = """<!doctype html>
     // whole reason this page exists — so say it outright rather than leaving it to be read
     // off a timestamp.
     let health = '';
-    if (!last) health = '<span class="bad">The crawler has never run.</span>';
+    /* First, and ahead of the crawl's own health: a stale process explains anything else the
+       page is about to say, and reading "Healthy" off a build from this morning is worse than
+       reading nothing. */
+    if (d.stale_note) health = '<span class="bad">' + d.stale_note + '</span> ';
+    if (!last) health += '<span class="bad">The crawler has never run.</span>';
     else {
       const days = (Date.now() - Date.parse(last.started_at)) / 86400000;
-      if (d.crawl_running) health = '<span class="run">A crawl is running now.</span>';
-      else if (last.ok === false) health = '<span class="bad">The last run failed.</span>';
-      else if (days > 2) health = '<span class="bad">No crawl in ' + Math.floor(days) +
+      if (d.crawl_running) health += '<span class="run">A crawl is running now.</span>';
+      else if (last.ok === false) health += '<span class="bad">The last run failed.</span>';
+      else if (days > 2) health += '<span class="bad">No crawl in ' + Math.floor(days) +
         ' days — the schedule may have stopped.</span>';
-      else health = '<span class="ok">Healthy.</span>';
+      else if (!d.stale_note) health += '<span class="ok">Healthy.</span>';
     }
     $('updated').innerHTML = health + ' Updated ' + new Date().toLocaleTimeString() + '.';
 
@@ -942,6 +1169,11 @@ def index_stats():
     except Exception as e:
         return {"ok": False, "reason": "%s: %s" % (type(e).__name__, e)}
     out["crawler_available"] = CRAWLER_ENABLED and os.path.exists(SEED_SCRIPT)
+    # Rides along on the poll the dashboard already makes, so noticing a stale build costs no
+    # extra request and updates on the same interval as everything else on the page.
+    note = stale_note()
+    if note:
+        out["stale_note"] = note
     return out
 
 
@@ -2198,6 +2430,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, out)
             return
 
+        if path == "/monetization":
+            if not INDEX_READY:
+                self._send(200, {"ok": False, "reason": "channel index not configured"})
+                return
+            niche = str(body.get("niche") or "").strip()
+            if not niche:
+                self._send(200, {"ok": False, "reason": "no niche supplied"})
+                return
+            # Write first, then read. Doing it in this order is what makes the panel's own
+            # contribution visible in the figure it displays: a visit that resolves twelve
+            # channels sees a rate that already includes them, rather than one lagging a
+            # visit behind. The read is the single source of the number either way.
+            stored = record_monetization(niche, body.get("report") or [])
+            out = monetization_for_niche(niche)
+            if out.get("ok"):
+                out["stored"] = stored
+            self._send(200, out)
+            return
+
         if path == "/keyword-seen":
             if not INDEX_READY:
                 self._send(200, {"ok": False, "reason": "channel index not configured"})
@@ -2271,7 +2522,13 @@ class Handler(BaseHTTPRequestHandler):
         # no way to hold the token, and with ACCESS_TOKEN set every other path answers 404 —
         # which reads as a failed deploy. This reveals nothing beyond "a server is here".
         if route.path == "/healthz":
-            self._send(200, {"ok": True})
+            note = stale_note()
+            out = {"ok": True}
+            if note:
+                # ok stays true: the service is serving, it is just serving yesterday's build.
+                out["stale"] = True
+                out["note"] = note
+            self._send(200, out)
             return
 
         # Outside the token check, like the health probe. A policy that needs a secret to

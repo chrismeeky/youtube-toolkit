@@ -10,7 +10,11 @@
   ],
   "host_permissions": [
     "https://*.youtube.com/*",
-    "https://i.ytimg.com/*"
+    "https://i.ytimg.com/*",
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -56,6 +60,18 @@
       ],
       "world": "MAIN",
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "paste.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "commands": {
