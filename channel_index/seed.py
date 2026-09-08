@@ -421,7 +421,9 @@ def fetch_channels(ids, api_key, quota):
     out = {}
     for i in range(0, len(ids), 50):
         batch = ids[i:i + 50]
-        url = (f"{YT_API}/channels?part=snippet,statistics,contentDetails"
+        # brandingSettings carries the channel's own keywords and costs nothing: channels.list
+        # bills one unit per call however many parts are named.
+        url = (f"{YT_API}/channels?part=snippet,statistics,contentDetails,brandingSettings"
                f"&id={','.join(batch)}&maxResults=50&key={api_key}")
         data = http_json(url)
         quota["units"] += 1
@@ -488,6 +490,35 @@ def uploads_per_month(count, oldest, newest):
 
 # ─── embedding ───────────────────────────────────────────────────────────────
 
+def channel_keywords(channel):
+    """The raw keywords string, as YouTube returns it.
+
+    Space separated with multi-word phrases quoted:
+        "jeff nippard" "science explained" workouts "how to build muscle"
+    """
+    branding = (channel.get("brandingSettings") or {}).get("channel") or {}
+    return (branding.get("keywords") or "").strip()
+
+
+def keyword_phrases(raw):
+    """The keywords as readable phrases, quotes removed but phrases kept whole.
+
+    Splitting on whitespace would turn "how to build muscle" into four words that say nothing
+    on their own, which is the opposite of what makes this field worth embedding.
+    """
+    if not raw:
+        return []
+    out, seen = [], set()
+    for m in re.finditer(r'"([^"]+)"|(\S+)', raw):
+        v = (m.group(1) or m.group(2) or "").strip()
+        low = v.lower()
+        if not v or low in seen:
+            continue
+        seen.add(low)
+        out.append(v)
+    return out
+
+
 def embed_text(channel, video_titles):
     """What actually gets embedded.
 
@@ -500,6 +531,14 @@ def embed_text(channel, video_titles):
     desc = clean_description(snip.get("description")).strip()
     if desc:
         parts.append(desc[:800])
+    # Added rather than substituted, and placed ahead of the video titles. Keywords are the
+    # densest topical signal a channel publishes — the one piece of its text written for a
+    # classifier instead of for a thumbnail — but they are not always topical: a channel whose
+    # list is its own name repeated ("mrbeast6000 beast mrbeast") still needs its titles to say
+    # what it does. Neither source is trusted alone.
+    phrases = keyword_phrases(channel_keywords(channel))
+    if phrases:
+        parts.append(", ".join(phrases[:25]))
     if video_titles:
         parts.append(" · ".join(video_titles[:10]))
     return "\n".join(p for p in parts if p)[:2000]
@@ -540,6 +579,7 @@ def to_row(cid, channel, video_titles, newest, oldest, vector):
         "avatar_url": avatar,
         "title": snip.get("title") or cid,
         "description": (snip.get("description") or "")[:2000] or None,
+        "keywords": channel_keywords(channel)[:2000] or None,
         "subscribers": int(stats.get("subscriberCount") or 0) or None,
         "total_views": views or None,
         "video_count": count or None,
