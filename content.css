@@ -3406,3 +3406,43 @@ html[dark] .ytc-fm__side { background: rgba(255,255,255,.03); }
   .ytc-fm__chip, .ytc-fm__sort, .ytc-fm__srail, .ytc-fm__x, .ytc-fm__row { transition: none; }
   .ytc-fm__sort:hover { transform: none; }
 }
+
+/* ---- channel keywords, under the analytics facts ---- */
+.ytc-kw { margin-top: 18px; }
+.ytc-kw__head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+/* The count sits with the label rather than after the tags: a reader deciding whether to read
+   a wall of chips wants to know how many there are before they start. */
+.ytc-kw__n {
+  margin-left: 7px; padding: 1px 7px; border-radius: 999px;
+  font: 500 11px/1.6 Roboto, Arial, sans-serif;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.07));
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-kw__n { background: rgba(255,255,255,.12); color: #aaa; }
+.ytc-kw__copy {
+  margin-left: auto; cursor: pointer; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.15));
+  background: none; color: inherit; font: 500 12px/1 Roboto, Arial, sans-serif;
+  transition: border-color .12s ease, background .12s ease;
+}
+.ytc-kw__copy:hover {
+  border-color: currentColor;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.05));
+}
+html[dark] .ytc-kw__copy { border-color: rgba(255,255,255,.2); }
+html[dark] .ytc-kw__copy:hover { background: rgba(255,255,255,.1); }
+.ytc-kw__copy:focus-visible { outline: 2px solid #065fd4; outline-offset: 2px; }
+html[dark] .ytc-kw__copy:focus-visible { outline-color: #3ea6ff; }
+
+.ytc-kw__list { display: flex; flex-wrap: wrap; gap: 6px; }
+/* Selectable. These are meant to be lifted one at a time as often as all at once, and a chip
+   you cannot put a cursor in is a chip you have to retype. */
+.ytc-kw__tag {
+  padding: 5px 11px; border-radius: 999px; user-select: text;
+  font: 400 12.5px/1.35 Roboto, Arial, sans-serif;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.06));
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+html[dark] .ytc-kw__tag { background: rgba(255,255,255,.09); color: #f1f1f1; }
+/* Placeholder chips at plausible keyword widths, so the block does not resize when they land. */
+.ytc-sk--kw { height: 26px; border-radius: 999px; }

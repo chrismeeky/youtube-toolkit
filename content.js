@@ -3744,6 +3744,71 @@
       '<div class="ytc-an__facts">' + facts + '</div>';
   }
 
+  /* ---- channel keywords ---- */
+
+  /* The channel's own Studio keywords. Held per channel view and asked for once, because the
+     read is a whole channel page — see getChannelKeywords for why it cannot ride along on the
+     subscriber lookup. */
+  const KW = { key: '', list: null, loading: false, asked: false, reason: '' };
+
+  function resetKeywords(key) {
+    KW.key = key; KW.list = null; KW.loading = false; KW.asked = false; KW.reason = '';
+  }
+
+  function keywordsHtml() {
+    if (KW.loading || (!KW.asked && !KW.list)) {
+      return '<div class="ytc-kw">' +
+        '<div class="ytc-an__label">Channel keywords</div>' +
+        '<div class="ytc-kw__list">' +
+          [72, 108, 86, 130, 64, 96].map((w) =>
+            '<span class="ytc-sk ytc-sk--kw" style="width:' + w + 'px"></span>').join('') +
+        '</div></div>';
+    }
+    if (!KW.list || !KW.list.length) {
+      /* "None set" and "could not read" are different facts and the panel says which. A
+         channel that has set none is a finding — it is one fewer thing a competitor did. */
+      return '<div class="ytc-kw">' +
+        '<div class="ytc-an__label">Channel keywords</div>' +
+        '<p class="ytc-an__note">' +
+        (KW.reason === 'none set'
+          ? 'This channel has set no keywords in its settings.'
+          : escapeHtml(KW.reason || 'Could not read this channel\u2019s keywords')) +
+        '</p></div>';
+    }
+    return '<div class="ytc-kw">' +
+      '<div class="ytc-kw__head">' +
+        '<span class="ytc-an__label">Channel keywords' +
+          '<span class="ytc-kw__n">' + KW.list.length + '</span></span>' +
+        '<button type="button" class="ytc-kw__copy">Copy keywords</button>' +
+      '</div>' +
+      '<div class="ytc-kw__list">' +
+        KW.list.map((k) => '<span class="ytc-kw__tag">' + escapeHtml(k) + '</span>').join('') +
+      '</div>' +
+      '<p class="ytc-an__foot">Set by the channel in Studio \u2192 Settings \u2192 Channel. ' +
+        'They are what it tells YouTube it is about, which is not always what its titles say.' +
+      '</p></div>';
+  }
+
+  function askKeywords(res, force) {
+    const key = channelKeyFromLocation();
+    if (!key) return;
+    if (KW.loading || (KW.asked && !force)) return;
+    KW.asked = true;
+    KW.loading = true;
+    KW.key = key;
+    sendMessage({ type: 'ytc-keywords', key, force: !!force }, (out) => {
+      KW.loading = false;
+      /* A late reply for a channel the reader has already left describes the wrong channel. */
+      if (channelKeyFromLocation() !== key) return;
+      if (chrome.runtime.lastError) { KW.reason = 'Extension reloaded — refresh this tab'; }
+      else {
+        KW.list = (out && out.list) || null;
+        KW.reason = (out && out.reason) || '';
+      }
+      renderAnalytics(res);
+    });
+  }
+
   function renderAnalytics(res) {
     const host = analyticsHost();
     if (!host) return;
@@ -3752,6 +3817,8 @@
        was built for must not see that state at all. */
     const key = channelKeyFromLocation();
     if (key && anChart.key !== key) resetChart(key);
+    // Same reason as the chart above: keywords belong to a channel, not to the panel.
+    if (key && KW.key !== key) resetKeywords(key);
 
     if (!res || !res.ok) {
       host.innerHTML = '<p class="ytc-an__note">' +
@@ -3827,6 +3894,8 @@
         anFact('Last upload', m.lastUpload ? escapeHtml(m.lastUpload) : dash) +
       '</div>' +
 
+      keywordsHtml() +
+
       (m.sampled ? '' :
         '<p class="ytc-an__none">The figures above that need the channel\u2019s video list ' +
         'are blank because it could not be read. Everything else comes from the channel page ' +
@@ -3837,6 +3906,20 @@
 
     wireChart(host, res);
     wireTimeChart(host, res);
+
+    const kwCopy = host.querySelector('.ytc-kw__copy');
+    if (kwCopy) {
+      kwCopy.addEventListener('click', () => {
+        /* Comma-separated, which is the format the Studio field itself accepts — the point of
+           copying them is to paste them somewhere, and that somewhere is usually that box. */
+        copyText((KW.list || []).join(', ')).then((ok) => {
+          toast(ok ? 'Keywords copied' : 'Could not copy the keywords', !ok);
+        });
+      });
+    }
+    /* Started after the panel is on screen, so the figures above are not held up by a read of
+       a whole channel page. The section renders its own skeleton until this answers. */
+    askKeywords(res);
 
     const refresh = host.querySelector('.ytc-an__refresh');
     if (refresh) {

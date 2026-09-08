@@ -913,6 +913,86 @@ async function getNiche(key, opts) {
   }
 }
 
+/* ---------------------------------------------------------- channel keywords */
+
+/* The keywords a channel set in its own Studio settings, which are public but never rendered
+   on the page — a channel's own tags, visible to anyone willing to read the document.
+ *
+ * Fetched on its own rather than folded into getSubscribers, which already reads this exact
+ * page. That looks wasteful and is not: the subscriber path stops the moment it has the count
+ * and the lifetime totals, around byte 1,200,000, and the tags array sits near 2,150,000. To
+ * collect keywords there, every badge on every card would have to stream roughly twice the
+ * bytes it does now, forever, for a field almost none of those cards will ever be asked
+ * about. Here it costs one read of one channel, when a reader opens the panel and looks.
+ *
+ * Cached hard. Channel keywords are a settings page someone edits once and forgets, unlike a
+ * subscriber count; there is nothing to gain from asking again this week. */
+const TTL_KEYWORDS = 7 * 24 * 60 * 60 * 1000;
+const TTL_KEYWORDS_MISS = 24 * 60 * 60 * 1000;   // "none set" is worth rechecking sooner
+const KEYWORD_BYTES = 2600000;                   // tags lands around 2.15M; a little headroom
+
+async function fetchChannelKeywords(key) {
+  const url = 'https://www.youtube.com/' + channelPath(key) + '/about?hl=en';
+  let res;
+  try {
+    res = await fetch(url, { credentials: 'include', headers: { 'Accept-Language': 'en' } });
+  } catch (e) {
+    return { list: null, reason: 'fetch failed (' + e.message + ')' };
+  }
+  if (!res.ok) return { list: null, reason: 'HTTP ' + res.status };
+  if (!res.body) {
+    return { list: F.parseChannelKeywords(await res.text()), reason: '' };
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let read = 0;
+  try {
+    while (read < KEYWORD_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      read += value.length;
+      buf += decoder.decode(value, { stream: true });
+      /* Parsed per chunk rather than once at the end, because the buffer is trimmed below and
+         the array would otherwise be carried out of it before anyone looked. */
+      const hit = F.parseChannelKeywords(buf);
+      if (hit) return { list: hit, reason: '' };
+      /* The array is a few hundred bytes, so a short tail is plenty of overlap for a match
+         split across two chunks — and holding 2.6MB of channel page in memory to find 373
+         bytes of it would be its own bug. */
+      if (buf.length > 200000) buf = buf.slice(-50000);
+    }
+  } catch (e) {
+    return { list: null, reason: 'read failed (' + e.message + ')' };
+  } finally {
+    try { await reader.cancel(); } catch (e) { /* already closed */ }
+  }
+  // Read the whole page and found none: this channel has set no keywords, which is an answer.
+  return { list: null, reason: 'none set' };
+}
+
+async function getChannelKeywords(key, force) {
+  const id = 'kw:' + key;
+  if (!force) {
+    const store = await chrome.storage.local.get(id);
+    const hit = store[id];
+    if (hit && hit.v === CACHE_VERSION) {
+      const ttl = hit.list && hit.list.length ? TTL_KEYWORDS : TTL_KEYWORDS_MISS;
+      if (Date.now() - hit.t <= ttl) return hit;
+    }
+  }
+  if (breakerOpen()) {
+    // Not cached as an answer: a throttled read says nothing about the channel.
+    return { list: null, reason: 'rate limited — try again shortly', t: 0, v: CACHE_VERSION };
+  }
+  const out = await schedule(() => fetchChannelKeywords(key));
+  const entry = { list: out.list || null, reason: out.reason || '',
+                  t: Date.now(), v: CACHE_VERSION };
+  await chrome.storage.local.set({ [id]: entry });
+  return entry;
+}
+
 /* ------------------------------------------------- monetization rate by niche */
 
 /* The niche-wide rate, and the verdicts this visit resolved on its way to asking.
@@ -1408,6 +1488,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     getSimilarChannels(msg.key, msg.titles, msg.about, msg.force, msg.opts)
       .then(sendResponse)
       .catch((e) => sendResponse({ channels: [], queries: [], reason: String(e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-keywords' && msg.key) {
+    getChannelKeywords(msg.key, msg.force)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ list: null, reason: String(e) }));
     return true;
   }
   if (msg.type === 'ytc-mon-niche') {

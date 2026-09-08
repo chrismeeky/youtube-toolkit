@@ -1148,6 +1148,40 @@
      tool means by "outlier" (a video's views against its channel's normal). The three keys
      sit in one metadata block describing the requested channel, so unlike the subscriber
      scrape there is no sibling-channel ambiguity to defend against here. */
+  /* The keywords a channel set in Studio → Settings → Channel → Keywords.
+
+     Read from the microformat `tags` array and from nowhere else. <meta name="keywords">
+     looks like the easier source — it sits at about byte 753,000, early enough for the
+     subscriber fetch to catch it in passing, where `tags` sits at about 2,150,000 — but
+     YouTube truncates it. Measured on @jeffnippard: the meta tag stops after 230 characters
+     and a literal "...", carrying 9 of the channel's 22 keywords. A partial list rendered as
+     a complete one is worse than no list, and the ellipsis parses as a keyword of its own.
+
+     So this needs a document read further than the badge path goes, which is why keywords are
+     fetched on their own when the panel asks rather than folded into the subscriber lookup.
+
+     Phrases stay whole. The value of the field is that a channel bids on "how to build
+     muscle", not on "how", "to", "build", "muscle". */
+  function parseChannelKeywords(html) {
+    if (!html) return null;
+    const arr = /"tags"\s*:\s*\[([^\]]*)\]/.exec(html);
+    if (!arr || !arr[1].trim()) return null;
+    const out = [];
+    const seen = new Set();
+    const re = /"((?:[^"\\]|\\.)*)"/g;
+    let m;
+    while ((m = re.exec(arr[1]))) {
+      const v = decodeEntities(m[1].replace(/\\(.)/g, '$1')).trim();
+      // Channels do repeat themselves — "science based workout" and "science based workouts"
+      // are different, but an exact duplicate is noise in a list meant to be read at a glance.
+      const k = v.toLowerCase();
+      if (!v || seen.has(k)) continue;
+      seen.add(k);
+      out.push(v);
+    }
+    return out.length ? out : null;
+  }
+
   function parseChannelStats(html) {
     if (!html) return null;
     const grab = (key) => {
@@ -1383,7 +1417,7 @@
     DEFAULTS, SEPARATORS, LAYOUTS, FIELD_ORDER, FIELD_LABELS, SAMPLE,
     merge, formatOne, formatList, viewsToNumber, relativeToISO, compact, parseSubscribers,
     isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken,
-    parseChannelStats, adSignalFromHtml, monetizationVerdict, channelPairsFromSearch,
+    parseChannelStats, parseChannelKeywords, adSignalFromHtml, monetizationVerdict, channelPairsFromSearch,
     revenueSignals, revenueSummary, descriptionFromHtml,
     videoMetrics, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH,
     relativeToDate, vphFromRelative,
