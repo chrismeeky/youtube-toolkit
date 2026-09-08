@@ -993,6 +993,50 @@ async function getChannelKeywords(key, force) {
   return entry;
 }
 
+/* ------------------------------------------------------- audience overlap */
+
+/* Who a channel's viewers also watch, from YouTube's own recommendations as the crawler
+ * observed them. Cached per channel: the graph is rebuilt by crawl runs, not by page views,
+ * so asking again within the hour cannot return anything new.
+ */
+const TTL_OVERLAP = 6 * 60 * 60 * 1000;
+
+async function getOverlap(key, channelId, force) {
+  const id = 'lap:' + (channelId || key);
+  if (!force) {
+    const store = await chrome.storage.local.get(id);
+    const hit = store[id];
+    if (hit && hit.v === CACHE_VERSION && Date.now() - hit.t <= TTL_OVERLAP) return hit;
+  }
+  const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+  if (!base) return { ok: false, reason: 'no index' };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
+  try {
+    const res = await fetch(base.replace(/\/$/, '') + '/overlap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: key, channelId: channelId || '', limit: 25 }),
+      signal: controller.signal
+    });
+    if (!res.ok) return { ok: false, reason: 'overlap ' + res.status };
+    const out = (await res.json()) || { ok: false };
+    /* Only a real answer is kept. "Not in the index yet" is a "not yet" — the crawler may
+       reach the channel within the hour — and caching it would hide the graph once it lands. */
+    if (out.ok && (out.channels || []).length) {
+      const entry = Object.assign({}, out, { t: Date.now(), v: CACHE_VERSION });
+      await chrome.storage.local.set({ [id]: entry });
+      return entry;
+    }
+    return out;
+  } catch (e) {
+    return { ok: false, reason: 'overlap unreachable' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /* ------------------------------------------------- monetization rate by niche */
 
 /* The niche-wide rate, and the verdicts this visit resolved on its way to asking.
@@ -1488,6 +1532,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     getSimilarChannels(msg.key, msg.titles, msg.about, msg.force, msg.opts)
       .then(sendResponse)
       .catch((e) => sendResponse({ channels: [], queries: [], reason: String(e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-overlap' && msg.key) {
+    getOverlap(msg.key, msg.channelId, msg.force)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String(e) }));
     return true;
   }
   if (msg.type === 'ytc-keywords' && msg.key) {

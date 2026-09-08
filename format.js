@@ -13,6 +13,11 @@
     showButtons: true,
     quoteTitle: false,
     toast: true,
+    /* The reader's own channel, as a handle. Everything this extension measures is a figure
+       about somebody else, and a number with nothing to compare it against is only half an
+       answer: 336K subscribers means one thing to a 70-subscriber channel and another to a
+       500K one. Empty by default, and every comparison it feeds is skipped while it is. */
+    myChannel: '',
     showSubs: true,               // subscriber badge on each card
     showRatio: true,              // views ÷ channel average pill
     showMoney: true,              // monetization badge (inferred from ad placements)

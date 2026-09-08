@@ -606,6 +606,77 @@ def monetization_for_niche(niche, limit=4000):
     return out
 
 
+# ─── audience overlap ────────────────────────────────────────────────────────
+
+def audience_overlap(channel_id, limit=25):
+    """Channels YouTube recommends alongside this one, strongest first.
+
+    A different question from /similar, and the answer is often a different list. Similarity
+    ranks by what a channel is ABOUT, from an embedding of its text; this ranks by who its
+    viewers also watch, from YouTube's own recommendations as observed on watch pages. Two
+    channels can cover the same subject and share no audience, and a channel can share an
+    audience with something it has no topical resemblance to at all.
+
+    Both directions count. An edge is recorded as "while watching source, target appeared
+    beside it", so a small channel accumulates few outgoing edges but can be recommended
+    beside many others — reading only one direction would systematically hide exactly the
+    channels the reader is here to find. Where an edge exists both ways the weights add, which
+    is the honest ranking: mutual co-recommendation is the strongest form of this signal, and
+    the panel says so rather than leaving the reader to wonder why one row outranks another.
+    """
+    if not (INDEX_READY and channel_id):
+        return {"ok": False, "reason": "channel not in the index yet"}
+
+    # _supabase_get, not _rest_get: the latter pins Range: 0-0 and returns (total, one row),
+    # because it exists to count cheaply. Reading rows through it silently yields a single
+    # edge — or, unpacked the other way round, the count itself.
+    def edges(field, other):
+        q = ("/rest/v1/channel_edges?select=" + other + ",weight&" + field +
+             "=eq." + urllib.parse.quote(channel_id) + "&order=weight.desc&limit=200")
+        return _supabase_get(q) or []
+
+    out_rows = edges("source_id", "target_id")
+    in_rows = edges("target_id", "source_id")
+    if not out_rows and not in_rows:
+        return {"ok": True, "channels": [], "reason": "no recommendation edges recorded yet"}
+
+    tally = {}
+    for r in out_rows:
+        cid = r.get("target_id")
+        if cid:
+            tally.setdefault(cid, {"out": 0, "in": 0})["out"] = int(r.get("weight") or 0)
+    for r in in_rows:
+        cid = r.get("source_id")
+        if cid:
+            tally.setdefault(cid, {"out": 0, "in": 0})["in"] = int(r.get("weight") or 0)
+    tally.pop(channel_id, None)
+
+    ranked = sorted(tally.items(), key=lambda kv: -(kv[1]["out"] + kv[1]["in"]))[:max(1, limit)]
+    ids = [cid for cid, _ in ranked]
+    if not ids:
+        return {"ok": True, "channels": []}
+
+    # One lookup for the whole page rather than one per row.
+    rows = _supabase_get(
+        "/rest/v1/channels?select=id,handle,title,avatar_url,subscribers,avg_views,"
+        "video_count,last_upload_at,published_at&id=in.(" +
+        urllib.parse.quote(",".join(ids)) + ")&limit=" + str(len(ids)))
+    by_id = {r["id"]: r for r in (rows or [])}
+
+    out = []
+    for cid, w in ranked:
+        row = by_id.get(cid)
+        if not row:
+            continue
+        row = dict(row)
+        row["weight"] = w["out"] + w["in"]
+        # Both directions is the strongest reading of this signal, and worth naming: it means
+        # each channel's viewers are shown the other, not merely that one leans on the other.
+        row["mutual"] = bool(w["out"] and w["in"])
+        out.append(row)
+    return {"ok": True, "channels": out}
+
+
 def similar_channels(handle, text, limit, min_subs, max_subs, min_similarity, channel_id=None):
     """Nearest channels by topic, with the source channel excluded.
 
@@ -2428,6 +2499,26 @@ class Handler(BaseHTTPRequestHandler):
                 return
             out["ok"] = True
             self._send(200, out)
+            return
+
+        if path == "/overlap":
+            if not INDEX_READY:
+                self._send(200, {"ok": False, "reason": "channel index not configured"})
+                return
+            raw = str(body.get("channel") or "").strip()
+            cid = str(body.get("channelId") or "").strip() or None
+            if not cid and raw:
+                by_id = re.match(r"^(?:channel/)?(UC[\w-]{20,24})$", raw)
+                if by_id:
+                    cid = by_id.group(1)
+                else:
+                    known = indexed_channel(raw if raw.startswith("@") else "@" + raw)
+                    cid = (known or {}).get("id")
+            if not cid:
+                self._send(200, {"ok": False,
+                                 "reason": "this channel is not in the index yet"})
+                return
+            self._send(200, audience_overlap(cid, int(body.get("limit") or 25)))
             return
 
         if path == "/monetization":

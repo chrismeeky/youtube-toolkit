@@ -1692,6 +1692,171 @@
     });
   }
 
+  /* ------------------------------------------------------------- your channel */
+
+  /* The reader's own channel, once resolved to a number.
+   *
+   * Everything this extension measures is a figure about somebody else, and a figure with
+   * nothing beside it is half an answer: 336K subscribers reads one way to a 70-subscriber
+   * channel and another to a 500K one. Resolved once per page through the same cached
+   * subscriber lookup every badge uses, so it costs nothing the first time and less after.
+   */
+  const ME = { handle: '', subs: null, asked: false };
+
+  function meReset() {
+    if (ME.handle !== (settings.myChannel || '')) {
+      ME.handle = settings.myChannel || '';
+      ME.subs = null;
+      ME.asked = false;
+    }
+  }
+
+  /* Resolved lazily and never awaited: a comparison is an ornament on a figure that is
+     already correct, so nothing waits for it and nothing breaks when it never arrives. */
+  function askMe(then) {
+    meReset();
+    if (!ME.handle || ME.asked) { if (then) then(); return; }
+    ME.asked = true;
+    sendMessage({ type: 'ytc-subs', key: ME.handle }, (entry) => {
+      if (!chrome.runtime.lastError && entry && entry.text) {
+        ME.subs = F.viewsToNumber(entry.text);
+      }
+      if (then) then();
+    });
+  }
+
+  /* How many times bigger another channel is than yours, as a label.
+     Null whenever there is nothing honest to say — no channel set, no count resolved, or the
+     other channel's own count unknown. */
+  function timesMine(subs) {
+    if (!ME.subs || !subs || subs <= 0) return null;
+    const r = subs / ME.subs;
+    /* Below 1 the interesting reading flips: "0.4x your size" is arithmetic, "smaller than
+       you" is the thing the reader is looking for. */
+    if (r < 0.95) return { text: Math.round((1 / r) * 10) / 10 + '× smaller', below: true };
+    if (r < 1.05) return { text: 'about your size', below: false, level: true };
+    if (r < 10) return { text: (Math.round(r * 10) / 10) + '× your size', below: false };
+    /* Past about a thousand times the multiple stops being a measurement and becomes noise:
+       "197143× your size" is arithmetically true and tells a 70-subscriber channel nothing it
+       did not already know from the subscriber count sitting next to it. */
+    if (r < 1000) return { text: Math.round(r) + '× your size', below: false };
+    return { text: 'far beyond your size', below: false, far: true };
+  }
+
+  function mineBadge(subs) {
+    const t = timesMine(subs);
+    if (!t) return '';
+    return '<span class="ytc-mine' + (t.below ? ' ytc-mine--under' : '') +
+      (t.level ? ' ytc-mine--level' : '') + '" title="' +
+      escapeHtml('Against your channel, ' + escapeHtml(ME.handle) + ', at ' +
+        F.compact(ME.subs) + ' subscribers') + '">' + escapeHtml(t.text) + '</span>';
+  }
+
+  /* -------------------------------------------------- audience overlap (tab) */
+
+  /* Who this channel's viewers also watch. Held per channel view, like the niche figure. */
+  const AUD = { key: '', list: null, loading: false, asked: false, reason: '' };
+
+  function resetAudience(key) {
+    AUD.key = key; AUD.list = null; AUD.loading = false; AUD.asked = false; AUD.reason = '';
+  }
+
+  function askAudience(res, force) {
+    const key = channelKeyFromLocation();
+    if (!key) return;
+    if (AUD.loading || (AUD.asked && !force)) return;
+    AUD.asked = true;
+    AUD.loading = true;
+    AUD.key = key;
+    const own = channelOwnStats();
+    sendMessage({ type: 'ytc-overlap', key, channelId: own.channelId || '', force: !!force },
+      (out) => {
+        AUD.loading = false;
+        // A late reply for a channel already navigated away from describes the wrong channel.
+        if (channelKeyFromLocation() !== key) return;
+        if (chrome.runtime.lastError) {
+          AUD.reason = 'Extension reloaded — refresh this tab';
+        } else {
+          AUD.list = (out && out.ok && out.channels) || null;
+          AUD.reason = (out && out.reason) || '';
+        }
+        if (simFilter.view === 'audience') renderSimilar(res);
+      });
+  }
+
+  /* The strongest edges in this niche run to about 8, so the bar is scaled against the top
+     row rather than against a fixed ceiling — an absolute scale would leave every bar stubby
+     on a channel whose graph is thinly sampled, which says more about the crawl than about
+     the channel. */
+  function audienceRow(c, top) {
+    const subs = c.subscribers ? F.compact(c.subscribers) : '—';
+    const pct = Math.max(6, Math.round((c.weight / (top || 1)) * 100));
+    const href = c.handle ? 'https://www.youtube.com/' + encodeURI(c.handle)
+                          : 'https://www.youtube.com/channel/' + encodeURI(c.id);
+    return '<a class="ytc-aud__row" href="' + escapeHtml(href) + '" target="_blank" ' +
+        'rel="noopener noreferrer">' +
+      (c.avatar_url
+        ? '<img class="ytc-aud__pic" src="' + escapeHtml(c.avatar_url) + '" alt="" loading="lazy">'
+        : '<span class="ytc-aud__pic"></span>') +
+      '<span class="ytc-aud__meta">' +
+        '<span class="ytc-aud__name">' + escapeHtml(c.title || c.handle || '') +
+          (c.mutual
+            ? '<span class="ytc-aud__mutual" title="Each channel’s viewers are shown the ' +
+              'other, not just one leaning on the other">mutual</span>'
+            : '') +
+        '</span>' +
+        '<span class="ytc-aud__sub">' + subs + ' subscribers' +
+          (c.avg_views ? ' · ' + F.compact(c.avg_views) + ' avg views' : '') +
+          mineBadge(c.subscribers) + '</span>' +
+      '</span>' +
+      '<span class="ytc-aud__bar" title="' + escapeHtml('Seen together ' + c.weight +
+        ' time' + (c.weight === 1 ? '' : 's') + ' across the videos sampled') + '">' +
+        '<i style="width:' + pct + '%"></i>' +
+        '<b>' + c.weight + '</b>' +
+      '</span>' +
+    '</a>';
+  }
+
+  function renderAudienceView(host, res, controls) {
+    if (AUD.loading && !AUD.list) {
+      host.innerHTML = controls +
+        '<div class="ytc-sk-view" aria-busy="true" aria-label="Loading audience overlap">' +
+          [0, 1, 2, 3, 4, 5].map(() =>
+            '<span class="ytc-sk ytc-sk--aud"></span>').join('') +
+          '<p class="ytc-t__note"><span class="ytc-spin"></span> Reading the ' +
+          'recommendation graph…</p>' +
+        '</div>';
+      wireSimilarControls(host, res);
+      return;
+    }
+    if (!AUD.list || !AUD.list.length) {
+      /* Three different silences, and the panel distinguishes them. "Nobody has crawled this
+         channel" is a fact about the index, not about the channel's audience. */
+      const why = AUD.reason === 'no recommendation edges recorded yet'
+        ? 'No recommendation edges recorded for this channel yet. The graph fills in when the ' +
+          'crawler walks a channel’s recent videos, so this arrives with the next run.'
+        : (AUD.reason || 'Could not read the recommendation graph');
+      host.innerHTML = controls + '<p class="ytc-t__note">' + escapeHtml(why) + '</p>';
+      wireSimilarControls(host, res);
+      return;
+    }
+
+    const list = AUD.list;
+    const top = list[0].weight || 1;
+    const mutual = list.filter((c) => c.mutual).length;
+    host.innerHTML = controls +
+      '<p class="ytc-aud__lead">Channels YouTube recommended alongside this one, ranked by ' +
+        'how often. This is who the <em>viewers</em> overlap with, which is a different ' +
+        'question from what the channel is about — and a different list.' +
+        (mutual ? ' ' + mutual + ' of these are mutual.' : '') +
+      '</p>' +
+      '<div class="ytc-aud">' + list.map((c) => audienceRow(c, top)).join('') + '</div>' +
+      '<p class="ytc-t__note ytc-mfoot">Counted from the videos the crawler has sampled, so ' +
+        'a channel it has walked more often has a denser graph. Weight is how many of those ' +
+        'videos carried the recommendation, not a share of the audience.</p>';
+    wireSimilarControls(host, res);
+  }
+
   /* ------------------------------------------- monetization insight (the tab) */
 
   /* What the panel knows about the niche it is looking at, for one channel view. Cleared by
@@ -1741,6 +1906,7 @@
     };
     return '<div class="ytc-vtabs" role="tablist">' +
       tab('overview', 'Overview') +
+      tab('audience', 'Audience') +
       tab('money', 'Monetization', true) +
     '</div>';
   }
@@ -1895,6 +2061,37 @@
      without crowding the first four labels into the left margin. Every point is a proportion
      of a different group, so the line joining them is an eye-guide, not an interpolation —
      hence no claim of a value between two bands beyond the shape. */
+  /* A smooth path through every point, as an SVG `d` string.
+
+     Catmull-Rom converted to cubic beziers: the curve passes through each point rather than
+     near it, which matters because these are measurements, not a trend line — a chart that
+     rounds a peak away has moved the number. Control points are clamped to the plot band
+     because an unclamped spline overshoots on exactly the shapes this data makes, a steep
+     climb into a flat ceiling or a spike between two low points, and an overshoot here would
+     draw views below zero or a rate above 100%.
+
+     Shared by the monetization curve and the views chart. They had the same requirement and
+     one of them was already a polyline; a second copy of this would have been a second thing
+     to keep in step. */
+  function smoothPath(pts, top, bottom) {
+    if (!pts || !pts.length) return '';
+    if (pts.length === 1) return 'M' + pts[0].x.toFixed(1) + ',' + pts[0].y.toFixed(1);
+    const clamp = (v) => Math.max(top, Math.min(bottom, v));
+    let d = 'M' + pts[0].x.toFixed(1) + ',' + pts[0].y.toFixed(1);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[i + 2] || pts[i + 1];
+      const c1x = p1.x + (p2.x - p0.x) / 6, c1y = clamp(p1.y + (p2.y - p0.y) / 6);
+      const c2x = p2.x - (p3.x - p1.x) / 6, c2y = clamp(p2.y - (p3.y - p1.y) / 6);
+      d += 'C' + c1x.toFixed(1) + ',' + c1y.toFixed(1) + ' ' +
+                 c2x.toFixed(1) + ',' + c2y.toFixed(1) + ' ' +
+                 p2.x.toFixed(1) + ',' + p2.y.toFixed(1);
+    }
+    return d;
+  }
+
   function moneyCurve(bands) {
     const pts = (bands || [])
       .map((b, i) => ({ b: b, i: i, rate: b.rate }))
@@ -1918,16 +2115,7 @@
        Control-point y is clamped to the plot area because a rate cannot exceed 100% or fall
        below 0, and an unclamped spline overshoots on exactly the shape this data usually has:
        a steep climb into a flat ceiling. */
-    let d = 'M' + xy[0].x.toFixed(1) + ',' + xy[0].y.toFixed(1);
-    for (let i = 0; i < xy.length - 1; i++) {
-      const p0 = xy[i - 1] || xy[i], p1 = xy[i], p2 = xy[i + 1], p3 = xy[i + 2] || xy[i + 1];
-      const clamp = (v) => Math.max(T, Math.min(T + ih, v));
-      const c1x = p1.x + (p2.x - p0.x) / 6, c1y = clamp(p1.y + (p2.y - p0.y) / 6);
-      const c2x = p2.x - (p3.x - p1.x) / 6, c2y = clamp(p2.y - (p3.y - p1.y) / 6);
-      d += 'C' + c1x.toFixed(1) + ',' + c1y.toFixed(1) + ' ' +
-                 c2x.toFixed(1) + ',' + c2y.toFixed(1) + ' ' +
-                 p2.x.toFixed(1) + ',' + p2.y.toFixed(1);
-    }
+    const d = smoothPath(xy, T, T + ih);
 
     /* Quarters still, but only 0/50/100 are labelled — at this height five labels crowd the
        axis, and the unlabelled lines still give the eye something to measure against. */
@@ -1948,6 +2136,30 @@
        glance. Drawn from the same path to guarantee the two can never disagree. */
     const area = d + 'L' + xy[xy.length - 1].x.toFixed(1) + ',' + (T + ih) +
                  'L' + xy[0].x.toFixed(1) + ',' + (T + ih) + 'Z';
+
+    /* Where the reader's own channel sits on this axis.
+       The x scale is band index, so a subscriber count has to be placed inside its band and
+       interpolated logarithmically across it — the bands are log-spaced, and interpolating
+       linearly would put 60K almost on top of 50K instead of a third of the way along. */
+    let marker = '';
+    if (ME.subs && ME.subs >= bands[0].low) {
+      let bi = -1;
+      for (let i = 0; i < bands.length; i++) {
+        const b = bands[i];
+        if (ME.subs >= b.low && (b.high == null || ME.subs < b.high)) { bi = i; break; }
+      }
+      if (bi >= 0) {
+        const b = bands[bi];
+        const hi = b.high == null ? b.low * 10 : b.high;
+        const frac = Math.min(1, Math.max(0,
+          (Math.log(ME.subs) - Math.log(b.low)) / (Math.log(hi) - Math.log(b.low))));
+        const mx = px(Math.min(bands.length - 1, bi + frac));
+        marker =
+          '<line class="ytc-mc__me" x1="' + mx.toFixed(1) + '" y1="' + T +
+            '" x2="' + mx.toFixed(1) + '" y2="' + (T + ih) + '"/>' +
+          '<text class="ytc-mc__melab" x="' + mx.toFixed(1) + '" y="' + (T - 2) + '">you</text>';
+      }
+    }
 
     const dots = xy.map((q) => {
       const thin = q.p.b.thin || (q.p.b.sample || 0) < BAND_MIN_SAMPLE;
@@ -1978,7 +2190,7 @@
           '<stop class="ytc-mc__g1" offset="1"/>' +
         '</linearGradient>' +
       '</defs>' +
-      grid + xlab +
+      grid + xlab + marker +
       '<path class="ytc-mc__area" fill="url(#ytcMonFade)" d="' + area + '"/>' +
       '<path class="ytc-mc__line" d="' + d + '"/>' + dots +
     '</svg>';
@@ -1993,11 +2205,19 @@
     if (solid.length < 2) return '';
     const at = solid.find((b) => b.rate >= 0.5);
     if (!at) return 'No subscriber band in this niche reaches half monetized yet.';
+    /* Read against the reader wherever there is a reader to read against. "Half monetized
+       around 10K" is a fact about the niche; "you are 930 short of it" is the same fact with
+       the one number that makes it actionable attached. */
+    const mine = ME.subs
+      ? (ME.subs >= (at.high == null ? Infinity : at.low)
+          ? ' You are past that at ' + F.compact(ME.subs) + '.'
+          : ' You are at ' + F.compact(ME.subs) + '.')
+      : '';
     if (at === solid[0]) {
       return 'Already past half monetized by ' + at.label +
-        ' subscribers — the earliest band measured, so it may cross sooner still.';
+        ' subscribers — the earliest band measured, so it may cross sooner still.' + mine;
     }
-    return 'This niche passes half monetized around ' + at.label + ' subscribers.';
+    return 'This niche passes half monetized around ' + at.label + ' subscribers.' + mine;
   }
 
   /* `tone` is the verdict's colour, the same one the row pills and the curve already use, so
@@ -2202,22 +2422,36 @@
        key an observation on and nothing to put on the x-axis — an empty Monetization tab
        there would read as a broken feature rather than as an unsupported source. */
     const money = fromIndex && simFilter.view === 'money';
+    const audience = fromIndex && simFilter.view === 'audience';
     const tabs = fromIndex ? moneyTabs() : '';
 
     const controls =
       tabs +
       '<div class="ytc-t__bar">' +
         '<span class="ytc-t__title">' +
-          (money ? 'Monetization' : 'Similar channels' + count) + '</span>' +
+          (money ? 'Monetization'
+                 : audience ? 'Audience overlap'
+                 : 'Similar channels' + count) + '</span>' +
         '<span class="ytc-t__actions">' +
-          (fromIndex && !money
+          (fromIndex && !money && !audience
             ? '<button type="button" class="ytc-t__btn ytc-t__small' +
               (simFilter.smallOnly ? ' ytc-t__btn--on' : '') +
               '">Smaller than this</button>'
             : '') +
           '<button type="button" class="ytc-t__btn ytc-t__refresh">Refresh</button>' +
         '</span>' +
-      '</div>' + (money ? '' : chips);
+      '</div>' + (money || audience ? '' : chips);
+
+    if (audience) {
+      const key = channelKeyFromLocation();
+      if (!AUD.asked || AUD.key !== key) { AUD.asked = false; askAudience(res); }
+      /* Resolved alongside, not before: the list is worth drawing without the comparison, and
+         the redraw when it lands only adds a label to rows already on screen. */
+      askMe(() => { if (simFilter.view === 'audience' && ME.subs) renderAudienceView(
+        similarHost(), res, controls); });
+      renderAudienceView(host, res, controls);
+      return;
+    }
 
     /* Asked once per channel, not once per redraw. Every probe result redraws this function,
        and without the latch each one would start a fresh sweep of the whole niche. */
@@ -2228,6 +2462,7 @@
         MONEY_NICHE.key = key;
         askNicheMoney(res);
       }
+      askMe(() => { if (simFilter.view === 'money' && ME.subs) renderSimilar(res); });
       renderMoneyView(host, res, controls);
       return;
     }
@@ -2590,6 +2825,13 @@
           MONEY_NICHE.asked = false;
           MONEY_NICHE.data = null;
           MONEY_NICHE.error = '';
+          renderSimilar(res);
+          return;
+        }
+        if (simFilter.view === 'audience') {
+          AUD.asked = false;
+          AUD.list = null;
+          askAudience(res, true);
           renderSimilar(res);
           return;
         }
@@ -3294,9 +3536,12 @@
     const active = bins.filter((b) => b.count);
     const med = medianOf(active.map((b) => b.views));
 
-    const line = '<polyline class="ytc-an__line" points="' +
-      bins.map((b, i) => x(i).toFixed(1) + ',' + y(b.views).toFixed(1)).join(' ') +
-      '"></polyline>';
+    /* Curved rather than joined by straight segments. Daily view counts are samples of
+       something continuous, and the corners a polyline puts on every point read as events
+       that did not happen. The dots still mark where the measurements actually are. */
+    const line = '<path class="ytc-an__line" d="' +
+      smoothPath(bins.map((b, i) => ({ x: x(i), y: y(b.views) })), padT, H - padB) +
+      '"></path>';
     const r = bins.length > 20 ? 3 : 4;
     const dots = bins.map((b, i) =>
       '<circle class="ytc-an__pt" cx="' + x(i).toFixed(1) + '" cy="' +
@@ -5312,6 +5557,8 @@
       MONEY_NICHE.key = '';
       MONEY_NICHE.probed = 0;
       MONEY_NICHE.probeTotal = 0;
+      // Same reasoning: an overlap list belongs to the channel it was read for.
+      resetAudience('');
     }
     panelKey = key;
     if (!settings.showMoney) {

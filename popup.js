@@ -41,6 +41,7 @@
     $('layout').value = settings.layout;
     $('separator').value = encodeURIComponent(settings.separator);
     $('customTemplate').value = settings.customTemplate;
+    if ($('myChannel')) $('myChannel').value = settings.myChannel || '';
     for (const id of TOGGLES) { const el = $(id); if (el) el.checked = !!settings[id]; }
 
     const isCustom = settings.layout === 'custom';
@@ -67,6 +68,13 @@
     settings.layout = $('layout').value;
     settings.separator = decodeURIComponent($('separator').value);
     settings.customTemplate = $('customTemplate').value;
+    if ($('myChannel')) {
+      /* Normalised on the way in so "youtube.com/@me", "@me" and "me" are one channel and not
+         three cache entries. */
+      const raw = $('myChannel').value.trim();
+      const m = raw.match(/@[\w.\-]+/);
+      settings.myChannel = m ? m[0] : (raw ? '@' + raw.replace(/^@/, '') : '');
+    }
     for (const id of TOGGLES) { const el = $(id); if (el) settings[id] = el.checked; }
   }
 
