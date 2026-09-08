@@ -7826,6 +7826,22 @@
     });
 
     lines.push('');
+    /* What the page is already about. On a search this is the query the reader typed, and on
+       a channel it is the channel's name — either way it is the subject, and it costs nothing
+       to pass because the page has been holding it all along.
+
+       This is what the model was guessing at when it wrote "[SUBJECT] UPDATE": it had eight
+       titles about a person and no confirmation of who the video was for, so it abstracted
+       rather than assume. Naming the topic removes the need to abstract at all. */
+    const topic = (typeof searchTerm === 'function' ? searchTerm() : '') ||
+      (channelOwnStats && channelOwnStats().title) || '';
+    if (topic) {
+      lines.push('');
+      lines.push('SUBJECT');
+      lines.push(String(topic).replace(/\s+/g, ' ').trim() +
+        ' — use this by name in the titles rather than a stand-in for it.');
+    }
+
     const brief = String(AI.brief || '').replace(/\s+/g, ' ').trim();
     if (brief) {
       lines.push('');
@@ -7930,8 +7946,14 @@
       lines.push('- Every title must be something MY VIDEO can actually deliver. Do not ' +
         'promise a revelation I have not said I have.');
     } else {
-      lines.push('- I have not described my own video, so where a title needs specific ' +
-        'material to work, mark it with what I would need to have.');
+      /* This used to say "mark it with what I would need to have", which the model obeyed by
+         putting the marks in the titles — every one came back as
+         "[SUBJECT] UPDATE: The [EXACT RECORDING] They Never Mentioned". A template is not a
+         title, and asking for one inside the list is how you get fifteen of them. The note
+         now goes after the list, where it cannot contaminate the titles themselves. */
+      lines.push('- I have not described my own video. Write finished titles anyway, using ' +
+        'the subject and the developments visible in the reference set. Then, once the list ' +
+        'is done, add a short section listing which of them need material I may not have.');
     }
     /* This is what was undoing the rest. Asking for question / list / contradiction /
        undersell is a request for five different formats — the opposite of matching one — and
@@ -7941,9 +7963,15 @@
     lines.push('- Spread the 15 across the formats you identified, roughly in proportion to ' +
       'how often each appears in the reference set. Vary the angle within a format rather ' +
       'than reaching outside it for a new one.');
-    lines.push('- After each title, one short line giving the skeleton it follows, written ' +
-      'with my material stripped out — for example "SUBJECT UPDATE: <specific claim> — ' +
-      '<second hook>" — and the number of the reference title it is modelled on.');
+    /* The skeleton line is useful and was also half the problem: given an example written in
+       angle brackets, the model started writing the titles that way too. So the separation is
+       now stated rather than assumed. */
+    lines.push('- Every title must be finished text, ready to paste onto a video. No square ' +
+      'brackets, no angle brackets, no words like SUBJECT or PERSON standing in for something ' +
+      'real. If you do not know a name, use the one the reference titles use.');
+    lines.push('- After each title — never inside it — add one short line giving the skeleton ' +
+      'it follows, and the number of the reference title it is modelled on. The abstraction ' +
+      'belongs on that line alone.');
     lines.push('- Emoji only in the proportion the reference set uses them: if none of them ' +
       'carry emoji, none of mine should; if one in eight opens with a siren, so can mine.');
     lines.push('- Do not explain your reasoning before the list. Lead with the titles.');
