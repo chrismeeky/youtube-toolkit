@@ -11337,7 +11337,9 @@
   }
 
   function patternsHtml(rows, term) {
-    const p = titlePatterns(rows, term);
+    const f = frozenFor(term);
+    if (!f.patterns && deepSettled(term)) f.patterns = titlePatterns(rows, term);
+    const p = f.patterns || titlePatterns(rows, term);
     if (!p.ok) {
       return '<p class="ytc-sc__note">Only ' + p.matched + ' result' +
         (p.matched === 1 ? '' : 's') + ' here carry the term, which is too few to read a ' +
@@ -11390,6 +11392,38 @@
    * would describe YouTube's padding rather than the story. A term whose page is padding has
    * no clock, and the panel says so instead of inventing one.
    */
+  /* The clock and the title patterns, frozen per search.
+   *
+   * Both read the whole result set to reach one verdict, and a verdict that changes while the
+   * reader scrolls is not a verdict. pinnedSample already freezes the SET once the deep read
+   * finishes, but that leaves two holes: everything drifts during the read, and a read that
+   * ends in any state other than "done" never pins at all — so the panel goes on absorbing
+   * whatever YouTube paints next, which is precisely the diluted tail the read decided to
+   * stop before.
+   *
+   * Freezing the ANSWER rather than trusting the input closes both, and does not care which
+   * of them was at fault. The snapshot is taken once the read reaches a terminal state — done
+   * or failed, because a failed read is still finished — and thrown away when the term
+   * changes. Until then the panel computes live and says it is still reading.
+   */
+  const FROZEN = { term: '', clock: null, patterns: null, settled: false };
+
+  function frozenFor(term) {
+    if (FROZEN.term !== term) {
+      FROZEN.term = term;
+      FROZEN.clock = null;
+      FROZEN.patterns = null;
+      FROZEN.settled = false;
+    }
+    return FROZEN;
+  }
+
+  /* Terminal, not successful. A read that failed has stopped reading, and going on growing
+     after it is the drift this exists to prevent. */
+  function deepSettled(term) {
+    return DEEP.keyword === term && (DEEP.state === 'done' || DEEP.state === 'failed');
+  }
+
   const CLOCK_MIN_ROWS = 4;          // below this it is anecdote, not a distribution
   const CLOCK_EVERGREEN_DAYS = 120;  // a median older than this is not a story, it is a subject
 
@@ -11498,7 +11532,10 @@
   };
 
   function clockHtml(rows, term) {
-    const c = storyClock(rows, term);
+    const f = frozenFor(term);
+    if (!f.clock && deepSettled(term)) f.clock = storyClock(rows, term);
+    const settled = !!f.clock;
+    const c = f.clock || storyClock(rows, term);
     if (!c.ok) {
       return '<p class="ytc-sc__note">Only ' + c.matched + ' result' +
         (c.matched === 1 ? '' : 's') + ' on this page actually match the term, which is too ' +
@@ -11546,7 +11583,12 @@
       '<p class="ytc-sc__note">Read from the ' + c.total + ' result' +
         (c.total === 1 ? '' : 's') +
         ' whose titles carry the term. Publish now and you are newer than all ' + c.aheadOf +
-        ' of them — for as long as that lasts.</p>' +
+        ' of them — for as long as that lasts.' +
+        /* Said plainly, because a figure still filling looks exactly like one that has
+           settled, and the reader is entitled to know which they are reading. */
+        (settled ? ' <b>Settled</b> — scrolling further will not move it.'
+                 : ' <b>Still reading</b>, so this can still move.') +
+      '</p>' +
     '</div>';
   }
 

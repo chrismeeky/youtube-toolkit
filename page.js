@@ -215,12 +215,52 @@
     for (const key of Object.keys(node)) collectVideos(node[key], out, seen, depth + 1, cap);
   }
 
+  /* Whether ytInitialData still describes what is on screen.
+   *
+   * window.ytInitialData is the payload the DOCUMENT loaded with. Typing a new search on a
+   * results page that is already open does not reload the document — YouTube fetches the new
+   * results over innertube and re-renders — so the global keeps describing the previous
+   * query until something forces a reload. That is why everything sourced from it works after
+   * a refresh and not after an in-page search.
+   *
+   * The content script already refuses a payload whose videos are not painted, which is why
+   * the panel itself survives on the DOM alone. The continuation token had no such guard, and
+   * a token belongs to the search that issued it — deep-reading with a stale one walks the
+   * previous query's result pages while the panel reports them under the new term.
+   *
+   * The same overlap test settles both. This script runs in the page's world, so it can ask
+   * the DOM directly: if none of the payload's videos are on screen, the payload is describing
+   * a search the reader has moved on from.
+   */
+  function payloadMatchesPage(ids) {
+    if (!ids || !ids.length) return false;
+    let painted = 0;
+    for (let i = 0; i < ids.length && painted < 3; i++) {
+      if (document.querySelector('a[href*="' + ids[i] + '"]')) painted++;
+    }
+    // Three is the same floor the content script uses, and for the same reason: one shared
+    // video can be a coincidence between two searches on a related subject.
+    return painted >= Math.min(3, ids.length);
+  }
+
+  function searchPayloadIsCurrent() {
+    const data = window.ytInitialData;
+    if (!data || !/^\/results/.test(location.pathname)) return false;
+    const out = [];
+    try { collectVideos(data, out, Object.create(null), 0, 12); } catch (e) { return false; }
+    return payloadMatchesPage(out.map((v) => v.id));
+  }
+
   function searchResults() {
     const data = window.ytInitialData;
     if (!data || !/^\/results/.test(location.pathname)) return null;
     const out = [];
     try { collectVideos(data, out, Object.create(null), 0, 60); } catch (e) { return null; }
-    return out.length ? out : null;
+    if (!out.length) return null;
+    // Withheld outright when it belongs to an earlier search, rather than handed over for the
+    // content script to reject a moment later — the answer is the same and this one is honest
+    // about why nothing came back.
+    return payloadMatchesPage(out.map((v) => v.id)) ? out : null;
   }
 
   /* ------------------------------------------------- deep read (continuation chain)
@@ -256,6 +296,49 @@
     return '';
   }
 
+  /* The current query, as the address bar has it. The payload cannot be trusted for this —
+     that is the whole problem — and the search box may hold something the reader typed but
+     has not submitted. */
+  function currentQuery() {
+    try { return new URL(location.href).searchParams.get('search_query') || ''; }
+    catch (e) { return ''; }
+  }
+
+  function innertube(cfg, key, ver, body) {
+    return fetch('/youtubei/v1/search?prettyPrint=false' +
+        (key ? '&key=' + encodeURIComponent(key) : ''), {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Youtube-Client-Name': '1',
+        'X-Youtube-Client-Version': ver
+      },
+      body: JSON.stringify(body)
+    }).then((res) => (res.ok
+      ? res.json()
+      : Promise.reject(new Error('HTTP ' + res.status))));
+  }
+
+  function ytContext(cfg, ver) {
+    return { client: { clientName: 'WEB', clientVersion: ver,
+                       hl: (cfg && cfg.get('HL')) || 'en',
+                       gl: (cfg && cfg.get('GL')) || 'US' } };
+  }
+
+  function freshSearch(cfg, key, ver) {
+    const q = currentQuery();
+    if (!q) return Promise.resolve({ ok: false, reason: 'no query in the address bar' });
+    if (!ver) return Promise.resolve({ ok: false, reason: 'no client version' });
+    return innertube(cfg, key, ver, { context: ytContext(cfg, ver), query: q })
+      .then((json) => {
+        const out = [];
+        collectVideos(json, out, Object.create(null), 0, 120);
+        return { ok: true, rows: out, token: continuationToken(json, 0), refetched: true };
+      })
+      .catch((e) => ({ ok: false, reason: String((e && e.message) || e) }));
+  }
+
   function deepStep(token) {
     if (!/^\/results/.test(location.pathname)) {
       return Promise.resolve({ ok: false, reason: 'not a search page' });
@@ -267,7 +350,18 @@
     // the payload the page loaded with.
     let next = token;
     if (!next) {
-      try { next = continuationToken(window.ytInitialData, 0); } catch (e) { next = ''; }
+      /* Only from a payload that still describes this page. A token from the previous search
+         is not the continuation of what the reader is looking at, and following it would
+         return that search's later pages under this search's name. */
+      if (searchPayloadIsCurrent()) {
+        try { next = continuationToken(window.ytInitialData, 0); } catch (e) { next = ''; }
+      }
+      /* Nothing usable in the page's own payload, because the reader searched again without
+         reloading and it still describes the previous query. Ask for this one instead: the
+         same endpoint takes a query where it takes a continuation, and answers with the first
+         page plus a token that genuinely continues it. One request, and it is the only way to
+         start a deep read on a search the document never loaded. */
+      if (!next) return freshSearch(cfg, key, ver);
     }
     if (!next) return Promise.resolve({ ok: false, reason: 'no continuation token' });
     if (!ver) return Promise.resolve({ ok: false, reason: 'no client version' });
