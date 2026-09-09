@@ -719,11 +719,22 @@
      at nine call sites that each had to remember. The callback simply never fires — the same
      thing that happens when the service worker has nothing to say. */
   function sendMessage(msg, cb) {
-    if (!contextAlive()) return;
+    /* Both failure paths used to return without calling the callback at all, which is not a
+       failure a caller can see — it is silence. Anything that waits for a reply before it can
+       draw simply waited forever: reload the extension with a YouTube tab open, and the
+       Monetization tab sat on its skeleton with no error, no timeout and no way back, because
+       nothing had happened as far as it knew. The context is dead far more often than it
+       sounds — every extension reload orphans every open tab.
+       An undefined reply is what a caller already handles: every one of them tests the reply
+       or chrome.runtime.lastError before using it, and takes its error branch. Deferred, so a
+       failure arrives asynchronously like a real one and cannot re-enter the caller mid-call. */
+    const fail = () => { if (cb) setTimeout(() => { try { cb(undefined); } catch (e) {} }, 0); };
+    if (!contextAlive()) { fail(); return; }
     try {
       chrome.runtime.sendMessage(msg, cb);
     } catch (e) {
       contextDead = true;
+      fail();
     }
   }
 
@@ -751,6 +762,10 @@
     ensureFilterButton();
     /* Wrapped because it runs before noteChannelSeen and the stats card, and a throw here
        would silently stop both — the same failure the badge row was wrapped against. */
+    /* Wrapped like its neighbours. This one is the way into every setting, including the
+       ones that would switch the rest of the extension back on, so a throw here is the worst
+       kind: it would leave no route to recovery. */
+    try { ensureSettingsButton(); } catch (e) { /* keep the rest of the scan */ }
     try { ensureCompanion(); } catch (e) { /* keep the rest of the scan */ }
     noteChannelSeen();
     renderStatsCard();
@@ -1917,6 +1932,11 @@
 
      The cap is per visit rather than per niche on purpose: coverage is meant to compound
      across visits, and a niche nobody looks at does not deserve the fetches. */
+  /* Past this, an unanswered request is assumed lost rather than slow. Comfortably longer
+     than the 45s the fetch itself waits, so a request still legitimately running is never
+     cut off by it. */
+  const MONEY_STALE_MS = 90000;
+
   const MONEY_PROBE_BUDGET = 12;
 
   /* Bands under this many channels are drawn hollow and left out of the summary sentence.
@@ -1983,10 +2003,20 @@
      no probes at all and a fresh one spends them only on channels genuinely nobody has
      checked. Probing before asking would re-fetch watch pages the corpus already paid for. */
   function askNicheMoney(res) {
-    if (MONEY_NICHE.loading) return;
+    /* A request already in flight blocks a second one — but only while it is plausibly still
+       in flight. The loading flag is cleared inside the callbacks, so anything that stops a
+       callback ever firing (the service worker recycled mid-request, the extension reloaded,
+       the context invalidated) used to leave it true forever: askNicheMoney returned here on
+       every render, Refresh could not clear it, and the tab sat on its skeleton until the
+       reader navigated to another channel and back. A request older than this is treated as
+       gone rather than as pending. */
+    const inFlight = MONEY_NICHE.loading &&
+      Date.now() - (MONEY_NICHE.started || 0) < MONEY_STALE_MS;
+    if (inFlight) return;
     const key = channelKeyFromLocation();
     if (!key) return;
     MONEY_NICHE.loading = true;
+    MONEY_NICHE.started = Date.now();
     MONEY_NICHE.error = '';
     MONEY_NICHE.key = key;
 
@@ -1996,8 +2026,12 @@
     sendMessage({ type: 'ytc-niche', key }, (niche) => {
       if (chrome.runtime.lastError || !niche || !niche.ok || !niche.niche) {
         MONEY_NICHE.loading = false;
-        MONEY_NICHE.error = (niche && niche.reason) ||
-          'this channel has not been classified into a niche yet';
+        /* A dead context is not a fact about the channel, and saying "not classified yet"
+           there sends the reader looking for a problem in the wrong place. */
+        MONEY_NICHE.error = !contextAlive()
+          ? 'Extension reloaded — refresh this tab'
+          : ((niche && niche.reason) ||
+             'this channel has not been classified into a niche yet');
         redraw();
         return;
       }
@@ -2292,7 +2326,16 @@
           '<p class="ytc-t__note"><span class="ytc-spin"></span> ' +
           (nicheName
             ? 'Reading monetization for ' + escapeHtml(nicheName) + '…'
-            : 'Working out this channel’s niche…') + '</p>' +
+            : 'Working out this channel’s niche…') +
+          /* A hosted index on a free tier sleeps when idle and takes the better part of a
+             minute to wake. Saying so turns a panel that looks broken into one that is
+             plainly waiting, and names the thing the reader can act on. */
+          (Date.now() - (MONEY_NICHE.started || Date.now()) > 8000
+            ? '<br><span class="ytc-t__slow">The index is taking a while — if it is hosted on ' +
+              'a sleeping free tier, the first request after an idle spell can take about a ' +
+              'minute. Refresh will try again.</span>'
+            : '') +
+          '</p>' +
         '</div>';
       wireSimilarControls(host, res);
       return;
@@ -2862,6 +2905,8 @@
           MONEY_NICHE.asked = false;
           MONEY_NICHE.data = null;
           MONEY_NICHE.error = '';
+          // Without this the button was inert in exactly the case it exists for.
+          MONEY_NICHE.loading = false;
           renderSimilar(res);
           return;
         }
@@ -10532,6 +10577,310 @@
       document.querySelectorAll(sel).forEach((el) => { if (out.indexOf(el) < 0) out.push(el); });
     }
     return out;
+  }
+
+  /* ------------------------------------------------------------- settings */
+
+  /* Everything the extension does, grouped the way a reader thinks about it rather than the
+     way the storage object happens to be shaped.
+   *
+   * The popup already lists all of this, and will go on doing so — this is not a replacement
+   * for it but a way to reach it without pinning the extension, which most people never do.
+   * A setting nobody can find is a setting that does not exist.
+   *
+   * Each row names what it is FOR, not what it toggles. "Subscriber badge on thumbnails"
+   * describes the widget; "See how big a channel is without leaving the page" describes the
+   * reason anyone would want it, which is the thing a reader is actually scanning for.
+   */
+  const SETTINGS_GROUPS = [
+    {
+      key: 'research',
+      title: 'Research',
+      note: 'What the extension adds to YouTube while you browse.',
+      items: [
+        { k: 'showSubs', label: 'Subscriber count on thumbnails',
+          note: 'How big a channel is, without opening it' },
+        { k: 'showRatio', label: 'Outlier scores',
+          note: 'Views against the channel’s own average, and against its subscribers' },
+        { k: 'showStats', label: 'Views per hour, engagement and earnings',
+          note: 'On cards, and in full on a watch page' },
+        { k: 'showMoney', label: 'Monetization estimate',
+          note: 'Inferred from ad slots on recent videos — a signal, not a status' },
+        { k: 'showShorts', label: 'Stats panel beside Shorts',
+          note: 'Shorts have no sidebar, so the figures go in the gutter' },
+        { k: 'showPreview', label: 'Channel preview on hover',
+          note: 'Recent uploads without leaving the page' }
+      ]
+    },
+    {
+      key: 'panels',
+      title: 'Panels and tools',
+      note: 'The bigger surfaces, each opened deliberately.',
+      items: [
+        { k: 'showSimilar', label: 'Similar Channels tab',
+          note: 'Who else is in this niche, who its viewers also watch, and how many monetize' },
+        { k: 'showFilter', label: 'Filter button',
+          note: 'Sort and filter a whole search or feed, and build prompts from what you pick' },
+        { k: 'showCompanion', label: 'Search companion',
+          note: 'Keyword score, story clock and title patterns beside search results' },
+        { k: 'showPockets', label: 'Pockets',
+          note: 'Save channels into lists and watch them for outliers' },
+        { k: 'showTranscript', label: 'Transcript button',
+          note: 'Copy or save a video’s captions' }
+      ]
+    },
+    {
+      key: 'copy',
+      title: 'Copying',
+      note: 'What lands on the clipboard when you press Copy.',
+      items: [
+        { k: 'showButtons', label: 'Copy button on cards' },
+        { k: 'showThumb', label: 'Thumbnail download button' },
+        { k: 'numericViews', label: 'Plain numbers for views', note: '271K becomes 271,000' },
+        { k: 'absoluteDate', label: 'Absolute dates',
+          note: '“23 hours ago” becomes a calendar date' },
+        { k: 'quoteTitle', label: 'Wrap titles in quotes' },
+        { k: 'csvHeader', label: 'CSV header row', note: 'Only used by the CSV layout' },
+        { k: 'toast', label: 'Confirmation toast' }
+      ]
+    },
+    {
+      key: 'transcript',
+      title: 'Transcripts',
+      items: [
+        { k: 'transcriptTimestamps', label: 'Keep timestamps' },
+        { k: 'transcriptSave', label: 'Save as a file instead of copying' }
+      ]
+    }
+  ];
+
+  /* Written straight to sync storage, which is the single copy. The onChanged listener above
+     re-merges and re-applies, so the page updates from the same path a change made in the
+     popup takes — one direction of travel, no second code path to keep in step. */
+  function setSetting(patch) {
+    settings = F.merge(Object.assign({}, settings, patch));
+    applySettings();
+    renderSettingsModal();
+    try { chrome.storage.sync.set(patch); } catch (e) { /* the session still has it */ }
+  }
+
+  function setField(key, on) {
+    const fields = Object.assign({}, settings.fields, {});
+    fields[key] = on;
+    settings = F.merge(Object.assign({}, settings, { fields: fields }));
+    applySettings();
+    renderSettingsModal();
+    try { chrome.storage.sync.set({ fields: fields }); } catch (e) { /* fine */ }
+  }
+
+  let stTab = 'research';
+
+  function settingsRow(it) {
+    const on = !!settings[it.k];
+    return '<button type="button" class="ytc-st__row' + (on ? ' on' : '') +
+        '" data-set="' + escapeHtml(it.k) + '" role="switch" aria-checked="' + on + '">' +
+      '<span class="ytc-st__text">' +
+        '<span class="ytc-st__label">' + escapeHtml(it.label) + '</span>' +
+        (it.note ? '<span class="ytc-st__note">' + escapeHtml(it.note) + '</span>' : '') +
+      '</span>' +
+      '<span class="ytc-st__sw" aria-hidden="true"><i></i></span>' +
+    '</button>';
+  }
+
+  /* The copy format lives on its own tab because it is the one part of this that is a form
+     rather than a list of switches — it has a preview, and a preview needs room. */
+  function settingsCopyTab() {
+    const isCustom = settings.layout === 'custom';
+    const usesSep = ['plain', 'bullet', 'numbered'].indexOf(settings.layout) >= 0;
+    return '<div class="ytc-st__sec">' +
+        '<div class="ytc-st__sech">Include</div>' +
+        '<div class="ytc-st__chips">' +
+          F.FIELD_ORDER.map((k) =>
+            '<button type="button" class="ytc-st__chip' +
+              (settings.fields[k] ? ' on' : '') + '" data-field="' + k + '">' +
+              escapeHtml(F.FIELD_LABELS[k]) + '</button>').join('') +
+        '</div>' +
+      '</div>' +
+      '<div class="ytc-st__sec">' +
+        '<div class="ytc-st__sech">Layout</div>' +
+        '<div class="ytc-st__form">' +
+          '<label class="ytc-st__flabel">Format' +
+            '<select class="ytc-st__sel" data-sel="layout">' +
+              F.LAYOUTS.map((o) => '<option value="' + escapeHtml(o.value) + '"' +
+                (settings.layout === o.value ? ' selected' : '') + '>' +
+                escapeHtml(o.label) + '</option>').join('') +
+            '</select></label>' +
+          (usesSep
+            ? '<label class="ytc-st__flabel">Separator' +
+                '<select class="ytc-st__sel" data-sel="separator">' +
+                  F.SEPARATORS.map((o) => '<option value="' + encodeURIComponent(o.value) + '"' +
+                    (settings.separator === o.value ? ' selected' : '') + '>' +
+                    escapeHtml(o.label) + '</option>').join('') +
+                '</select></label>'
+            : '') +
+          (isCustom
+            ? '<label class="ytc-st__flabel ytc-st__flabel--wide">Template' +
+                '<input class="ytc-st__inp" type="text" data-inp="customTemplate" ' +
+                'value="' + escapeHtml(settings.customTemplate) + '">' +
+                '<span class="ytc-st__note">{title} {views} {date} {channel} {url}</span>' +
+              '</label>'
+            : '') +
+        '</div>' +
+      '</div>' +
+      '<div class="ytc-st__sec">' +
+        '<div class="ytc-st__sech">Preview</div>' +
+        '<pre class="ytc-st__pre">' +
+          escapeHtml(F.formatList(F.SAMPLE, settings) || '(nothing selected)') + '</pre>' +
+      '</div>' +
+      SETTINGS_GROUPS.filter((g) => g.key === 'copy' || g.key === 'transcript').map((g) =>
+        '<div class="ytc-st__sec"><div class="ytc-st__sech">' + escapeHtml(g.title) +
+        '</div>' + g.items.map(settingsRow).join('') + '</div>').join('');
+  }
+
+  function settingsChannelTab() {
+    return '<div class="ytc-st__sec">' +
+        '<div class="ytc-st__sech">Your channel</div>' +
+        '<p class="ytc-st__lead">Everything here measures somebody else. Name your own and ' +
+          'the figures gain a scale: how many times your size a channel is, and where your ' +
+          'niche starts monetizing relative to where you are.</p>' +
+        '<label class="ytc-st__flabel ytc-st__flabel--wide">Handle' +
+          '<input class="ytc-st__inp" type="text" data-inp="myChannel" spellcheck="false" ' +
+            'placeholder="@yourchannel" value="' + escapeHtml(settings.myChannel || '') + '">' +
+          '<span class="ytc-st__note">Read only to compare. Nothing is sent anywhere.</span>' +
+        '</label>' +
+      '</div>';
+  }
+
+  function settingsBody() {
+    if (stTab === 'copy') return settingsCopyTab();
+    if (stTab === 'channel') return settingsChannelTab();
+    const g = SETTINGS_GROUPS.find((x) => x.key === stTab) || SETTINGS_GROUPS[0];
+    return '<div class="ytc-st__sec">' +
+      (g.note ? '<p class="ytc-st__lead">' + escapeHtml(g.note) + '</p>' : '') +
+      g.items.map(settingsRow).join('') +
+    '</div>';
+  }
+
+  const ST_TABS = [
+    { k: 'research', label: 'Research' },
+    { k: 'panels', label: 'Panels' },
+    { k: 'copy', label: 'Copying' },
+    { k: 'channel', label: 'Your channel' }
+  ];
+
+  function renderSettingsModal() {
+    const modal = document.querySelector('.ytc-st');
+    if (!modal) return;
+    modal.innerHTML =
+      '<div class="ytc-st__card" role="dialog" aria-modal="true" aria-label="Toolkit settings">' +
+        '<div class="ytc-st__head">' +
+          '<img class="ytc-st__logo" src="' + escapeHtml(extIconUrl()) + '" alt="">' +
+          '<div class="ytc-st__title"><b>YouTube Toolkit</b>' +
+            '<span>Everything the extension adds, and what it copies.</span></div>' +
+          '<button type="button" class="ytc-st__x" aria-label="Close">×</button>' +
+        '</div>' +
+        '<div class="ytc-st__body">' +
+          '<nav class="ytc-st__rail" role="tablist">' +
+            ST_TABS.map((t) =>
+              '<button type="button" class="ytc-st__tab' + (stTab === t.k ? ' on' : '') +
+                '" data-tab="' + t.k + '" role="tab" aria-selected="' + (stTab === t.k) + '">' +
+                escapeHtml(t.label) + '</button>').join('') +
+          '</nav>' +
+          '<div class="ytc-st__main">' + settingsBody() + '</div>' +
+        '</div>' +
+      '</div>';
+    wireSettingsModal(modal);
+  }
+
+  /* Delegated once, on the element that survives — every toggle re-renders the card's
+     innerHTML, so binding this per render would stack a listener each time and a single click
+     would fire as many toggles as there had been renders. The children below are new markup
+     on every pass, so those bind per render and cannot accumulate. */
+  function wireSettingsShell(modal) {
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal || e.target.closest('.ytc-st__x')) { closeSettingsModal(); return; }
+      const tab = e.target.closest('[data-tab]');
+      if (tab) { stTab = tab.dataset.tab; renderSettingsModal(); return; }
+      const row = e.target.closest('[data-set]');
+      if (row) { setSetting({ [row.dataset.set]: !settings[row.dataset.set] }); return; }
+      const chip = e.target.closest('[data-field]');
+      if (chip) { setField(chip.dataset.field, !settings.fields[chip.dataset.field]); }
+    });
+  }
+
+  function wireSettingsModal(modal) {
+    modal.querySelectorAll('[data-sel]').forEach((sel) => {
+      sel.addEventListener('change', () => {
+        const k = sel.dataset.sel;
+        setSetting({ [k]: k === 'separator' ? decodeURIComponent(sel.value) : sel.value });
+      });
+    });
+
+    /* Typed fields save on change rather than per keystroke: re-rendering the modal on every
+       character would take the caret with it, and a half-typed handle is not a handle. */
+    modal.querySelectorAll('[data-inp]').forEach((inp) => {
+      inp.addEventListener('change', () => {
+        const k = inp.dataset.inp;
+        let v = inp.value;
+        if (k === 'myChannel') {
+          const m = v.trim().match(/@[\w.\-]+/);
+          v = m ? m[0] : (v.trim() ? '@' + v.trim().replace(/^@/, '') : '');
+        }
+        setSetting({ [k]: v });
+      });
+    });
+  }
+
+  function closeSettingsModal() {
+    document.querySelectorAll('.ytc-st').forEach((n) => n.remove());
+    document.removeEventListener('keydown', settingsEsc, true);
+  }
+
+  function settingsEsc(e) {
+    if (e.key === 'Escape') { e.stopPropagation(); closeSettingsModal(); }
+  }
+
+  function openSettingsModal() {
+    if (document.querySelector('.ytc-st')) return;
+    const el = document.createElement('div');
+    el.className = 'ytc-st';
+    document.body.appendChild(el);
+    wireSettingsShell(el);
+    document.addEventListener('keydown', settingsEsc, true);
+    renderSettingsModal();
+  }
+
+  /* The packaged icon, which the manifest already exposes to youtube.com. getURL throws
+     "Extension context invalidated" in any content script still on a page after a reload, and
+     an uncaught throw here would take the masthead button out with it. */
+  function extIconUrl() {
+    try { return chrome.runtime.getURL('icons/icon32.png'); } catch (e) { return ''; }
+  }
+
+  /* The trigger, in YouTube's own masthead between the microphone and Create.
+     #end holds Create, the bell and the avatar; going in as its first child puts this exactly
+     where the reader was told to look, and keeps it there when YouTube rebuilds the bar. */
+  function ensureSettingsButton() {
+    const end = document.querySelector('ytd-masthead #end, #masthead #end');
+    if (!end) return;
+    const have = end.querySelector('.ytc-navbtn');
+    if (have) { if (have.parentElement === end && end.firstChild === have) return; have.remove(); }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ytc-navbtn';
+    btn.title = 'YouTube Toolkit — settings and features';
+    btn.setAttribute('aria-label', 'YouTube Toolkit settings');
+    const icon = extIconUrl();
+    btn.innerHTML = (icon
+      ? '<img class="ytc-navbtn__ico" src="' + escapeHtml(icon) + '" alt="">'
+      : '<span class="ytc-navbtn__ico"></span>') +
+      '<span class="ytc-navbtn__t">Toolkit</span>';
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openSettingsModal();
+    });
+    end.insertBefore(btn, end.firstChild);
   }
 
   /* ------------------------------------------------------- search companion */

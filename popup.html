@@ -8,99 +8,31 @@
 <body>
   <header class="head">
     <h1>YouTube Toolkit</h1>
-    <p class="sub">Choose what gets copied and how it's laid out.</p>
+    <p class="sub">Settings now live on YouTube itself — open the <b>Toolkit</b> button in the
+      top bar, beside Create.</p>
   </header>
 
+  <!-- What is left here is what a popup is actually good for: things that act on the tab you
+       are looking at, and the one panel worth seeing when you are not on YouTube at all. -->
   <section class="group">
-    <h2>Include</h2>
-    <div class="fields" id="fields"></div>
+    <h2>Pocket watch <button type="button" id="watchRun" class="mini">Check now</button></h2>
+    <p class="hint" id="watchMeta">Watching your pocketed channels for uploads beating their
+      own average.</p>
+    <div id="watchList"></div>
   </section>
 
   <section class="group">
-    <h2>Layout</h2>
-    <label class="row">
-      <span>Format</span>
-      <select id="layout"></select>
-    </label>
-    <label class="row" id="sep-row">
-      <span>Separator</span>
-      <select id="separator"></select>
-    </label>
-    <label class="row hidden" id="tpl-row">
-      <span>Template</span>
-      <input type="text" id="customTemplate" spellcheck="false" />
-    </label>
-    <p class="hint hidden" id="tpl-hint">
-      Tokens: {title} {views} {viewsNum} {date} {dateISO} {channel} {url} {index}
-    </p>
-    <label class="check hidden" id="csv-row">
-      <input type="checkbox" id="csvHeader" /> <span>Include CSV header row</span>
-    </label>
+    <h2>This page</h2>
+    <div class="actions">
+      <button type="button" id="selectMode" class="btn">Select videos…</button>
+      <button type="button" id="copyPage" class="btn btn--primary">Copy all on page</button>
+    </div>
+    <p class="hint keys">Alt+Shift+S select mode · Alt+Shift+C copy selection</p>
+    <p class="hint"><button type="button" id="clearSubs" class="linkbtn">Clear cached channel
+      data</button></p>
   </section>
 
-  <section class="group">
-    <h2>Tweaks</h2>
-    <label class="check"><input type="checkbox" id="numericViews" /> <span>Plain numbers for views (271K → 271,000)</span></label>
-    <label class="check"><input type="checkbox" id="absoluteDate" /> <span>Absolute date (23 hours ago → 2026-08-22)</span></label>
-    <label class="check"><input type="checkbox" id="quoteTitle" /> <span>Wrap title in quotes</span></label>
-    <label class="check"><input type="checkbox" id="showButtons" /> <span>Show Copy button on cards</span></label>
-    <label class="check"><input type="checkbox" id="showThumb" /> <span>Show thumbnail download button</span></label>
-
-    <label class="check"><input type="checkbox" id="toast" /> <span>Show confirmation toast</span></label>
-  </section>
-
-  <!-- Pocket watch removed -->
-
-  <section class="group">
-    <h2>Your channel</h2>
-    <label class="row">
-      <span>Handle</span>
-      <input type="text" id="myChannel" placeholder="@yourchannel" spellcheck="false" />
-    </label>
-    <p class="hint">Optional. Used to size other channels against yours — “40× your
-      subscribers”, and where your niche starts monetizing relative to where you are.
-      Nothing is sent anywhere; it is only read to compare.</p>
-  </section>
-
-  <section class="group">
-    <h2>Channel stats</h2>
-    <label class="check"><input type="checkbox" id="showSubs" /> <span>Subscriber badge on thumbnails</span></label>
-    <label class="check"><input type="checkbox" id="showRatio" /> <span>Outlier scores (video vs channel average, channel vs subscriber count)</span></label>
-    <label class="check"><input type="checkbox" id="showMoney" /> <span>Monetization estimate (from ad slots — a signal, not a status)</span></label>
-    <label class="check"><input type="checkbox" id="showStats" /> <span>Views/hour on cards, plus engagement &amp; earnings on watch pages</span></label>
-    <label class="check"><input type="checkbox" id="showSimilar" /> <span>&ldquo;Similar Channels&rdquo; tab on channel pages</span></label>
-    <label class="check"><input type="checkbox" id="showShorts" /> <span>Stats panel beside the Shorts player</span></label>
-    <label class="check"><input type="checkbox" id="showFilter" /> <span>&ldquo;Filter&rdquo; button on search results and feeds</span></label>
-    <label class="check"><input type="checkbox" id="showPreview" /> <span>Channel preview when hovering a channel name</span></label>
-    <label class="check"><input type="checkbox" id="showPockets" /> <span>&ldquo;Pocket&rdquo; button for saving channels to lists</span></label>
-    <label class="check"><input type="checkbox" id="showCompanion" /> <span>Search companion panel beside search results</span></label>
-
-    <p class="hint">
-      Finding similar channels uses a shared index. With it on, the channel pages you open and
-      the channels YouTube recommends beside videos you watch are sent to that service, and
-      your browser may fetch a few YouTube pages in the background to fill a thin niche. Turn
-      it off and none of that happens.
-    </p>
-
-    <label class="check"><input type="checkbox" id="showTranscript" /> <span>Show transcript button (watch pages)</span></label>
-    <label class="check"><input type="checkbox" id="transcriptTimestamps" /> <span>Include timestamps in transcripts</span></label>
-    <label class="check"><input type="checkbox" id="transcriptSave" /> <span>Save transcripts as .txt instead of copying</span></label>
-    <p class="hint">
-      <button type="button" id="clearSubs" class="linkbtn">Clear cache</button>
-    </p>
-  </section>
-
-  <section class="group">
-    <h2>Preview</h2>
-    <pre class="preview" id="preview"></pre>
-  </section>
-
-  <footer class="actions">
-    <button type="button" id="selectMode" class="btn">Select videos…</button>
-    <button type="button" id="copyPage" class="btn btn--primary">Copy all on page</button>
-  </footer>
   <p class="status" id="status"></p>
-  <p class="hint keys">Alt+Shift+S select mode · Alt+Shift+C copy selection</p>
 
   <script src="format.js"></script>
   <script src="popup.js"></script>

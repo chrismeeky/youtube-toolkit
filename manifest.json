@@ -95,7 +95,8 @@
         "icons/icon32.png"
       ],
       "matches": [
-        "https://www.youtube.com/*"
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*"
       ]
     }
   ]
