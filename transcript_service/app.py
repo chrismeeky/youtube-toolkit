@@ -1552,6 +1552,46 @@ def track_keyword(keyword, video_ids):
     return {"ok": True, "reused": False, "videos": len(ids)}
 
 
+# How often the background sweep re-reads view counts, in minutes. 0 disables it.
+#
+# Nothing ran this before. sample_videos() as a sweep was reachable only through the /sample
+# route, and nothing ever called it — so every row in video_samples was the one-shot taken
+# inside track_keyword the instant a keyword resolved. Measured: 99.9% of 10,422 samples sit
+# within two minutes of a resolution, and 7,510 of 8,528 tracked videos had exactly one sample
+# ever. A velocity series is built from the difference between two readings of the SAME video,
+# so with one reading each there was almost nothing to subtract, and a keyword tracked for
+# nine days showed three points.
+#
+# Two hours is chosen against what the series is for rather than what the quota allows: a
+# topic worth watching moves within a working day, and a reading every two hours resolves that
+# without pretending to more precision than YouTube's own counts have. The cost is small —
+# videos.list bills one unit per fifty ids, so a 500-video sweep is ten units, and twelve
+# sweeps a day is 120 of 10,000.
+SAMPLE_EVERY_MIN = _int("SAMPLE_EVERY_MIN", 120)
+
+
+def sample_loop():
+    """Re-read the tracked set forever, oldest reading first."""
+    while True:
+        time.sleep(max(60, SAMPLE_EVERY_MIN * 60))
+        try:
+            out = sample_videos()
+            print("  sampler: %s of %s asked" % (out.get("sampled"), out.get("asked")),
+                  flush=True)
+        except Exception as e:                                  # noqa: BLE001
+            # A sweep that fails is one gap in one series, not a reason to stop sampling.
+            print("  sampler failed: %s: %s" % (type(e).__name__, e), flush=True)
+
+
+def start_sampler():
+    if not (SAMPLE_READY and SAMPLE_EVERY_MIN > 0):
+        print("  sampler   off (%s)" %
+              ("not configured" if not SAMPLE_READY else "SAMPLE_EVERY_MIN=0"), flush=True)
+        return
+    threading.Thread(target=sample_loop, daemon=True).start()
+    print("  sampler   every %d min" % SAMPLE_EVERY_MIN, flush=True)
+
+
 def sample_videos(ids=None, limit=500):
     """Record what a batch of videos' view counts are right now."""
     if not SAMPLE_READY:
@@ -1593,6 +1633,13 @@ def sample_videos(ids=None, limit=500):
     return {"ok": True, "sampled": seen, "asked": len(ids)}
 
 
+# A step rests on the videos sampled at both of its ends, and one video is not a topic.
+# Before the sweep existed, columns were so sparse that consecutive ones often shared a single
+# video, and its private good hour was reported as the keyword's velocity — one such step read
+# 2.3 million views an hour. Three is the smallest number that averages anything.
+SERIES_MIN_BOTH = 3
+
+
 def keyword_series(keyword, hours=168, buckets=24):
     """Views per hour for a keyword over time, from the differences between samples.
 
@@ -1605,11 +1652,25 @@ def keyword_series(keyword, hours=168, buckets=24):
         return {"ok": False, "reason": "keyword required"}
 
     kv = _sb_get("/rest/v1/keyword_videos?select=video_id,resolved_at&keyword=eq."
-                 + urllib.parse.quote(keyword) + "&order=resolved_at.desc&limit=200")
+                 + urllib.parse.quote(keyword) + "&order=resolved_at.desc&limit=2000")
     if not kv:
         return {"ok": True, "points": [], "reason": "not tracked yet"}
     newest = kv[0]["resolved_at"]
-    ids = sorted({r["video_id"] for r in kv if r["resolved_at"] == newest})
+
+    # Every video this keyword has ever resolved to, not only the newest resolution's set.
+    #
+    # Pinning to one resolution is what left a keyword tracked for nine days showing three
+    # points: each re-resolution starts a fresh set, and the samples taken against the
+    # previous ones are dropped on the floor. Measured on "nolan wells" — eight resolutions,
+    # forty-eight sampling passes, of which the pinned set could see eight and produce three
+    # usable steps. The union produces eleven and keeps growing.
+    #
+    # The schema's warning against re-reading the live set each sample still stands and is not
+    # what this does: nothing here consults the search page. It is also already answered a few
+    # lines below, where each step counts only the videos present at BOTH of its ends — a
+    # video that dropped out of later resolutions simply stops contributing rather than
+    # reading as views that vanished, which was the failure the pin was guarding against.
+    ids = sorted({r["video_id"] for r in kv})[:400]
     if not ids:
         return {"ok": True, "points": []}
 
@@ -1621,11 +1682,24 @@ def keyword_series(keyword, hours=168, buckets=24):
         "&video_id=in.(" + urllib.parse.quote(quoted) + ")"
         "&sampled_at=gte." + urllib.parse.quote(since) +
         "&order=sampled_at.asc&limit=20000") or []
-    # Group by the instant they were taken: the sampler writes one timestamp per run, so a run
-    # is a column of counts across the whole set.
+    # Group into quarter-hour columns rather than by the exact instant.
+    #
+    # The comment here used to say the sampler writes one timestamp per run, so an exact
+    # grouping was a column across the whole set. The data disagrees: most timestamps carry
+    # one or two videos, because a pass walks the set and each write lands at its own
+    # microsecond. Grouped exactly, consecutive columns then share no videos at all, the
+    # both-ends rule below drops the step, and a series with plenty of samples behind it
+    # reports almost no points.
+    #
+    # Fifteen minutes is wide enough to gather one pass and narrow enough not to swallow two.
+    # Measured across bucket sizes on a week of real samples, 10m through 60m all recover the
+    # same eleven points; three hours finds more only by merging passes that genuinely were
+    # separate, which would overstate the gap it then divides by.
     runs = {}
     for r in samples:
-        runs.setdefault(r["sampled_at"], {})[r["video_id"]] = int(r["views"])
+        at = datetime.fromisoformat(r["sampled_at"].replace("Z", "+00:00"))
+        slot = at.replace(minute=(at.minute // 15) * 15, second=0, microsecond=0)
+        runs.setdefault(slot.isoformat(), {})[r["video_id"]] = int(r["views"])
     stamps = sorted(runs)
 
     # Runs, not rows. Counting rows passes trivially the moment more than one video is
@@ -1644,7 +1718,7 @@ def keyword_series(keyword, hours=168, buckets=24):
         if gap_h <= 0:
             continue
         both = runs[a].keys() & runs[b].keys()
-        if not both:
+        if len(both) < SERIES_MIN_BOTH:
             continue
         # Counts do go down — YouTube prunes views it decides were not real. That is a
         # correction, not negative watching, so it contributes nothing rather than a dip.
@@ -2751,6 +2825,9 @@ def main():
     print(f"  similar   {'ready' if INDEX_READY else 'OFF — needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY'}")
     print(f"  embedding {'ready' if OPENAI_KEY else 'OFF — needs OPENAI_API_KEY (unindexed channels cannot be matched)'}")
     print(f"  ingest    {'ready' if INGEST_READY else 'OFF — needs YOUTUBE_API_KEY (the index will not fill itself)'}")
+    # Announced with the rest, and started here, because a sampler nobody can see not running
+    # is exactly how this went unnoticed for as long as it did.
+    start_sampler()
     if YTDLP:
         print(f"  transcripts (deprecated) available"
               f"  cookies={'yes' if COOKIE_FILE else 'no'} proxy={'yes' if PROXY else 'no'}")

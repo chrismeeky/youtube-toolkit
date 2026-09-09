@@ -102,3 +102,31 @@ h2 {
   text-decoration: underline;
   cursor: pointer;
 }
+
+/* ---- pocket watch ---- */
+h2 .mini {
+  float: right; cursor: pointer; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--line, rgba(0,0,0,.15)); background: none; color: inherit;
+  font: 500 10px/1.5 inherit; text-transform: none; letter-spacing: 0;
+}
+h2 .mini:hover { border-color: currentColor; }
+h2 .mini:disabled { opacity: .5; cursor: default; }
+.watch { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+/* Unseen rows carry the accent; read ones fade back. The badge on the toolbar counts the
+   former, so the two always agree about what is new. */
+.watch__row {
+  display: block; padding: 7px 9px; border-radius: 8px; text-decoration: none; color: inherit;
+  border-left: 3px solid #065fd4;
+  background: var(--chip, rgba(0,0,0,.04));
+}
+.watch__row.seen { border-left-color: transparent; opacity: .55; }
+.watch__row:hover { background: var(--chipHover, rgba(0,0,0,.08)); }
+.watch__t {
+  display: block; font-size: 12px; line-height: 1.35; font-weight: 500;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.watch__m { display: block; margin-top: 2px; font-size: 10.5px; color: var(--muted); }
+.watch__x {
+  display: inline-block; margin-right: 5px; padding: 0 5px; border-radius: 4px;
+  font-weight: 600; background: rgba(15,157,88,.16); color: #0f9d58;
+}

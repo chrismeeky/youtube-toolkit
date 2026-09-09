@@ -483,6 +483,43 @@
     });
   }
 
+  /* One continuation batch, fetched by page.js in the page's own world. Same bridge as
+     pageData above, with a network-length timeout instead of a same-tick one: this is a round
+     trip to YouTube, and a measured chain has seen individual batches take upwards of a
+     minute when YouTube decides to throttle. Timing out at 400ms like pageData would report
+     failure on requests that were about to succeed.
+
+     A timeout here also covers the stale-injection case pageData's `v` field exists for: an
+     older page.js still resident in an open tab has no YTC_DEEP_REQUEST handler, so it simply
+     never answers, and the caller reports that as unavailable rather than hanging. */
+  const DEEP_STEP_TIMEOUT = 30000;
+
+  function deepFetch(token) {
+    return new Promise((resolve) => {
+      const id = 'ytd' + Math.random().toString(36).slice(2);
+      let settled = false;
+      let timer = 0;
+      const finish = (payload) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        window.removeEventListener('message', onMessage);
+        resolve(payload);
+      };
+      const onMessage = (event) => {
+        if (event.source && event.source !== window) return;
+        const data = event.data;
+        if (!data || data.type !== 'YTC_DEEP_DATA' || data.id !== id) return;
+        finish(data.payload || { ok: false, reason: 'empty answer' });
+      };
+      window.addEventListener('message', onMessage);
+      window.postMessage({ type: 'YTC_DEEP_REQUEST', id, token: token || '' }, '*');
+      timer = setTimeout(
+        () => finish({ ok: false, reason: 'the page helper did not answer' }),
+        DEEP_STEP_TIMEOUT);
+    });
+  }
+
   /* Fetch from the page's own origin first. YouTube's transcript API rejects requests
      carrying a chrome-extension:// origin, which is what the service worker sends. */
   function askBackground(type, id) {
@@ -6665,6 +6702,8 @@
     // Painted from what is already held, then repainted if storage had more to say.
     renderPockets();
     loadPockets(() => { if (pocketsModalOpen()) renderPockets(); });
+    // The watch runs on its own schedule, so what the nav last painted may be an hour old.
+    askWatch(() => { if (pocketsModalOpen()) renderPockets(); });
   }
 
   /* Same figures as the similar-channels table, from the same helpers, so a channel reads
@@ -6693,7 +6732,12 @@
       ? '<img class="ytc-t__pic" src="' + escapeHtml(c.avatar) + '" alt="" loading="lazy">'
       : '<span class="ytc-t__pic ytc-t__pic--none">' +
         escapeHtml((c.title || handle || '?').trim().charAt(0).toUpperCase()) + '</span>';
-    return '<div class="ytc-pkv__row">' +
+    const wkey = handle || (c.id ? 'channel/' + c.id : '');
+    return '<div class="ytc-pkv__row"' +
+      (wkey ? ' data-wopen="' + escapeHtml(wkey) + '" role="button" tabindex="0"' +
+              ' title="Open what this channel has posted lately"' : '') + '>' +
+      /* The name stays a link to the channel — that is what a channel name means — and the
+         rest of the row opens its notifications. Two targets, so neither steals the other. */
       '<a class="ytc-pkv__chan"' + (href ? ' href="' + escapeHtml(href) + '"' : '') +
         ' target="_blank" rel="noopener noreferrer">' + img +
         '<span class="ytc-t__names">' +
@@ -6716,6 +6760,12 @@
         return '<button type="button" class="ytc-t__c ytc-pkv__note" data-editnote="' +
           escapeHtml(token) + '" title="Click to edit this note">' + col.cell(c) + '</button>';
       }).join('') +
+      /* The affordance. Every row gets one whether or not it has news: a badge on some rows
+         and nothing on the rest reads as decoration on the lucky ones, not as a way in. The
+         chevron is the constant, and the count rides in front of it when there is one. */
+      '<span class="ytc-t__c ytc-pkv__watch">' + watchCountBadge(c) +
+        '<span class="ytc-pkv__go" aria-hidden="true">\u203a</span>' +
+      '</span>' +
       '<span class="ytc-t__c">' +
         /* Deliberately NOT data-chan: that attribute is what marks a channel-preview
            trigger, so naming it that turned the remove button into one — hovering the × in a
@@ -6752,7 +6802,13 @@
         (on ? ' aria-current="true"' : '') + '>' +
       pocketFolderIcon(on) +
       '<span class="ytc-pkv__foldertext">' +
-        '<span class="ytc-pkv__foldername">' + escapeHtml(p.title) + '</span>' +
+        '<span class="ytc-pkv__foldername">' +
+          '<span class="ytc-pkv__foldertitle">' + escapeHtml(p.title) + '</span>' +
+          (pocketHasUnseen(p)
+            ? '<span class="ytc-pkv__dot" title="New uploads from channels in this pocket" ' +
+              'aria-label="Has new uploads"></span>'
+            : '') +
+        '</span>' +
         (p.desc
           ? '<span class="ytc-pkv__folderdesc">' + escapeHtml(p.desc) + '</span>'
           : '') +
@@ -6823,6 +6879,9 @@
               '<span>Channel</span>' +
               PK_COLS.map((c) => '<span class="ytc-t__c' + (c.cls ? ' ' + c.cls : '') + '">' +
                 c.label + '</span>').join('') +
+              /* Named, because a column of numbers with no heading is a riddle — and it is
+                 the heading that tells the reader the row leads somewhere. */
+              '<span class="ytc-t__c">New</span>' +
               '<span class="ytc-t__c"></span>' +
             '</div>' +
             list.map((c) => pocketChannelRow(p, c)).join('') +
@@ -6832,6 +6891,241 @@
             : 'Nothing saved here yet. Use the ☆ on a channel page or in Similar ' +
               'channels.') + '</p>') +
     '</section>';
+  }
+
+  /* --------------------------------------------------- pocket watch (sidebar) */
+
+  /* What the watch has found, mirrored into the page so the sidebar can show it.
+     Held rather than fetched per paint: the nav is repainted on every YouTube navigation, and
+     a message round trip on each one would be a request per click for a number that changes
+     every three hours. */
+  const WATCH = { hits: [], meta: {}, prefs: {}, asked: false };
+
+  function watchUnseen() {
+    return F.watchVisible(WATCH.hits, WATCH.prefs).filter((h) => !h.seen).length;
+  }
+
+  function askWatch(then) {
+    sendMessage({ type: 'ytc-watch-list' }, (res) => {
+      WATCH.asked = true;
+      if (!chrome.runtime.lastError && res) {
+        WATCH.hits = res.hits || [];
+        WATCH.meta = res.meta || {};
+        WATCH.prefs = res.prefs || {};
+      }
+      if (then) then();
+    });
+  }
+
+  /* The pill on the Pockets row. Deliberately a second element rather than a change to the
+     channel count beside it: those are different quantities — how many channels you keep, and
+     how many of their uploads you have not looked at — and folding them into one number would
+     make a pocket added look identical to an outlier found. */
+  let watchNavCount = -1;
+
+  function paintWatchNav() {
+    const n = watchUnseen();
+    /* Only a rise pops. Reading a notification lowers the number and is not an event to
+       celebrate, and the first paint of a page is not a change at all — without the -1
+       sentinel every navigation would animate a count that had been sitting there all along. */
+    const grew = watchNavCount >= 0 && n > watchNavCount;
+    watchNavCount = n;
+    document.querySelectorAll('.ytc-nav__new').forEach((el) => {
+      el.textContent = n ? String(Math.min(n, 99)) : '';
+      el.hidden = !n;
+      el.title = n ? n + ' upload' + (n === 1 ? '' : 's') +
+        ' beating their channel’s average — open Pockets to see them' : '';
+      if (!grew) return;
+      el.classList.remove('ytc-nav__n--pop');
+      // Reading offsetWidth restarts the animation; without it re-adding the class in the
+      // same frame does nothing.
+      void el.offsetWidth;
+      el.classList.add('ytc-nav__n--pop');
+    });
+    /* The mini rail has no room for a number, so it gets the dot YouTube itself uses there
+       for the same meaning. */
+    document.querySelectorAll('.ytc-nav--mini').forEach((el) => {
+      el.classList.toggle('ytc-nav--dot', !!n);
+    });
+  }
+
+  /* Which channel's notifications are open, and how they are ordered. Empty means the pocket
+     table is showing instead — the two share the same pane. */
+  let pkWatchChan = '';
+  let pkWatchSort = 'age';          // age | outlier
+
+  function watchPrefs() { return WATCH.prefs || {}; }
+
+  /* Everything stored for one channel, whatever the threshold — the screen needs the ones
+     currently below it too, to explain what lowering the threshold would reveal. */
+  function watchAllFor(key) {
+    return WATCH.hits.filter((h) => h.channelKey === key);
+  }
+
+  function watchShownFor(key) {
+    return F.watchVisible(watchAllFor(key), watchPrefs());
+  }
+
+  function watchUnseenFor(key) {
+    return watchShownFor(key).filter((h) => !h.seen).length;
+  }
+
+  /* The count on a pocket row. Unseen only: a channel whose notifications have all been read
+     is not news, and a permanent number beside it would be furniture. */
+  function watchCountBadge(c) {
+    const key = c.handle || (c.id ? 'channel/' + c.id : '');
+    if (!key) return '';
+    if (F.watchPaused(watchPrefs(), key)) {
+      return '<span class="ytc-pkn ytc-pkn--off" title="Not being watched">paused</span>';
+    }
+    const n = watchUnseenFor(key);
+    if (!n) return '';
+    return '<span class="ytc-pkn" title="' + n + ' new upload' + (n === 1 ? '' : 's') +
+      ' past this channel’s threshold">' + n + '</span>';
+  }
+
+  /* Whether a pocket has anything unread in it, for the dot on its folder.
+     A boolean rather than a total: the row already carries the channel count on its right,
+     and a second number there would be the same puzzle the sidebar just lost. The number
+     lives one level down, on the channel rows, where it says which channel to open. */
+  function pocketHasUnseen(p) {
+    return (p.channels || []).some((c) => {
+      const key = c.handle || (c.id ? 'channel/' + c.id : '');
+      return key && watchUnseenFor(key) > 0;
+    });
+  }
+
+  function watchSortedFor(key) {
+    const list = watchShownFor(key).slice();
+    if (pkWatchSort === 'outlier') {
+      list.sort((a, b) => (b.ratio || 0) - (a.ratio || 0));
+    } else {
+      list.sort((a, b) =>
+        (Date.parse(b.publishedAt) || b.foundAt || 0) - (Date.parse(a.publishedAt) || a.foundAt || 0));
+    }
+    return list;
+  }
+
+  /* The channel screen: everything the watch has found for one channel, and the controls that
+     decide what counts as a find. Threshold and pause live here rather than in the popup
+     because this is where the reader is looking at the consequences of them. */
+  function watchScreenHtml(key) {
+    const chan = (WATCH.hits.find((h) => h.channelKey === key) || {}).channelTitle || key;
+    const prefs = watchPrefs();
+    const paused = F.watchPaused(prefs, key);
+    const threshold = F.watchThresholdFor(prefs, key);
+    const all = watchAllFor(key);
+    const shown = watchSortedFor(key);
+    const hidden = all.length - shown.length;
+    const unseen = shown.filter((h) => !h.seen).length;
+
+    const sortBtn = (k, label) =>
+      '<button type="button" class="ytc-pkw2__sort' + (pkWatchSort === k ? ' on' : '') +
+      '" data-wsort="' + k + '">' + label + '</button>';
+
+    return '<div class="ytc-pkw2">' +
+      '<div class="ytc-pkw2__head">' +
+        '<button type="button" class="ytc-pkw2__back" data-wback="1" ' +
+          'aria-label="Back to the pocket">←</button>' +
+        '<b>' + escapeHtml(chan) + '</b>' +
+        (unseen ? '<span class="ytc-pkw2__n">' + unseen + ' new</span>' : '') +
+        '<span class="ytc-pkw2__acts">' +
+          (unseen ? '<button type="button" class="ytc-pkw2__act" data-wallread="' +
+            escapeHtml(key) + '">Mark all read</button>' : '') +
+          (all.length ? '<button type="button" class="ytc-pkw2__act ytc-pkw2__act--warn" ' +
+            'data-wclear="' + escapeHtml(key) + '">Delete all</button>' : '') +
+        '</span>' +
+      '</div>' +
+
+      '<div class="ytc-pkw2__bar">' +
+        '<span class="ytc-pkw2__lbl">Sort</span>' +
+        sortBtn('age', 'Newest') + sortBtn('outlier', 'Biggest outlier') +
+        '<span class="ytc-pkw2__lbl ytc-pkw2__lbl--gap">Notify above</span>' +
+        '<span class="ytc-pkw2__thr">' +
+          '<input type="number" class="ytc-pkw2__thrin" min="1" max="500" step="0.5" ' +
+            'value="' + threshold + '" data-wthr="' + escapeHtml(key) + '" ' +
+            'aria-label="Outlier threshold for this channel">' +
+          '<span>× its average</span>' +
+        '</span>' +
+        '<button type="button" class="ytc-pkw2__act ytc-pkw2__pause" data-wpause="' +
+          escapeHtml(key) + '" data-on="' + (paused ? '1' : '') + '">' +
+          (paused ? 'Resume watching' : 'Stop watching') + '</button>' +
+      '</div>' +
+
+      (paused
+        ? '<p class="ytc-t__note">Not being watched. Nothing new will be collected for this ' +
+          'channel until you resume — the uploads below are what was found before you ' +
+          'stopped.</p>'
+        : '') +
+
+      (shown.length
+        ? '<div class="ytc-pkw2__rows">' + shown.map((h) =>
+            '<div class="ytc-pkw2__row' + (h.seen ? ' seen' : '') + '">' +
+              '<a class="ytc-pkw2__link" href="https://www.youtube.com/watch?v=' +
+                escapeHtml(h.videoId) + '" target="_blank" rel="noopener noreferrer" ' +
+                'data-watch="' + escapeHtml(h.videoId) + '">' +
+                '<span class="ytc-pkw2__x">' + h.ratio + '×</span>' +
+                '<span class="ytc-pkw2__t">' + escapeHtml(h.title) + '</span>' +
+                '<span class="ytc-pkw2__m">' + F.compact(h.views) + ' views · ' +
+                  'channel average ' + F.compact(h.avg || 0) +
+                  (h.publishedAt ? ' · ' + relAge(h.publishedAt) : '') + '</span>' +
+              '</a>' +
+              '<span class="ytc-pkw2__rowacts">' +
+                '<button type="button" class="ytc-pkw2__mini" data-wread="' +
+                  escapeHtml(h.videoId) + '" title="' +
+                  (h.seen ? 'Already read' : 'Mark as read') + '"' +
+                  (h.seen ? ' disabled' : '') + '>✓</button>' +
+                '<button type="button" class="ytc-pkw2__mini ytc-pkw2__mini--warn" ' +
+                  'data-wdrop="' + escapeHtml(h.videoId) + '" title="Delete">×</button>' +
+              '</span>' +
+            '</div>').join('') + '</div>'
+        : '<p class="ytc-t__note">Nothing at ' + threshold + '× or better' +
+          (hidden ? ' — ' + hidden + ' upload' + (hidden === 1 ? ' sits' : 's sit') +
+            ' below that threshold. Lower it to see ' + (hidden === 1 ? 'it' : 'them') + '.'
+                  : ' yet.') + '</p>') +
+
+      (shown.length && hidden
+        ? '<p class="ytc-t__note ytc-mfoot">' + hidden + ' more below ' + threshold +
+          '×, kept but not shown. Everything from twice a channel’s average upward is ' +
+          'collected, so lowering the threshold reveals them immediately rather than ' +
+          'waiting for the next check.</p>'
+        : '') +
+    '</div>';
+  }
+
+  function relAge(stamp) {
+    const ms = Date.now() - (Date.parse(stamp) || 0);
+    if (!stamp || ms < 0) return '';
+    const h = Math.floor(ms / 3600000);
+    if (h < 1) return Math.max(1, Math.floor(ms / 60000)) + 'm ago';
+    if (h < 24) return h + 'h ago';
+    return Math.floor(h / 24) + 'd ago';
+  }
+
+  /* Written through the worker and mirrored locally, so the screen redraws at once rather
+     than after a storage round trip. The worker's copy is the one that survives. */
+  function setWatchPref(key, patch) {
+    const by = Object.assign({}, WATCH.prefs.byChannel || {});
+    const cur = Object.assign({}, by[key] || {});
+    if (patch.threshold !== undefined) {
+      if (patch.threshold === null || !patch.threshold) delete cur.threshold;
+      else cur.threshold = patch.threshold;
+    }
+    if (patch.paused !== undefined) cur.paused = patch.paused;
+    by[key] = cur;
+    WATCH.prefs = Object.assign({}, WATCH.prefs, { byChannel: by });
+    paintWatchNav();
+    renderPockets();
+    sendMessage(Object.assign({ type: 'ytc-watch-prefs', channelKey: key }, patch), () => {});
+  }
+
+  function markWatchSeen(videoId) {
+    WATCH.hits = WATCH.hits.map((h) =>
+      (!videoId || h.videoId === videoId) ? Object.assign({}, h, { seen: true }) : h);
+    paintWatchNav();
+    sendMessage({ type: 'ytc-watch-seen', videoId: videoId || '' }, () => {
+      if (chrome.runtime.lastError) return;
+    });
   }
 
   function renderPockets() {
@@ -6852,33 +7146,133 @@
             (pockets.length === 1 ? ' pocket' : ' pockets') + ' · ' + total +
             (total === 1 ? ' channel' : ' channels') + '</span>'
           : '') +
-        (pockets.length
+        (pockets.length && !pkWatchChan
+          /* Hidden alongside the rail it filters. A search box that reorders a list nobody
+             can see reads as broken. */
           ? '<input class="ytc-pkm__find" type="search" placeholder="Search pockets and ' +
             'channels" aria-label="Search pockets and channels" value="' +
             escapeHtml(pkFind) + '">'
           : '') +
         '<button type="button" class="ytc-pkm__x" aria-label="Close">×</button>' +
       '</div>' +
-      '<div class="ytc-pkm__body' + (pockets.length ? ' ytc-pkm__body--split' : '') + '">' +
+      /* The rail goes while a channel's notifications are open. It navigates between pockets,
+         and this screen is not one — leaving it up would offer a way sideways out of a view
+         whose only exit is the back button, and cost the list the width it is made of. */
+      '<div class="ytc-pkm__body' +
+        (pockets.length && !pkWatchChan ? ' ytc-pkm__body--split' : '') +
+        (pkWatchChan ? ' ytc-pkm__body--watch' : '') + '">' +
         (!pockets.length
           ? '<p class="ytc-pkv__empty">No pockets yet. Open a channel and press ' +
             '<b>☆ Pocket</b> beside Subscribe, or use the ☆ on a row of the ' +
             'Similar channels table.</p>'
-          : '<nav class="ytc-pkv__side" aria-label="Your pockets">' +
+          : (pkWatchChan ? '' :
+            '<nav class="ytc-pkv__side" aria-label="Your pockets">' +
               (found.length
                 ? found.map((f) =>
                     pocketSideItem(f.pocket, f.channels, f.pocket.id === pkOpen)).join('')
                 : '<p class="ytc-pkv__sideempty">Nothing matches “' +
                   escapeHtml(pkFind) + '”.</p>') +
-            '</nav>' +
+            '</nav>') +
             '<div class="ytc-pkv__main">' +
-              (cur
-                ? pocketDetail(cur.pocket, cur.channels)
-                : '<p class="ytc-pkv__empty">Nothing matches “' + escapeHtml(pkFind) +
-                  '” — not a pocket name, a description, a channel or a note.</p>') +
+              (pkWatchChan
+                ? watchScreenHtml(pkWatchChan)
+                : cur
+                  ? pocketDetail(cur.pocket, cur.channels)
+                  : '<p class="ytc-pkv__empty">Nothing matches “' + escapeHtml(pkFind) +
+                    '” — not a pocket name, a description, a channel or a note.</p>') +
             '</div>') +
       '</div>';
     modal.querySelector('.ytc-pkm__x').addEventListener('click', closePocketsModal);
+
+    /* Opening a hit is what marks it read, so the pill on the sidebar always counts exactly
+       what is still unread in here. The row is a real link and is left to navigate; only the
+       bookkeeping is added. */
+    modal.querySelectorAll('[data-watch]').forEach((row) => {
+      row.addEventListener('click', () => markWatchSeen(row.dataset.watch));
+    });
+
+    /* A click anywhere on a pocket row that is not one of its own controls opens that
+       channel's notifications. Checked by closest() rather than by target, because the row is
+       a grid of spans and the reader is aiming at the row, not at whichever cell they hit. */
+    modal.querySelectorAll('[data-wopen]').forEach((row) => {
+      const open = () => { pkWatchChan = row.dataset.wopen; renderPockets(); };
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('a, button, input')) return;
+        open();
+      });
+      /* role="button" is a promise the keyboard has to be able to collect. Space and Enter
+         both, as a real button would, and only when the row itself has focus — the note
+         editor and the remove button inside it take their own keys. */
+      row.addEventListener('keydown', (e) => {
+        if (e.target !== row) return;
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        open();
+      });
+    });
+
+    const back = modal.querySelector('[data-wback]');
+    if (back) back.addEventListener('click', () => { pkWatchChan = ''; renderPockets(); });
+
+    modal.querySelectorAll('[data-wsort]').forEach((b) => {
+      b.addEventListener('click', () => { pkWatchSort = b.dataset.wsort; renderPockets(); });
+    });
+
+    modal.querySelectorAll('[data-wread]').forEach((b) => {
+      b.addEventListener('click', () => { markWatchSeen(b.dataset.wread); renderPockets(); });
+    });
+
+    const allRead = modal.querySelector('[data-wallread]');
+    if (allRead) {
+      allRead.addEventListener('click', () => {
+        const key = allRead.dataset.wallread;
+        WATCH.hits = WATCH.hits.map((h) =>
+          h.channelKey === key ? Object.assign({}, h, { seen: true }) : h);
+        paintWatchNav();
+        renderPockets();
+        sendMessage({ type: 'ytc-watch-seen', channelKey: key }, () => {});
+      });
+    }
+
+    modal.querySelectorAll('[data-wdrop]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const id = b.dataset.wdrop;
+        WATCH.hits = WATCH.hits.filter((h) => h.videoId !== id);
+        paintWatchNav();
+        renderPockets();
+        sendMessage({ type: 'ytc-watch-drop', videoId: id }, () => {});
+      });
+    });
+
+    const clearAll = modal.querySelector('[data-wclear]');
+    if (clearAll) {
+      clearAll.addEventListener('click', () => {
+        const key = clearAll.dataset.wclear;
+        WATCH.hits = WATCH.hits.filter((h) => h.channelKey !== key);
+        paintWatchNav();
+        renderPockets();
+        sendMessage({ type: 'ytc-watch-drop', channelKey: key }, () => {});
+      });
+    }
+
+    /* Applied on change rather than on every keystroke: typing "15" passes through 1, and
+       re-grouping the list at 1x for a moment would show everything collected and then take
+       it away again. */
+    const thr = modal.querySelector('[data-wthr]');
+    if (thr) {
+      thr.addEventListener('change', () => {
+        const key = thr.dataset.wthr;
+        const v = thr.value.trim();
+        setWatchPref(key, { threshold: v === '' ? null : Number(v) });
+      });
+    }
+
+    const pause = modal.querySelector('[data-wpause]');
+    if (pause) {
+      pause.addEventListener('click', () => {
+        setWatchPref(pause.dataset.wpause, { paused: !pause.dataset.on });
+      });
+    }
 
     const find = modal.querySelector('.ytc-pkm__find');
     if (find) {
@@ -7187,7 +7581,7 @@
       item.title = 'Pockets — your saved channels';
       item.innerHTML = '<span class="ytc-nav__icon">' + pocketIconSvg() + '</span>' +
         '<span class="ytc-nav__label">Pockets</span>' +
-        '<span class="ytc-nav__n" hidden></span>';
+        '<span class="ytc-nav__new" hidden></span>';
       const go = (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -7251,25 +7645,15 @@
 
   /* How many channels are kept, across all pockets — the size of the collection rather than
      the number of drawers it is filed into. */
-  let pocketNavCount = -1;
-
+  /* The pocket total used to sit on this row beside the watch count. Two numbers asked the
+     reader to work out which was which on every glance, and only one of them was ever news —
+     channels kept is a total, and totals do not need attention. The total is still on the
+     dialog's own header, which is where someone counting their pockets is looking anyway. */
   function paintPocketNav() {
-    const n = pockets.reduce((a, p) => a + ((p.channels || []).length), 0);
-    /* Only a rise pops. Removing a channel lowering the number is not an event to celebrate,
-       and the first paint of a page is not a change at all — without the -1 sentinel every
-       navigation would animate a count that had been sitting there all along. */
-    const grew = pocketNavCount >= 0 && n > pocketNavCount;
-    pocketNavCount = n;
-    document.querySelectorAll('.ytc-nav__n').forEach((el) => {
-      el.textContent = n ? String(n) : '';
-      el.hidden = !n;
-      if (!grew) return;
-      el.classList.remove('ytc-nav__n--pop');
-      // Reading offsetWidth restarts the animation; without it re-adding the class in the
-      // same frame does nothing, and a second pocket added quickly would not move.
-      void el.offsetWidth;
-      el.classList.add('ytc-nav__n--pop');
-    });
+    /* Asked once per page, then painted from what is held. The nav is rebuilt on every
+       YouTube navigation and a round trip per rebuild would be a request per click. */
+    if (!WATCH.asked) askWatch(paintWatchNav);
+    else paintWatchNav();
   }
 
   /* --------------------------------------------------- pocket entry points */
@@ -7433,10 +7817,9 @@
        same channel can be kept in two lists for two different reasons — so one field at the
        bottom of the dialog would have had to guess which. */
     (has
-      /* A <label> wrapping the field, so the text is bound to the input without an id — ids
-         in a page we do not own are a collision waiting to happen. Says "optional" outright:
-         a lone box under a row that just saved reads like something still owed. */
-      ? '<label class="ytc-pk__noterow">' +
+      /* A small watch link above the note, and then the note input. */
+      ? '<a href="#" class="ytc-pk__watchlink-row" data-pocket="' + escapeHtml(p.id) + '">👀 Watch this channel <span class="ytc-pk__arrow">\u203a</span></a>' +
+        '<label class="ytc-pk__noterow">' +
           '<span class="ytc-pk__notelbl">Notes about channel (optional)</span>' +
           '<input class="ytc-pk__note" type="text" maxlength="' + POCKET_NOTE_MAX + '"' +
           ' data-note="' + escapeHtml(p.id) + '" placeholder="Why this one?"' +
@@ -7445,33 +7828,99 @@
       : '');
   }
 
-  function renderPocketDialog() {
-    if (!pkDlg) return;
-    const name = pkTarget ? (pkTarget.title || pkTarget.handle || 'this channel') : '';
-    pkDlg.innerHTML =
-      '<div class="ytc-pk__head">' +
-        '<b>Save to pocket</b>' +
+  /* Which of the dialog's two screens is showing: the pocket list, or the watch settings for
+     this one channel. Reset every time the dialog opens, because a reader who left it on the
+     watch screen last time is opening it now to save something. */
+  let pkView = 'save';
+
+  /* The key the watcher files this channel under — the same shape watchChannels() builds in
+     the service worker, so a threshold set here is read back there. */
+  function pkWatchKey(c) {
+    if (!c) return '';
+    return c.handle || (c.id || c.channelId ? 'channel/' + (c.id || c.channelId) : '');
+  }
+
+  function pocketWatchScreen(name) {
+    const key = pkWatchKey(pkTarget);
+    const prefs = WATCH.prefs || {};
+    const paused = F.watchPaused(prefs, key);
+    const threshold = F.watchThresholdFor(prefs, key);
+    /* Watching only happens for channels in a pocket — that is the list the sweep walks — so
+       a channel with no pocket is told, rather than being offered a switch that would do
+       nothing. */
+    const pocketed = pockets.some((p) => pocketHas(p, pkTarget));
+
+    return '<div class="ytc-pk__head ytc-pk__head--watch">' +
+        '<button type="button" class="ytc-pk__back" aria-label="Back to pockets">←</button>' +
+        '<b>Watch this channel</b>' +
         '<button type="button" class="ytc-pk__x" aria-label="Close">×</button>' +
       '</div>' +
       '<p class="ytc-pk__who">' + escapeHtml(name) + '</p>' +
-      (pockets.length
-        ? '<div class="ytc-pk__list">' + pockets.map(pocketRowHtml).join('') + '</div>'
-        : '<p class="ytc-pk__none">No pockets yet. Make one below.</p>') +
-      (pkNewOpen
-        ? '<div class="ytc-pk__form">' +
-            '<input class="ytc-pk__title" type="text" maxlength="' + POCKET_TITLE_MAX + '"' +
-              ' placeholder="Pocket name" aria-label="Pocket name">' +
-            '<textarea class="ytc-pk__desc" rows="2" maxlength="' + POCKET_DESC_MAX + '"' +
-              ' placeholder="Description (optional)" aria-label="Pocket description">' +
-            '</textarea>' +
-            '<div class="ytc-pk__formrow">' +
-              '<button type="button" class="ytc-pk__create">Create and save</button>' +
-              '<button type="button" class="ytc-pk__cancel">Cancel</button>' +
-            '</div>' +
-          '</div>'
-        : '<button type="button" class="ytc-pk__new">+ New pocket</button>') +
-      (pockets.length >= POCKET_MAX
-        ? '<p class="ytc-pk__none">' + POCKET_MAX + ' pockets is the limit.</p>' : '');
+
+      (pocketed ? '' :
+        '<p class="ytc-pk__warn">Save it to a pocket first — the watcher walks your pockets, ' +
+        'so a channel outside them is never checked.</p>') +
+
+      '<div class="ytc-pk__watchbox">' +
+        '<label class="ytc-pk__thrlabel" for="ytc-pk-thr">Tell me when a video beats this ' +
+          'channel’s own average by</label>' +
+        '<div class="ytc-pk__thrrow">' +
+          '<input id="ytc-pk-thr" class="ytc-pk__thr" type="number" min="1" max="500" ' +
+            'step="0.5" value="' + threshold + '" aria-label="Outlier threshold">' +
+          '<span class="ytc-pk__thrx"> × or more</span>' +
+        '</div>' +
+        /* The quick picks are where the reader actually lands: 2x is "show me anything with a
+           pulse", 10x is "only wake me for a breakout". Typing is still there for the rest. */
+        '<div class="ytc-pk__presets">' +
+          [2, 3, 5, 10].map((n) =>
+            '<button type="button" class="ytc-pk__preset' +
+              (Math.abs(threshold - n) < 0.01 ? ' on' : '') + '" data-thr="' + n + '">' +
+              n + '×</button>').join('') +
+        '</div>' +
+        '<p class="ytc-pk__hint">Everything from 2× upward is collected either way, so ' +
+          'moving this later re-sorts what has already been found rather than starting ' +
+          'again.</p>' +
+      '</div>' +
+
+      '<button type="button" class="ytc-pk__toggle' + (paused ? '' : ' on') + '" ' +
+        'data-wtoggle="' + escapeHtml(key) + '" aria-pressed="' + (!paused) + '">' +
+        '<span class="ytc-pk__sw"></span>' +
+        '<span>' + (paused ? 'Not watching' : 'Watching') + '</span>' +
+      '</button>';
+  }
+
+  function renderPocketDialog() {
+    if (!pkDlg) return;
+    const name = pkTarget ? (pkTarget.title || pkTarget.handle || 'this channel') : '';
+    if (pkView === 'watch') {
+      pkDlg.innerHTML = pocketWatchScreen(name);
+    } else {
+      pkDlg.innerHTML =
+        '<div class="ytc-pk__head">' +
+          '<b>Save to pocket</b>' +
+          '<button type="button" class="ytc-pk__x" aria-label="Close">×</button>' +
+        '</div>' +
+        '<p class="ytc-pk__who">' + escapeHtml(name) + '</p>' +
+        '' +
+        (pockets.length
+          ? '<div class="ytc-pk__list">' + pockets.map(pocketRowHtml).join('') + '</div>'
+          : '<p class="ytc-pk__none">No pockets yet. Make one below.</p>') +
+        (pkNewOpen
+          ? '<div class="ytc-pk__form">' +
+              '<input class="ytc-pk__title" type="text" maxlength="' + POCKET_TITLE_MAX + '"' +
+                ' placeholder="Pocket name" aria-label="Pocket name">' +
+              '<textarea class="ytc-pk__desc" rows="2" maxlength="' + POCKET_DESC_MAX + '"' +
+                ' placeholder="Description (optional)" aria-label="Pocket description">' +
+              '</textarea>' +
+              '<div class="ytc-pk__formrow">' +
+                '<button type="button" class="ytc-pk__create">Create and save</button>' +
+                '<button type="button" class="ytc-pk__cancel">Cancel</button>' +
+              '</div>' +
+            '</div>'
+          : '<button type="button" class="ytc-pk__new">+ New pocket</button>') +
+        (pockets.length >= POCKET_MAX
+          ? '<p class="ytc-pk__none">' + POCKET_MAX + ' pockets is the limit.</p>' : '');
+    }
 
     pkDlg.querySelector('.ytc-pk__x').addEventListener('click', closePocketDialog);
 
@@ -7509,6 +7958,18 @@
       f.addEventListener('keydown', (e) => {
         e.stopPropagation();
         if (e.key === 'Enter') { e.preventDefault(); clearTimeout(t); commit(); f.blur(); }
+      });
+    });
+
+    // Per-pocket watch links inside each pocket row (above the note input).
+    pkDlg.querySelectorAll('.ytc-pk__watchlink-row').forEach((a) => {
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        const id = a.dataset.pocket;
+        const p = pockets.find((x) => x.id === id);
+        if (!p) return;
+        pkView = 'watch';
+        renderPocketDialog();
       });
     });
 
@@ -7553,6 +8014,44 @@
       setTimeout(() => { title.focus(); }, 0);
     }
     placePocketDialog();
+
+    // If the dialog is showing the watch screen, attach its handlers.
+    if (pkView === 'watch') {
+      const back = pkDlg.querySelector('.ytc-pk__back');
+      if (back) back.addEventListener('click', () => { pkView = 'save'; renderPocketDialog(); });
+      const close = pkDlg.querySelector('.ytc-pk__x');
+      if (close) close.addEventListener('click', closePocketDialog);
+
+      const thr = pkDlg.querySelector('.ytc-pk__thr');
+      if (thr) {
+        thr.addEventListener('change', () => {
+          const key = pkWatchKey(pkTarget);
+          const v = String(thr.value || '').trim();
+          setWatchPref(key, { threshold: v === '' ? null : Number(v) });
+          renderPocketDialog();
+        });
+      }
+
+      pkDlg.querySelectorAll('.ytc-pk__preset').forEach((b) => {
+        b.addEventListener('click', () => {
+          const n = Number(b.dataset.thr || 0);
+          const key = pkWatchKey(pkTarget);
+          setWatchPref(key, { threshold: n });
+          renderPocketDialog();
+        });
+      });
+
+      const toggle = pkDlg.querySelector('[data-wtoggle]');
+      if (toggle) {
+        toggle.addEventListener('click', () => {
+          const key = toggle.dataset.wtoggle;
+          const prefs = WATCH.prefs || {};
+          const paused = F.watchPaused(prefs, key);
+          setWatchPref(key, { paused: !paused });
+          renderPocketDialog();
+        });
+      }
+    }
   }
 
   function placePocketDialog() {
@@ -7580,6 +8079,7 @@
     pkDlg.className = 'ytc-pk';
     pkDlg.setAttribute('role', 'dialog');
     pkDlg.setAttribute('aria-label', 'Save channel to a pocket');
+      pkView = 'save';
     if (anchor && anchor.getBoundingClientRect) {
       const r = anchor.getBoundingClientRect();
       pkDlg.dataset.anchorX = String(r.left);
@@ -8559,6 +9059,30 @@
     });
   }
 
+  /* Where a video lands tomorrow, when that can be said honestly.
+   *
+   * The VPH the rows carry is a LIFETIME rate — total views divided by total hours since
+   * publishing — which format.js is explicit about. On a young video that is close enough to
+   * the current rate to project from. On a two-year-old one it is an average over two years
+   * of decline, and multiplying it by 24 would forecast a surge that stopped happening
+   * eighteen months ago.
+   *
+   * So the projection is offered only while the lifetime rate is still a fair stand-in for
+   * the present one, and withheld — rather than hedged — everywhere else. A number with a
+   * disclaimer attached is still read as a number.
+   */
+  const PROJECT_MAX_AGE = 14;      // days
+  const PROJECT_MIN_VIEWS = 500;   // below this the arithmetic is noise amplified
+
+  function projectTomorrow(r) {
+    if (!r || r.views == null || !r.vph || r.views < PROJECT_MIN_VIEWS) return null;
+    if (r.ageDays == null || r.ageDays > PROJECT_MAX_AGE) return null;
+    const next = r.views + r.vph * 24;
+    // A projection that rounds to the figure already shown teaches nothing.
+    if (next < r.views * 1.05) return null;
+    return next;
+  }
+
   function filterRow(r, i) {
     const picked = !!(FM && FM.picked && FM.picked.has(pickKey(r)));
     return '<a class="ytc-fm__row' + (picked ? ' ytc-fm__row--picked' : '') +
@@ -8576,6 +9100,16 @@
         '<span class="ytc-fm__nums">' +
           (r.views == null ? '' : F.compact(r.views) + ' views') +
           (r.date ? ' \u00b7 ' + escapeHtml(r.date) : '') +
+          (() => {
+            const next = projectTomorrow(r);
+            return next == null ? ''
+              : ' <span class="ytc-fm__proj" title="' + escapeHtml(
+                  'At its lifetime average of ' + F.formatVph(r.vph) +
+                  ', this reaches about ' + F.compact(next) + ' in another 24 hours. An ' +
+                  'extrapolation from the rate so far, not a forecast — and only offered ' +
+                  'while a video is young enough for that rate to still describe it.') +
+                '">\u2192 ~' + F.compact(next) + ' tomorrow</span>';
+          })() +
         '</span>' +
         /* data-chan makes the name a preview trigger. The key was already read off the card
            for the subscriber lookup, so this costs nothing to carry. */
@@ -10025,7 +10559,19 @@
     '#description-text'
   ].join(', ');
 
+  /* Null-safe because most rows now have no card at all. A row's snippet lives in the painted
+     result, so anything the page listed but did not draw — every ytInitialData row past the
+     fold, and every row a deep read pulls from the continuation chain — carries card: null.
+     Dereferencing that threw inside searchStats, and the scan's try/catch swallowed it: the
+     panel simply kept its previous markup, which reads as a frozen panel rather than an error.
+     Calling ensureCompanion from anywhere without that catch turned the same throw into a
+     stranded spinner.
+
+     An absent card means "no snippet was rendered for this result", which is the same answer
+     as a card without one — and which is why the In-description count is documented as
+     reading low. */
   function cardSnippet(card) {
+    if (!card || typeof card.querySelector !== 'function') return '';
     const el = card.querySelector(SNIPPET_SELECTORS);
     return el ? (text(el) || '') : '';
   }
@@ -10081,7 +10627,9 @@
      keeps the membership fixed, and it still lets the numbers improve, because a row whose
      subscriber lookup lands later is the same row and simply arrives with more filled in. */
   const SC_SAMPLE = 20;
-  const SAMPLE = { keyword: '', ids: null };
+  /* primed/pinnedAt exist because pinning the membership turned out to be only half of
+     holding the score still. See primeSampleSubs below. */
+  const SAMPLE = { keyword: '', ids: null, primed: new Set(), pinnedAt: 0 };
 
   /* The results the page itself knows about, whether or not it has drawn them yet. Asked for
      once per search term and merged over the painted cards below.
@@ -10104,6 +10652,23 @@
       PAGE_RESULTS.rows = list && list.length ? list : null;
       ensureCompanion();
     }).catch(() => { /* the painted cards still work on their own */ });
+  }
+
+  /* A payload result in the shape the panel's statistics expect. Shared by the initial
+     ytInitialData merge below and by the deep read further down, which pull the same
+     renderers out of the same list — one of them from the HTML the page loaded with, the
+     other from the continuation of it. Subscribers stay null either way: that lookup runs off
+     painted cards, and these results have none. */
+  function payloadRow(p, now) {
+    const ageDays = daysSince(F.relativeToISO(p.published, now));
+    return {
+      card: null, tools: '', title: p.title, url: '', id: p.id,
+      channel: p.channel, chanKey: p.chanKey || '', avatar: p.avatar || '',
+      views: p.views, subs: null,
+      ratio: null, subRatio: null,
+      vph: p.views != null && ageDays ? p.views / (ageDays * 24) : null,
+      ageDays: ageDays, chanAge: '', shorts: p.shorts, thumb: '', date: p.published
+    };
   }
 
   /* One row per result the page lists, carrying whatever the painted card knows on top. The
@@ -10132,15 +10697,7 @@
         if (!card.chanKey && p.chanKey) patch.chanKey = p.chanKey;
         return Object.keys(patch).length ? Object.assign({}, card, patch) : card;
       }
-      const ageDays = daysSince(F.relativeToISO(p.published, now));
-      return {
-        card: null, tools: '', title: p.title, url: '', id: p.id,
-        channel: p.channel, chanKey: p.chanKey || '', avatar: p.avatar || '',
-        views: p.views, subs: null,
-        ratio: null, subRatio: null,
-        vph: p.views != null && ageDays ? p.views / (ageDays * 24) : null,
-        ageDays: ageDays, chanAge: '', shorts: p.shorts, thumb: '', date: p.published
-      };
+      return payloadRow(p, now);
     });
 
     /* Union, not replacement. Returning only what the payload listed threw away every painted
@@ -10176,11 +10733,24 @@
        The 14s and 18s were something else anyway — sponsored slots, which the ad filter in
        collectScrolled now removes. */
     const rows = all;
-    if (SAMPLE.keyword !== term) { SAMPLE.keyword = term; SAMPLE.ids = null; }
+    if (SAMPLE.keyword !== term) {
+      SAMPLE.keyword = term;
+      SAMPLE.ids = null;
+      SAMPLE.primed = new Set();
+      SAMPLE.pinnedAt = 0;
+    }
     // Not enough on the page yet: report on what there is and pin once the page has caught up.
     if (!SAMPLE.ids) {
       if (rows.length < SC_SAMPLE) return rows;
       SAMPLE.ids = rows.slice(0, SC_SAMPLE).map((r) => r.id).filter(Boolean);
+      SAMPLE.primed = new Set();
+      SAMPLE.pinnedAt = Date.now();
+      /* The settle window closes on a clock, and repaints are driven by things changing. If
+         the last lookup fails silently nothing else changes, so without this the score would
+         hold its loading shape past the deadline that was supposed to end it. Once per pin. */
+      setTimeout(() => {
+        try { ensureCompanion(); } catch (e) { /* the next scan repaints it */ }
+      }, SC_SETTLE_MS + 50);
     }
     const byId = new Map();
     for (const r of rows) if (r.id && !byId.has(r.id)) byId.set(r.id, r);
@@ -10191,12 +10761,56 @@
       ? picked : rows.slice(0, SC_SAMPLE);
   }
 
+  /* The scored twenty ask for their own subscriber counts, rather than waiting to be scrolled
+     past.
+
+     Pinning the membership was only half of holding the score still. Which twenty results are
+     scored has been fixed since the pin went in — the same video ids for the life of the
+     search — but what those twenty *know* was not: subscriber counts arrive per card from
+     subsObserver, which fires when a card comes near the viewport, and competition is a median
+     over exactly those numbers. So a pinned result below the fold stayed null until the reader
+     happened to scroll to it, and the score moved as they did. That is the drift the pin
+     exists to prevent, arriving through the data instead of the membership. The panel's
+     "Provisional — 7 of 20 channels looked up" was reporting it correctly; it simply had no
+     way to finish on its own.
+
+     The deep read does not help here and never could: continuation results carry no subscriber
+     count either, and the scored twenty are page-one results it does not reach. Depth and this
+     are answers to different questions.
+
+     Twenty at once is a safe ask — primeVisibleRows solves the same problem the same way for
+     the filter modal, and the rate-limit breaker it warns about is a few hundred. Asked once
+     per id, so repaints do not re-ask, and only for a painted card: a pinned row the page has
+     not drawn yet is asked when it is. */
+  function primeSampleSubs(pinned) {
+    if (!SAMPLE.ids) return;
+    for (const r of pinned) {
+      if (!r.id || SAMPLE.primed.has(r.id)) continue;
+      const card = r.card;
+      if (!card || !card.isConnected) continue;
+      SAMPLE.primed.add(r.id);
+      // What the observer sets when a card scrolls into range; wantSubs gates on it.
+      card.dataset.ytcNear = '1';
+      try { wantSubs(card); } catch (e) { /* one row must not stop the other nineteen */ }
+    }
+  }
+
+  /* How long the score waits for its sample to fill before showing a provisional number.
+     Bounded rather than open-ended: some lookups fail outright — a deleted channel, a
+     throttled batch — and a score hidden until every one of them answers would be a score
+     that never appears on exactly the pages where it is hardest to get. */
+  const SC_SETTLE_MS = 12000;
+
   /* Caption results for the current term, once the reader has asked for them.
      Keyed by term: the answer is about a phrase, not about the videos. */
   const CAPS = { keyword: '', state: 'idle', hits: null, checked: 0, withCaptions: 0 };
   /* The sample the button would act on. The panel's markup is replaced on every repaint, so
      the handler is delegated and cannot close over the rows it was drawn with. */
   const PANEL_ROWS = { term: '', rows: [] };
+  /* The same trick for the deep read, holding the page's own results rather than the scored
+     twenty: the chain measures each batch against how on-topic the reader's page is, so the
+     baseline has to be the whole page and not the slice the score was pinned to. */
+  const DEEP_ROWS = { term: '', rows: [] };
 
   function capsFor(term) {
     if (CAPS.keyword !== term) {
@@ -10229,6 +10843,244 @@
     });
   }
 
+  /* ------------------------------------------------------------------- deep read
+
+     The panel reads what the page has: the painted cards, plus whatever ytInitialData listed
+     and has not drawn yet. Measured, that is about 26 results — one search page — and the
+     figures that describe a distribution rather than a leader (the story clock's bands, the
+     upload cadence, the channel list) are thin at that depth.
+
+     So: follow YouTube's own continuation chain in the background. page.js makes the call;
+     what lives here is the part that needs the search term, which is knowing when to stop.
+
+     Stopping is the whole design. Depth is not free accuracy — YouTube's ranking gets looser
+     the further down it goes, and a measured chain on "air crash investigation" returned 19,
+     18, 15, 12, 14, 15, 10, 7 new results per batch with relevance falling alongside the
+     count. Reading to an arbitrary 200 would pour that tail into the clock, where deep results
+     are both less related and reliably older, and push a Steady verdict to Cooling on a story
+     that had not changed. A fixed page count cannot tell those cases apart, because the depth
+     at which a term goes off-topic is a property of the term.
+
+     Which is why the rule is measured rather than set: each batch is scored for how much of it
+     actually targets the term, using the same half-the-words threshold the clock and the
+     attention figure already use, and the chain stops when a batch comes back less than half
+     as on-topic as the page the reader is looking at. A tight term keeps paying out and is
+     read deep; a vague one stops after a batch or two, which is the honest depth for it. */
+  /* A backstop against a runaway chain, not the intended stop. Measured natural stops: a
+     padded term gives up after 2 batches, a tight one ran 8 and turned thin on the 9th. At 8
+     the ceiling was doing the deciding for good terms and handing the reader a button to
+     finish the job — which made the depth a function of whether they noticed it. Set well
+     past where relevance normally ends a run, so the rule decides and this only catches the
+     pathological case. */
+  const DEEP_MAX_PAGES = 20;
+  /* The same reasoning on the clock. A measured eight-batch run took 55s, so anything near a
+     minute would end healthy reads early and make the depth a function of how throttled
+     YouTube happened to be rather than of the term. Raised alongside the page ceiling; the
+     Stop control is what a reader uses when a particular run is taking too long. */
+  const DEEP_BUDGET_MS = 180000;
+  const DEEP_DECAY = 0.5;            // a batch under half page one's relevance rate is thin
+  const DEEP_FLOOR = 0.08;           // …and never a bar of zero, which a padded page would set
+  const DEEP_MIN_KEEP = 3;           // fewer relevant results than this is a thin batch too
+  const DEEP_LEAN_RUN = 2;           // two thin batches in a row ends it, not one
+  const DEEP_GAP_MS = 250;           // spacing between calls, jittered
+
+  const DEEP = {
+    keyword: '', state: 'idle', rows: [], pages: 0, added: 0, kept: 0,
+    next: '', why: '', reason: '', stop: false, autoStarted: false, sampleIds: null
+  };
+
+  function deepFor(term) {
+    if (DEEP.keyword !== term) {
+      DEEP.keyword = term;
+      DEEP.state = 'idle';
+      DEEP.rows = [];
+      DEEP.pages = 0;
+      DEEP.added = 0;
+      DEEP.kept = 0;
+      DEEP.next = '';
+      DEEP.why = '';
+      DEEP.reason = '';
+      DEEP.stop = false;
+      DEEP.autoStarted = false;
+      DEEP.sampleIds = null;
+    }
+    return DEEP;
+  }
+
+  /* The read runs on its own, once per search term.
+
+     Waiting for a click made the panel's own depth a thing the reader had to know to ask for,
+     and the figures underneath are the ones a deep read exists to correct — a reader who never
+     found the button was reading a story clock built from one page and had no way to tell.
+
+     Held back until the page has results of its own, for two reasons: the chain's relevance
+     rule is measured against page one, so starting before the page has one would compare each
+     batch to almost nothing; and ytInitialData arrives asynchronously, so the first scan after
+     a search often sees a handful of painted cards and nothing else.
+
+     Started on a timer rather than inline. This runs inside ensureCompanion, and runDeepRead
+     repaints as it goes — calling it directly would re-enter the render it was called from. */
+  const DEEP_AUTO_MIN_ROWS = 10;
+
+  /* Busy covers the gap between deciding to read and the first request going out. The start is
+     deferred by a tick to avoid re-entering the render, and without this the panel spends that
+     tick painting finished figures and an unpressed button — a flash of the answer it is about
+     to cover up, which reads as the panel changing its mind. */
+  function deepBusy(term) {
+    if (DEEP.keyword !== term) return false;
+    return DEEP.state === 'running' || (DEEP.autoStarted && DEEP.state === 'idle');
+  }
+
+  function maybeAutoDeep(term, rows) {
+    const d = deepFor(term);
+    if (d.autoStarted || d.state !== 'idle') return;
+    if (rows.length < DEEP_AUTO_MIN_ROWS) return;
+    d.autoStarted = true;
+    setTimeout(() => {
+      if (DEEP.keyword !== term || DEEP.state !== 'idle' || DEEP.stop) return;
+      if (DEEP_ROWS.term !== term) return;
+      runDeepRead(term, DEEP_ROWS.rows);
+    }, 0);
+  }
+
+  const RELEVANT_ENOUGH = 0.5;
+
+  function relevantShare(rows, words) {
+    if (!rows.length) return 0;
+    const keep = rows.filter((r) => titleOverlap(r.title, words) >= RELEVANT_ENOUGH).length;
+    return keep / rows.length;
+  }
+
+  /* The deep rows that are not already on the page, in panel-row shape. Recomputed per paint
+     rather than stored merged, because the painted set keeps growing underneath as the reader
+     scrolls and a row that arrives on a card later is the better copy of the two. */
+  function deepExtra(term, rows) {
+    if (DEEP.keyword !== term || !DEEP.rows.length) return [];
+    const have = new Set();
+    for (const r of rows) if (r.id) have.add(r.id);
+    return DEEP.rows.filter((r) => r.id && !have.has(r.id));
+  }
+
+  /* The sample the panel settled on, frozen once the read finishes.
+
+     Letting the statistics grow with the page was the original design, and it was right while
+     the panel only ever saw what the reader had scrolled to. The automatic read changes what
+     that means. The chain stops at a measured point — where a batch comes back less than half
+     as on-topic as page one — and then the reader scrolls, YouTube runs its own continuations,
+     and precisely the diluted tail the rule just rejected arrives through the front door. The
+     story clock re-reads it and the verdict moves. So scrolling was quietly undoing the one
+     decision the deep read exists to make.
+
+     Membership is frozen; content is not. A result the reader scrolls to has been painted
+     since, and a painted card knows more than the payload row standing in for it — the
+     subscriber lookup, the description snippet. So the ids are fixed and each row is taken
+     from the best copy available on this paint, which is the same arrangement the score's pin
+     uses one level down.
+
+     Only after a completed read. A term that never triggered one, or whose chain failed, has
+     no considered boundary to hold, and there the old behaviour — grow with the page — is
+     still the honest answer. */
+  function pinnedSample(term, rows, deep) {
+    const all = deep.length ? rows.concat(deep) : rows;
+    const d = DEEP;
+    if (d.keyword !== term || d.state !== 'done') return all;
+    if (!d.sampleIds) {
+      const ids = new Set(all.map((r) => r.id).filter(Boolean));
+      /* Page one is in the sample whether or not it had been painted at the moment the read
+         finished. A padded term's chain stops in about six seconds, which can be sooner than
+         YouTube finishes drawing its own first page — and a page-one result is the baseline
+         the read measured against, not the tail it decided to stop before. Without this a fast
+         stop could lock out results the reader can see on screen. */
+      const listed = PAGE_RESULTS.keyword === term ? PAGE_RESULTS.rows : null;
+      if (listed) for (const p of listed) if (p.id) ids.add(p.id);
+      d.sampleIds = ids;
+      return all;
+    }
+    return all.filter((r) => r.id && d.sampleIds.has(r.id));
+  }
+
+  function runDeepRead(term, baseRows) {
+    const d = deepFor(term);
+    if (d.state === 'running') return;
+    d.state = 'running';
+    d.stop = false;
+    d.pages = 0;
+    d.why = '';
+    d.reason = '';
+    /* Reading more deliberately widens the sample, so the old boundary goes. */
+    d.sampleIds = null;
+
+    const words = termWords(term);
+    /* Page one's own relevance is the yardstick. Against a fixed threshold, a term whose
+       results are mostly padding would stop on the first batch even where the deep results
+       were no worse than the shallow ones — the reader's page is the standard being matched,
+       not some ideal page. The floor keeps a wholly padded page from setting a bar of zero
+       that every batch clears. */
+    const baseline = relevantShare(baseRows, words);
+    const floor = Math.max(DEEP_FLOOR, baseline * DEEP_DECAY);
+    const started = Date.now();
+    const have = new Set();
+    for (const r of baseRows) if (r.id) have.add(r.id);
+    for (const r of d.rows) if (r.id) have.add(r.id);
+    let lean = 0;
+
+    /* Every repaint from inside this chain goes through here. ensureCompanion renders the
+       whole panel, so a fault anywhere in it — one malformed row reaching one statistic —
+       would otherwise reject the promise the chain is standing on, and the run would stop
+       without ever leaving the running state. The spinner would then be up for good, which is
+       a worse failure than the missing repaint it came from. */
+    const repaint = () => {
+      try { ensureCompanion(); } catch (e) { /* the next scan repaints it */ }
+    };
+
+    const finish = (why, reason) => {
+      if (DEEP.keyword !== term) return;
+      d.state = why === 'failed' ? 'failed' : 'done';
+      d.why = why;
+      d.reason = reason || '';
+      repaint();
+    };
+
+    const step = (token) => {
+      if (DEEP.keyword !== term) return;              // the reader searched something else
+      if (d.stop) { finish('stopped'); return; }
+      if (d.pages >= DEEP_MAX_PAGES) { finish('depth'); return; }
+      if (Date.now() - started > DEEP_BUDGET_MS) { finish('time'); return; }
+      deepFetch(token).then((res) => {
+        if (DEEP.keyword !== term) return;
+        if (d.stop) { finish('stopped'); return; }
+        if (!res || !res.ok) { finish('failed', (res && res.reason) || 'no answer'); return; }
+
+        const fresh = (res.rows || [])
+          .filter((p) => p.id && !have.has(p.id))
+          .map((p) => payloadRow(p, Date.now()));
+        for (const r of fresh) have.add(r.id);
+        const keep = fresh.filter((r) => titleOverlap(r.title, words) >= RELEVANT_ENOUGH).length;
+
+        d.pages++;
+        d.rows = d.rows.concat(fresh);
+        d.added += fresh.length;
+        d.kept += keep;
+        d.next = res.token || '';
+        repaint();                                    // each batch paints as it lands
+
+        const share = fresh.length ? keep / fresh.length : 0;
+        if (keep < DEEP_MIN_KEEP || share < floor) lean++; else lean = 0;
+        /* Two in a row, not one: a single thin batch is ordinary — YouTube pads mid-list with
+           a shelf or a channel row and the next batch returns to the topic. Ending on the
+           first one would stop most reads at page two. */
+        if (lean >= DEEP_LEAN_RUN) { finish('diluted'); return; }
+        if (!d.next) { finish('end'); return; }
+        setTimeout(() => step(d.next), DEEP_GAP_MS + Math.floor(Math.random() * DEEP_GAP_MS));
+      /* The last guard against a stranded spinner: whatever escapes above lands here and ends
+         the run with a reason, rather than leaving a promise rejected and the state running. */
+      }).catch((e) => finish('failed', String((e && e.message) || e)));
+    };
+
+    repaint();                                        // spinner up before the first request
+    step(d.next || '');
+  }
+
   function searchStats(rows, term) {
     const words = termWords(term);
     const views = rows.map((r) => r.views).filter((v) => v != null);
@@ -10252,8 +11104,11 @@
 
        So a result contributes in proportion to how much of the query its title carries, and
        does not contribute at all below half. Nothing matching means no attention measured,
-       which is the honest reading of a page that has nothing to do with the term. */
-    const RELEVANT_ENOUGH = 0.5;
+       which is the honest reading of a page that has nothing to do with the term.
+
+       The threshold itself is shared with the deep read above, which uses it to judge whether
+       a continuation batch is still about the term. One definition of "relevant enough", so
+       the depth the chain stops at is the depth this figure was going to count anyway. */
     /* A checked caption hit is relevance at full weight — stronger evidence than a title,
        not weaker: the video spends real time on the term rather than merely naming it. Until
        the check has been run this contributes nothing, so the panel behaves exactly as it did
@@ -10407,6 +11262,461 @@
   }
 
   /* A collapsible section, so a panel this tall can be cut down to the part being used. */
+  /* ---------------------------------------------------- title patterns */
+
+  /* What the titles that win here actually do, computed rather than guessed.
+   *
+   * The prompt generator asks a model to infer the shape of a niche from eight examples. This
+   * measures it from the whole page, deterministically and for nothing — and the two are
+   * complementary: a statistic the model would have had to guess at is better handed to it.
+   *
+   * Every feature is scored the same way: split the relevant results into those that use it
+   * and those that do not, and compare the median views of each group. A feature that appears
+   * everywhere tells you nothing, so the lift matters more than the count — and a median
+   * rather than a mean, because one runaway video would otherwise make any feature it happens
+   * to carry look like the reason it won.
+   */
+  const TITLE_FEATURES = [
+    { key: 'colon', label: 'Colon lead-in', hint: 'SUBJECT: the rest of the title',
+      test: (t) => /\S:\s/.test(t) },
+    { key: 'caps', label: 'A word in CAPS', hint: 'One or more words shouted',
+      test: (t) => /(^|\s)[A-Z]{3,}(\s|$|[^a-z])/.test(t) },
+    { key: 'question', label: 'Ends on a question', hint: 'Closes with a question mark',
+      test: (t) => /\?\s*$/.test(t) },
+    { key: 'dash', label: 'Em dash turn', hint: 'A second clause after — or –',
+      test: (t) => /[—–]/.test(t) },
+    { key: 'pipe', label: 'Pipe tag', hint: 'A category appended after |',
+      test: (t) => /\|/.test(t) },
+    { key: 'number', label: 'A number', hint: 'A digit anywhere in the title',
+      test: (t) => /\d/.test(t) },
+    { key: 'emoji', label: 'Emoji', hint: 'Any pictographic character',
+      test: (t) => /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/u.test(t) },
+    { key: 'quote', label: 'Quoted fragment', hint: 'Something said, in quotes',
+      test: (t) => /["“”'‘’].{2,}["“”'‘’]/.test(t) }
+  ];
+
+  function medianOfNums(list) {
+    if (!list.length) return null;
+    const s = list.slice().sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  }
+
+  /* The same relevance gate the rest of this panel uses. A page padded with unrelated videos
+     would otherwise have its padding's punctuation reported as the niche's house style. */
+  function patternRows(rows, term) {
+    const words = termWords(term);
+    return rows.filter((r) => r.title && r.views != null &&
+      titleOverlap(r.title, words) >= 0.5);
+  }
+
+  function titlePatterns(rows, term) {
+    const rel = patternRows(rows, term);
+    if (rel.length < 6) return { ok: false, matched: rel.length };
+
+    const lens = rel.map((r) => r.title.trim().length).sort((a, b) => a - b);
+    const feats = TITLE_FEATURES.map((f) => {
+      const on = rel.filter((r) => f.test(r.title));
+      const off = rel.filter((r) => !f.test(r.title));
+      const mOn = medianOfNums(on.map((r) => r.views));
+      const mOff = medianOfNums(off.map((r) => r.views));
+      /* Lift is only meaningful with something on both sides of the comparison. A feature
+         every title carries has no counterfactual, and reporting it as infinitely good would
+         be the worst kind of confident. */
+      const lift = (mOn != null && mOff != null && mOff > 0 && on.length >= 2 &&
+                    off.length >= 2) ? mOn / mOff : null;
+      return { key: f.key, label: f.label, hint: f.hint, n: on.length,
+               share: on.length / rel.length, lift: lift };
+    }).sort((a, b) => (b.lift || 0) - (a.lift || 0));
+
+    return {
+      ok: true, total: rel.length,
+      lenLo: lens[0], lenHi: lens[lens.length - 1], lenMid: medianOfNums(lens),
+      feats: feats
+    };
+  }
+
+  function patternsHtml(rows, term) {
+    const p = titlePatterns(rows, term);
+    if (!p.ok) {
+      return '<p class="ytc-sc__note">Only ' + p.matched + ' result' +
+        (p.matched === 1 ? '' : 's') + ' here carry the term, which is too few to read a ' +
+        'house style from.</p>';
+    }
+    /* Ordered by lift, so the top of the list is what correlates with winning rather than
+       what is merely common. Features with no counterfactual sit at the bottom, stated as
+       usage and nothing more. */
+    const rowsHtml = p.feats.map((f) => {
+      const pct = Math.round(f.share * 100);
+      const liftTxt = f.lift == null
+        ? (f.share >= 0.95 ? 'all of them' : f.share <= 0.05 ? 'almost none' : '—')
+        : (f.lift >= 1 ? '×' + (Math.round(f.lift * 10) / 10) + ' views'
+                       : '×' + (Math.round(f.lift * 10) / 10));
+      const tier = f.lift == null ? '' : f.lift >= 1.5 ? ' ytc-onum--great'
+        : f.lift >= 1.1 ? ' ytc-onum--good' : f.lift <= 0.7 ? ' ytc-onum--low' : '';
+      return '<div class="ytc-pat__row" title="' + escapeHtml(f.hint) + '">' +
+        '<span class="ytc-pat__l">' + escapeHtml(f.label) + '</span>' +
+        '<span class="ytc-pat__track"><i style="width:' + pct + '%"></i></span>' +
+        '<span class="ytc-pat__n">' + pct + '%</span>' +
+        '<span class="ytc-pat__lift' + tier + '">' + liftTxt + '</span>' +
+      '</div>';
+    }).join('');
+
+    return '<div class="ytc-pat">' +
+      '<p class="ytc-pat__len">Titles here run <b>' + p.lenLo + '–' + p.lenHi +
+        '</b> characters, typically <b>' + Math.round(p.lenMid) + '</b>.</p>' +
+      rowsHtml +
+      '<p class="ytc-sc__note">Share of the ' + p.total + ' relevant titles using each ' +
+        'device, and the ratio between the median views of those that do and those that ' +
+        'do not. A ratio needs both groups to exist, so a device every title carries shows ' +
+        'its usage and no ratio — it cannot be compared against nothing.</p>' +
+    '</div>';
+  }
+
+  /* ------------------------------------------------------------ story clock */
+
+  /* Am I early or late?
+   *
+   * The panel already scores how much attention a term is getting and how contested it is.
+   * Neither answers the question a creator actually asks before committing a day to a video,
+   * which is about time: has this broken yet, is it still climbing, and if I publish tonight
+   * do I arrive at the front of the queue or behind forty other people.
+   *
+   * Everything here is read off the results already on the page. No request is made, because
+   * the ages are sitting in the DOM and the only thing missing was somebody dividing them.
+   *
+   * Relevance is gated exactly as attention is, and for the same reason spelled out there: a
+   * query with no real matches fills page one with popular unrelated videos, and their dates
+   * would describe YouTube's padding rather than the story. A term whose page is padding has
+   * no clock, and the panel says so instead of inventing one.
+   */
+  const CLOCK_MIN_ROWS = 4;          // below this it is anecdote, not a distribution
+  const CLOCK_EVERGREEN_DAYS = 120;  // a median older than this is not a story, it is a subject
+
+  /* Age in days, keeping the hours.
+   *
+   * r.ageDays cannot be used here. It comes from daysSince(relativeToISO(...)), and that pair
+   * throws the time away twice over: relativeToISO truncates to a YYYY-MM-DD date, and
+   * daysSince then rounds the difference to whole days. The result is an integer, which is
+   * fine for the sliders and chips it was built for and useless for a clock — it made the
+   * 6–24h band unreachable, since no integer falls between 0.25 and 0.99, and left "under 6h"
+   * quietly meaning "under about twelve hours".
+   *
+   * relativeToDate is the same parser without the truncation, so "8 hours ago" survives as
+   * eight hours. The precision ceiling is YouTube's own wording — it prints hours below a day
+   * and whole days above one — which is exactly the resolution these bands need.
+   */
+  function exactAgeDays(r) {
+    if (r && r.date) {
+      const d = F.relativeToDate(r.date, Date.now());
+      if (d) return Math.max(0, (Date.now() - d.getTime()) / 86400000);
+    }
+    // No relative string on the card: the rounded figure is all there is, and is still
+    // right to within a day, which the wider bands can carry.
+    return r && r.ageDays != null ? r.ageDays : null;
+  }
+
+  function storyClock(rows, term) {
+    const words = termWords(term);
+    const dated = rows
+      .filter((r) => titleOverlap(r.title, words) >= 0.5)
+      .map(exactAgeDays)
+      .filter((a) => a != null)
+      .sort((a, b) => a - b);
+    if (dated.length < CLOCK_MIN_ROWS) {
+      return { ok: false, matched: dated.length };
+    }
+
+    const newest = dated[0];
+    const oldest = dated[dated.length - 1];
+    const mid = Math.floor(dated.length / 2);
+    const median = dated.length % 2 ? dated[mid] : (dated[mid - 1] + dated[mid]) / 2;
+    const day = dated.filter((a) => a <= 1).length;
+    const week = dated.filter((a) => a <= 7).length;
+
+    /* Is the rate rising or falling? Yesterday's uploads against the daily average across the
+       window the story has actually existed for — capped at a week, because a story running
+       for months would otherwise average its own quiet middle and read as accelerating on any
+       ordinary day. Undefined when the story is younger than two days: one day against an
+       average of itself is not a trend. */
+    const span = Math.max(1, Math.min(7, oldest));
+    const perDay = week / span;
+    const accel = oldest >= 2 && perDay > 0 ? day / perDay : null;
+
+    /* Where publishing now would land, which is the question in its most concrete form. */
+    const aheadOf = dated.length;   // publishing now makes you newer than every one of them
+
+    let phase, verdict;
+    if (median >= CLOCK_EVERGREEN_DAYS) {
+      phase = 'evergreen';
+      verdict = 'Not a breaking story. Page one is built from videos ' +
+        agePhrase(median) + ' old, so timing is not what decides this one — being better is.';
+    } else if (oldest <= 2) {
+      phase = 'early';
+      verdict = 'This broke about ' + agePhrase(oldest) + ' ago and page one is still thin. ' +
+        'Publishing now puts you among the first.';
+    } else if (accel != null && accel >= 1.3) {
+      phase = 'climbing';
+      verdict = 'Still climbing — ' + day + ' of the ' + dated.length +
+        ' relevant results went up in the last day, against ' +
+        (Math.round(perDay * 10) / 10) + ' a day since it broke. The window is open and ' +
+        'filling.';
+    } else if (accel != null && accel <= 0.5) {
+      phase = 'cooling';
+      verdict = 'Cooling — only ' + day + ' of the ' + dated.length +
+        ' went up in the last day, against ' + (Math.round(perDay * 10) / 10) +
+        ' a day since it broke. The rush has passed; late coverage competes with ranked ' +
+        'videos that already have the watch time.';
+    } else {
+      phase = 'steady';
+      verdict = 'Steady — about ' + (Math.round(perDay * 10) / 10) +
+        ' relevant uploads a day, and the middle of page one is ' + agePhrase(median) +
+        ' old. No rush, and no empty lane either.';
+    }
+
+    return { ok: true, phase, verdict, newest, oldest, median, day, week,
+             perDay, accel, total: dated.length, aheadOf, ages: dated };
+  }
+
+  /* Days as something a person says out loud. The clock deals in hours near the top and
+     months at the bottom, and "0.08 days" is not a sentence. */
+  function agePhrase(days) {
+    if (days == null) return '—';
+    const h = days * 24;
+    if (h < 1) return Math.max(1, Math.round(h * 60)) + ' minutes';
+    if (h < 36) return Math.round(h) + ' hour' + (Math.round(h) === 1 ? '' : 's');
+    if (days < 60) return Math.round(days) + ' day' + (Math.round(days) === 1 ? '' : 's');
+    return Math.round(days / 30) + ' months';
+  }
+
+  const CLOCK_PHASE = {
+    early:     { label: 'Just broke',   tier: 'great' },
+    climbing:  { label: 'Still climbing', tier: 'good' },
+    steady:    { label: 'Steady',       tier: 'ok' },
+    cooling:   { label: 'Cooling',      tier: 'low' },
+    evergreen: { label: 'Evergreen',    tier: 'ok' }
+  };
+
+  function clockHtml(rows, term) {
+    const c = storyClock(rows, term);
+    if (!c.ok) {
+      return '<p class="ytc-sc__note">Only ' + c.matched + ' result' +
+        (c.matched === 1 ? '' : 's') + ' on this page actually match the term, which is too ' +
+        'few to read a timeline from. The dates of results YouTube reached for describe its ' +
+        'padding, not the story.</p>';
+    }
+    const ph = CLOCK_PHASE[c.phase];
+    /* A bar per age band. The shape is the message: everything stacked on the left is a story
+       breaking now, an even spread is a subject rather than an event. */
+    /* Half-open bands so every result lands in exactly one: a video at precisely 24 hours
+       belongs to the day after it, not to both. */
+    const span = (lo, hi) => c.ages.filter((a) => a >= lo && (hi == null || a < hi)).length;
+    const bands = [
+      { label: 'under 6h', n: span(0, 0.25) },
+      { label: '6–24h', n: span(0.25, 1) },
+      { label: '1–3d', n: span(1, 3) },
+      { label: '3–7d', n: span(3, 7) },
+      { label: 'older', n: span(7, null) }
+    ];
+    const top = Math.max.apply(null, bands.map((b) => b.n)) || 1;
+
+    return '<div class="ytc-clk">' +
+      '<div class="ytc-clk__head">' +
+        '<span class="ytc-clk__phase ytc-onum--' + ph.tier + '">' + ph.label + '</span>' +
+        '<span class="ytc-clk__sub">newest ' + agePhrase(c.newest) + ' old · ' +
+          'middle of the page ' + agePhrase(c.median) + ' old</span>' +
+      '</div>' +
+      '<p class="ytc-clk__verdict">' + escapeHtml(c.verdict) + '</p>' +
+      '<div class="ytc-clk__bars">' +
+        bands.map((b) =>
+          '<div class="ytc-clk__band" title="' + b.n + ' of ' + c.total +
+            ' relevant results">' +
+            '<span class="ytc-clk__bl">' + b.label + '</span>' +
+            '<span class="ytc-clk__btrack"><i style="width:' +
+              Math.round((b.n / top) * 100) + '%"></i></span>' +
+            '<span class="ytc-clk__bn">' + b.n + '</span>' +
+          '</div>').join('') +
+      '</div>' +
+      /* The count, not its provenance. A reader needs the denominator to judge how solid the
+         reading is, and that is kept — but "this page plus 280 read deeper from the same
+         list" was narrating the mechanism rather than qualifying the number, and how the
+         sample is gathered is not something the panel owes anyone. Note it no longer claims
+         the results are "on this page": that was true when the panel only read what was
+         painted, and saying it now would be inaccurate as well as revealing. */
+      '<p class="ytc-sc__note">Read from the ' + c.total + ' result' +
+        (c.total === 1 ? '' : 's') +
+        ' whose titles carry the term. Publish now and you are newer than all ' + c.aheadOf +
+        ' of them — for as long as that lasts.</p>' +
+    '</div>';
+  }
+
+  /* ------------------------------------------------- loading shapes for the deep read
+
+     One per section whose figures a deep read changes. Built by taking the real markup and
+     swapping the text-bearing elements for bars, rather than as free-standing blocks: the
+     section keeps its own grid, spacing and row count, so nothing moves under the reader when
+     the numbers replace them. Same rule the monetization view's skeleton follows.
+
+     The keyword score and the velocity chart are deliberately not covered. Neither one reads
+     the deep set — the score is pinned to the first twenty by design, and the series comes
+     from the index service — so a skeleton there would claim a dependency that does not exist
+     and hide two figures that are already final. What is covered is exactly what moves. */
+  const skBar = (mod, style) => '<span class="ytc-sk ytc-sk--' + mod + '"' +
+    (style ? ' style="' + style + '"' : '') + '></span>';
+
+  const skRepeat = (n, fn) => {
+    let out = '';
+    for (let i = 0; i < n; i++) out += fn(i);
+    return out;
+  };
+
+  /* The score's own loading shape. It does not wait on the deep read — it waits on the
+     subscriber lookups for its pinned twenty, which is a different clock entirely and the one
+     that was actually moving the number under the reader. Keeping the empty gauge track and
+     drawing no arc holds the exact height the finished gauge occupies. */
+  function scoreSkeleton() {
+    const meter = () => '<div class="ytc-sc__meter">' +
+        '<span class="ytc-sc__mhead">' + skBar('sctext', 'width:84px') +
+          skBar('sctext', 'width:96px;margin-left:auto') + '</span>' +
+        '<span class="ytc-sc__track"></span>' +
+      '</div>';
+    return '<div class="ytc-sc__gauge">' +
+        '<svg viewBox="0 0 120 68" class="ytc-sc__gsvg" aria-hidden="true">' +
+          '<path class="ytc-sc__gtrack" d="M10,60 A50,50 0 0 1 110,60"/>' +
+        '</svg>' +
+        '<div class="ytc-sc__gnum">' + skBar('scnum') + '</div>' +
+        '<div class="ytc-sc__glabel">' + skBar('sctext', 'width:96px') + '</div>' +
+        '<div class="ytc-sc__gband">' + skBar('sctext', 'width:54px') + '</div>' +
+      '</div>' + meter() + meter();
+  }
+
+  function clockSkeleton() {
+    /* Five bands because the clock always draws five, whatever the data says. An empty track
+       is already a grey bar at the right height, so it stands in for itself. */
+    const band = () => '<div class="ytc-clk__band">' +
+        '<span class="ytc-clk__bl">' + skBar('sctext', 'width:44px') + '</span>' +
+        '<span class="ytc-clk__btrack"></span>' +
+        '<span class="ytc-clk__bn">' + skBar('sctext', 'width:14px') + '</span>' +
+      '</div>';
+    return '<div class="ytc-clk">' +
+        '<div class="ytc-clk__head">' + skBar('scpill') +
+          skBar('sctext', 'width:148px') + '</div>' +
+        '<p class="ytc-clk__verdict">' + skBar('sctext') +
+          skBar('sctext', 'width:88%') + skBar('sctext', 'width:54%') + '</p>' +
+        '<div class="ytc-clk__bars">' + skRepeat(5, band) + '</div>' +
+        '<div class="ytc-sc__note">' + skBar('sctext') +
+          skBar('sctext', 'width:62%') + '</div>' +
+      '</div>';
+  }
+
+  function patternsSkeleton() {
+    const row = () => '<div class="ytc-pat__row">' +
+        '<span class="ytc-pat__l">' + skBar('sctext', 'width:76px') + '</span>' +
+        '<span class="ytc-pat__track"></span>' +
+        '<span class="ytc-pat__n">' + skBar('sctext', 'width:20px') + '</span>' +
+        '<span class="ytc-pat__lift">' + skBar('sctext', 'width:38px') + '</span>' +
+      '</div>';
+    return '<div class="ytc-pat">' +
+        '<p class="ytc-pat__len">' + skBar('sctext', 'width:84%') + '</p>' +
+        skRepeat(5, row) +
+        '<div class="ytc-sc__note">' + skBar('sctext') +
+          skBar('sctext', 'width:70%') + '</div>' +
+      '</div>';
+  }
+
+  function statsSkeleton(term) {
+    const cell = () => '<div class="ytc-sc__stat">' +
+        '<span class="ytc-sc__badge"></span>' +
+        '<span class="ytc-sc__statmeta">' +
+          '<span>' + skBar('sctext', 'width:62px') + '</span>' +
+          '<b>' + skBar('sctext', 'width:42px') + '</b>' +
+        '</span></div>';
+    const mini = () => '<div class="ytc-sc__minirow">' + skBar('scdot') +
+        '<span>' + skBar('sctext', 'width:80px') + '</span>' +
+        '<b>' + skBar('sctext', 'width:32px') + '</b></div>';
+    return '<div class="ytc-sc__card">' +
+        /* The term itself is known before a single result is fetched, so it stays readable.
+           A placeholder over the one line that cannot change would be standing in for
+           nothing. */
+        '<div class="ytc-sc__termrow"><span>Search term</span>' +
+          '<b>“' + escapeHtml(term) + '”</b></div>' +
+        '<div class="ytc-sc__stats">' + skRepeat(4, cell) + '</div>' +
+        '<div class="ytc-sc__mini">' + skRepeat(4, mini) + '</div>' +
+      '</div>';
+  }
+
+  function channelsSkeleton() {
+    const row = () => '<div class="ytc-sc__chan">' +
+        '<span class="ytc-sc__cav ytc-sk ytc-sk--scav"></span>' +
+        '<span class="ytc-sc__cmeta">' +
+          '<span class="ytc-sc__cname">' + skBar('sctext', 'width:64%') + '</span>' +
+          '<span class="ytc-sc__csub">' + skBar('sctext', 'width:42%') + '</span>' +
+          '<span class="ytc-sc__cbar"></span>' +
+        '</span>' +
+        '<b class="ytc-sc__cnum">' + skBar('sctext', 'width:32px') + '</b>' +
+      '</div>';
+    return '<div class="ytc-sc__chead">' + skBar('sctext', 'width:68px') + '</div>' +
+      skRepeat(6, row);
+  }
+
+  /* The deep read's own strip, under the story clock because that is the panel the depth is
+     for. Four states, and the running one is the reason this is a strip rather than a button:
+     a chain of eight round trips against a throttling endpoint can run the better part of a
+     minute, and a control that simply went quiet for that long reads as broken. So it reports
+     which batch it is on and what it has found, updates on every batch, and can be stopped. */
+  function deepControl(term) {
+    const d = DEEP.keyword === term ? DEEP : null;
+    /* An automatic read that has been decided but not yet dispatched reports as running: it
+       is, from the reader's side, and the alternative is a button that offers to start work
+       already underway. */
+    const state = d ? (deepBusy(term) ? 'running' : d.state) : 'idle';
+
+    if (state === 'running') {
+      return '<div class="ytc-sc__deep ytc-sc__deep--run">' +
+          '<span class="ytc-spin" aria-hidden="true"></span>' +
+          /* That it is reading, and nothing about how. The batch number, the running total
+             and the on-topic count together described the whole method — how results are
+             fetched, in what size, and the test each one is put to. The reader's actual
+             need here is narrower: the figures below are not final yet, and there is a way
+             to stop waiting for them. Both survive this. */
+          '<span class="ytc-sc__deepmsg" role="status">Reading results…</span>' +
+          '<button type="button" class="ytc-sc__deepbtn ytc-sc__deepstop" title="' +
+            escapeHtml('Stops the read. Everything already read is kept.') +
+            '">Stop</button>' +
+        '</div>';
+    }
+
+    if (state === 'failed') {
+      return '<div class="ytc-sc__deep">' +
+          '<span class="ytc-sc__deepmsg" title="' + escapeHtml(d.reason || '') + '">' +
+            'Some results could not be read.</span>' +
+          '<button type="button" class="ytc-sc__deepbtn ytc-sc__deepgo">Try again</button>' +
+        '</div>';
+    }
+
+    /* Finished, and the strip goes away.
+
+       There is no button in any of these cases, because depth is not the reader's decision to
+       make: they cannot see how on-topic the next batch would be, which is the only thing that
+       should govern it. A "Read more" was asking them to guess at the judgement the rule
+       already makes from evidence, and it made the sample depend on whether they noticed a
+       link — two people reading the same term would get different denominators.
+
+       And with no action to offer, a completion notice is only a description of the method:
+       how many results were gathered, how many passed the relevance test, and the reason the
+       run ended. The figures underneath are what the reader came for, and they now stand on
+       their own. Where the sample came from is not part of the reading.
+
+       The count itself is not lost — the story clock still states the denominator every
+       figure is drawn from, which is what lets a reader judge how solid it is. */
+    if (state === 'done') return '';
+
+    /* Idle renders nothing. The read starts on its own the moment the page has results to
+       measure against, so this state lasts a tick — and an empty strip is the honest shape of
+       "nothing to report yet" where a button would be an invitation to do the work twice. */
+    return '';
+  }
+
   function scSection(key, title, body, note) {
     const open = !SC_SHUT.has(key);
     return '<section class="ytc-sc__sec' + (open ? '' : ' shut') + '" data-sec="' + key + '">' +
@@ -10644,6 +11954,18 @@
   }
 
   function companionHtml(st, stScore) {
+    /* Whether the sample under this render is still growing. Keyed on the term as well as the
+       state, so a chain left running against the previous search cannot put the new one's
+       panel behind loading shapes. */
+    const deepLoading = deepBusy(st.term);
+    /* The score has its own wait, and it is not the deep read's. It settles when the pinned
+       twenty have their subscriber counts, which primeSampleSubs now asks for up front instead
+       of leaving to whatever the reader scrolls past. Showing a number through that window is
+       what made the score appear to drift: each lookup that landed moved a median the reader
+       had already read. Bounded by SC_SETTLE_MS so a failed lookup cannot hide it for good. */
+    const scoreSettling = SAMPLE.keyword === st.term && !!SAMPLE.pinnedAt &&
+      stScore.subsKnown < stScore.n * SC_THIN &&
+      Date.now() - SAMPLE.pinnedAt < SC_SETTLE_MS;
     const dash = '—';
     const num = (v) => (v == null ? dash : F.compact(Math.round(v)) || String(Math.round(v)));
     const aPct = attentionPct(stScore.attentionPerVideo);
@@ -10782,12 +12104,44 @@
           '<span class="ytc-sc__chev">▾</span></button>' +
       '</div>' +
       '<div class="ytc-sc__body">' +
-        scSection('score', 'Keyword score', keywordBody) +
+        scSection('score', 'Keyword score',
+          scoreSettling ? scoreSkeleton() : keywordBody) +
+        /* Directly under the score, above velocity. The score says whether the term is worth
+           taking; this says whether it is worth taking today, which is the next question and
+           the one the reader is usually really asking. */
+        /* The deep read is running, so everything below reads a sample that is still
+           growing. These four sections are shown as loading shapes rather than as figures
+           about to be replaced: a story clock built from one page is not a rough version of
+           the finished reading, it is a different reading, and a reader who acts on it while
+           the bars are still filling has been told something the panel is about to retract.
+           The strip under the clock keeps reporting progress, and stops the run on request. */
+        scSection('clock', 'Story clock',
+          (deepLoading ? clockSkeleton() : clockHtml(st.rows || [], st.term)) +
+            deepControl(st.term),
+          'Whether this topic has broken yet, and where publishing now would land you') +
+        /* After the clock: timing decides whether to make it, this decides how to name it. */
+        scSection('patterns', 'Title patterns',
+          deepLoading ? patternsSkeleton() : patternsHtml(st.rows || [], st.term),
+          'Which title devices this niche uses, and which correlate with more views') +
+        /* Not skeletoned: the series is the index service's answer about the term, measured
+           between samples, and no amount of reading this page changes it. */
         scSection('vph', 'Velocity over time', seriesHtml(st.term)) +
-        scSection('stats', 'Search term statistics', statsBody) +
-        scSection('channels', 'Top channels for this search', channelsBody(st.rows || [])) +
-        '<p class="ytc-sc__foot">Statistics cover all ' + st.n + ' results loaded so far and ' +
-          'grow as you scroll. The score above reads a fixed first ' + stScore.n + ', so it ' +
+        scSection('stats', 'Search term statistics',
+          deepLoading ? statsSkeleton(st.term) : statsBody) +
+        scSection('channels', 'Top channels for this search',
+          deepLoading ? channelsSkeleton() : channelsBody(st.rows || [])) +
+        /* The footer described statistics that grow as you scroll, which stopped being true
+           for a term whose sample has settled — and a panel that explains the wrong behaviour
+           is worse than one that explains none. What it reports now is the denominator and
+           whether it will move, both of which the reader needs; the reason it settles where it
+           does is method, and stays out of it. */
+        '<p class="ytc-sc__foot">' +
+          (DEEP.sampleIds && DEEP.keyword === st.term
+            ? 'Statistics cover the ' + st.n + ' results read for this term and hold still ' +
+              'as you scroll. '
+            : 'Statistics cover all ' + st.n + ' results loaded so far and grow as you ' +
+              'scroll. ') +
+          'The score above reads a fixed first ' + stScore.n + ', so it ' +
           'holds still and stays comparable between searches. Everything here is counted, ' +
           'not modelled.</p>' +
       '</div>';
@@ -10936,13 +12290,33 @@
     loadPageResults(term);
     /* Everything the page has, including results it lists but has not drawn. */
     const rows = mergePageResults(all) || all;
-    const st = searchStats(rows, term);
+    /* …plus anything a deep read has pulled from the continuation chain. Appended rather
+       than merged in: these are further down the same list, and the statistics that read a
+       distribution want them while the ones that read the leaders do not. */
+    const deep = deepExtra(term, rows);
+    const wide = pinnedSample(term, rows, deep);
+    const st = searchStats(wide, term);
     /* The score reads a fixed slice of the same rows, so it holds still while the statistics
-       above it keep filling in. */
+       above it keep filling in.
+
+       Pinned from the shallow set on purpose. pinnedRows takes the first twenty by id, and
+       handing it the deep set would let continuation results into the score on a page that
+       had not yet painted twenty of its own — which is exactly the drift the pin exists to
+       prevent, arriving by a new route. */
     const pinned = pinnedRows(rows, term);
+    /* Ask for the scored sample's subscriber counts now rather than when the reader scrolls
+       past each card — the score cannot settle until they land. */
+    primeSampleSubs(pinned);
     PANEL_ROWS.term = term;
     PANEL_ROWS.rows = pinned;
-    const stScore = pinned.length === rows.length ? st : searchStats(pinned, term);
+    DEEP_ROWS.term = term;
+    DEEP_ROWS.rows = rows;
+    deepFor(term);                          // clears the deep set when the search changes
+    maybeAutoDeep(term, rows);              // …and starts reading the next pages of it
+    /* Against `wide`, not `rows`: st is measured over the deep set now, so comparing to the
+       shallow count would hand the score st's figures the moment a deep read made the two
+       lengths coincide — the pinned twenty reported with a denominator of two hundred. */
+    const stScore = pinned.length === wide.length ? st : searchStats(pinned, term);
 
     /* Registering the term and asking for its series, once per keyword per page. The ids are
        the ones already on screen, so this costs nothing to gather — and pinning the set here
@@ -10994,6 +12368,29 @@
           if (term && PANEL_ROWS.term === term) runCaptionCheck(term, PANEL_ROWS.rows);
           return;
         }
+        if (e.target.closest && e.target.closest('.ytc-sc__deepstop')) {
+          /* A flag rather than an abort: the batch in flight is already paid for, so it is
+             read and kept, and the chain ends after it rather than mid-request. */
+          const term = searchTerm();
+          if (deepBusy(term)) {
+            DEEP.stop = true;
+            /* Stopped before the first request went out — an automatic read is announced a
+               tick before it starts, and the reader can reach the button inside it. Nothing
+               is running to notice the flag and call finish, so close the run out here.
+               Leaving it would hold every dependent section on its loading shape for good. */
+            if (DEEP.state !== 'running') { DEEP.state = 'done'; DEEP.why = 'stopped'; }
+            ensureCompanion();
+          }
+          return;
+        }
+        if (e.target.closest && e.target.closest('.ytc-sc__deepgo')) {
+          const term = searchTerm();
+          /* The baseline is measured from what is on the page right now, which is what the
+             chain's relevance is compared against. DEEP_ROWS holds the panel's current set
+             for exactly this — the handler is delegated and closes over nothing. */
+          if (term && DEEP_ROWS.term === term) runDeepRead(term, DEEP_ROWS.rows);
+          return;
+        }
         const sec = e.target.closest && e.target.closest('.ytc-sc__sechead');
         if (sec) {
           const box = sec.closest('.ytc-sc__sec');
@@ -11030,8 +12427,22 @@
 
     // Same guard the stats card uses: only touch the DOM when something actually changed.
     if (panel.dataset.sig !== html) {
+      /* Carry the scroll position across the swap. innerHTML replaces the scrolling element
+         itself, so the new one starts at zero — the panel jumped to the top on every repaint.
+         That was survivable while repaints were rare, and stopped being so the moment the
+         deep read started running on its own: a batch landing every few seconds, plus a
+         repaint per subscriber lookup, meant any attempt to scroll was undone before the
+         reader got anywhere. Restored synchronously, before the browser paints, so there is
+         no visible jump — and the browser clamps it for us when a section collapses or a
+         skeleton is replaced by something shorter. */
+      const prev = panel.querySelector('.ytc-sc__body');
+      const top = prev ? prev.scrollTop : 0;
       panel.dataset.sig = html;
       panel.innerHTML = html;
+      if (top) {
+        const next = panel.querySelector('.ytc-sc__body');
+        if (next) next.scrollTop = top;
+      }
     }
     panel.classList.toggle('ytc-sc--folded', scFolded());
     paintFold(panel);

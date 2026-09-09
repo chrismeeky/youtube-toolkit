@@ -1167,6 +1167,36 @@
 
      Phrases stay whole. The value of the field is that a channel bids on "how to build
      muscle", not on "how", "to", "build", "muscle". */
+  /* Which stored hits currently count as notifications.
+   *
+   * Lives here because both worlds need it and must not disagree: the service worker paints
+   * the toolbar and sidebar counts from it, and the page paints the list. Two copies of this
+   * rule would drift the first time one of them was touched, and the symptom would be a badge
+   * promising more than the list shows.
+   *
+   * Hits are collected at a low floor and filtered here, so raising or lowering a channel's
+   * threshold re-groups what has already been gathered instead of waiting for the next crawl.
+   */
+  const WATCH_DEFAULT_RATIO = 3;
+
+  function watchThresholdFor(prefs, channelKey) {
+    const p = prefs || {};
+    const own = (p.byChannel || {})[channelKey];
+    if (own && typeof own.threshold === 'number' && own.threshold > 0) return own.threshold;
+    return typeof p.defaultThreshold === 'number' && p.defaultThreshold > 0
+      ? p.defaultThreshold : WATCH_DEFAULT_RATIO;
+  }
+
+  function watchPaused(prefs, channelKey) {
+    return !!(((prefs || {}).byChannel || {})[channelKey] || {}).paused;
+  }
+
+  function watchVisible(hits, prefs) {
+    return (hits || []).filter((h) =>
+      h && !watchPaused(prefs, h.channelKey) &&
+      (h.ratio || 0) >= watchThresholdFor(prefs, h.channelKey));
+  }
+
   function parseChannelKeywords(html) {
     if (!html) return null;
     const arr = /"tags"\s*:\s*\[([^\]]*)\]/.exec(html);
@@ -1422,7 +1452,8 @@
     DEFAULTS, SEPARATORS, LAYOUTS, FIELD_ORDER, FIELD_LABELS, SAMPLE,
     merge, formatOne, formatList, viewsToNumber, relativeToISO, compact, parseSubscribers,
     isTransientFailure, isRetryableFailure, headerIndex, parseAnchored, identityToken,
-    parseChannelStats, parseChannelKeywords, adSignalFromHtml, monetizationVerdict, channelPairsFromSearch,
+    parseChannelStats, parseChannelKeywords, adSignalFromHtml,
+    watchVisible, watchThresholdFor, watchPaused, WATCH_DEFAULT_RATIO, monetizationVerdict, channelPairsFromSearch,
     revenueSignals, revenueSummary, descriptionFromHtml,
     videoMetrics, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH,
     relativeToDate, vphFromRelative,

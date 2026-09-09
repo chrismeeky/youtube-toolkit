@@ -177,46 +177,136 @@
     return '';
   }
 
+  /* One walker, two callers: the initial payload below and each continuation batch further
+     down. They carry the same renderers — a continuation response is literally the next slice
+     of the list ytInitialData opened with — so parsing them twice would be two copies of the
+     same code drifting apart the first time YouTube renames a field. */
+  function collectVideos(node, out, seen, depth, cap) {
+    if (!node || typeof node !== 'object' || depth > 14 || out.length >= cap) return;
+    const v = node.videoRenderer;
+    if (v && v.videoId && !seen[v.videoId]) {
+      seen[v.videoId] = 1;
+      out.push({
+        id: v.videoId,
+        title: runs(v.title),
+        views: exactViews(v),
+        published: runs(v.publishedTimeText),
+        channel: runs(v.ownerText) || runs(v.longBylineText),
+        chanKey: channelKey(v),
+        avatar: channelAvatar(v),
+        shorts: false
+      });
+    }
+    /* Shorts arrive under their own renderers and are results like any other — whatever
+       ranks for a term is what a creator is up against. */
+    const r = node.reelItemRenderer;
+    if (r && r.videoId && !seen[r.videoId]) {
+      seen[r.videoId] = 1;
+      out.push({
+        id: r.videoId, title: runs(r.headline),
+        views: exactViews({ viewCountText: r.viewCountText }),
+        published: '', channel: '', chanKey: '', avatar: '', shorts: true
+      });
+    }
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) collectVideos(node[i], out, seen, depth + 1, cap);
+      return;
+    }
+    for (const key of Object.keys(node)) collectVideos(node[key], out, seen, depth + 1, cap);
+  }
+
   function searchResults() {
     const data = window.ytInitialData;
     if (!data || !/^\/results/.test(location.pathname)) return null;
     const out = [];
-    const seen = Object.create(null);
-    const walk = (node, depth) => {
-      if (!node || typeof node !== 'object' || depth > 14 || out.length >= 60) return;
-      const v = node.videoRenderer;
-      if (v && v.videoId && !seen[v.videoId]) {
-        seen[v.videoId] = 1;
-        out.push({
-          id: v.videoId,
-          title: runs(v.title),
-          views: exactViews(v),
-          published: runs(v.publishedTimeText),
-          channel: runs(v.ownerText) || runs(v.longBylineText),
-          chanKey: channelKey(v),
-          avatar: channelAvatar(v),
-          shorts: false
-        });
-      }
-      /* Shorts arrive under their own renderers and are results like any other — whatever
-         ranks for a term is what a creator is up against. */
-      const r = node.reelItemRenderer;
-      if (r && r.videoId && !seen[r.videoId]) {
-        seen[r.videoId] = 1;
-        out.push({
-          id: r.videoId, title: runs(r.headline),
-          views: exactViews({ viewCountText: r.viewCountText }),
-          published: '', channel: '', chanKey: '', avatar: '', shorts: true
-        });
-      }
-      if (Array.isArray(node)) {
-        for (let i = 0; i < node.length; i++) walk(node[i], depth + 1);
-        return;
-      }
-      for (const key of Object.keys(node)) walk(node[key], depth + 1);
-    };
-    try { walk(data, 0); } catch (e) { return null; }
+    try { collectVideos(data, out, Object.create(null), 0, 60); } catch (e) { return null; }
     return out.length ? out : null;
+  }
+
+  /* ------------------------------------------------- deep read (continuation chain)
+
+     Scrolling a search page does not re-run the search. YouTube hands the page a bookmark —
+     an opaque continuation token — and parks it in an invisible element at the foot of the
+     list; when that element scrolls into view the page POSTs the token to /youtubei/v1/search
+     and gets back the next slice plus a fresh token. The content script already fakes that
+     scroll in the filter modal. This makes the request directly instead, which is the same
+     call without moving the reader's page, repainting the results, or costing a Data API unit.
+
+     Deliberately one batch per message rather than a chain run in here: the decision about
+     when the results have stopped being about the search term needs termWords/titleOverlap,
+     which live in the content script. This is the fetch; the policy is over there. */
+  function continuationToken(node, depth) {
+    if (!node || typeof node !== 'object' || depth > 16) return '';
+    const cir = node.continuationItemRenderer;
+    if (cir) {
+      const cmd = (cir.continuationEndpoint || {}).continuationCommand || {};
+      if (cmd.token) return cmd.token;
+    }
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) {
+        const t = continuationToken(node[i], depth + 1);
+        if (t) return t;
+      }
+      return '';
+    }
+    for (const key of Object.keys(node)) {
+      const t = continuationToken(node[key], depth + 1);
+      if (t) return t;
+    }
+    return '';
+  }
+
+  function deepStep(token) {
+    if (!/^\/results/.test(location.pathname)) {
+      return Promise.resolve({ ok: false, reason: 'not a search page' });
+    }
+    const cfg = window.ytcfg && typeof window.ytcfg.get === 'function' ? window.ytcfg : null;
+    const key = cfg ? cfg.get('INNERTUBE_API_KEY') || '' : '';
+    const ver = cfg ? cfg.get('INNERTUBE_CLIENT_VERSION') || '' : '';
+    // No token yet means "start where the painted page ends", which is the token sitting in
+    // the payload the page loaded with.
+    let next = token;
+    if (!next) {
+      try { next = continuationToken(window.ytInitialData, 0); } catch (e) { next = ''; }
+    }
+    if (!next) return Promise.resolve({ ok: false, reason: 'no continuation token' });
+    if (!ver) return Promise.resolve({ ok: false, reason: 'no client version' });
+
+    /* hl/gl from the page's own config rather than hardcoded: a reader on youtube.com in
+       Germany is being shown German results, and asking for US ones would return a deeper
+       list that is not the continuation of what is on their screen. */
+    const body = {
+      context: {
+        client: {
+          clientName: 'WEB',
+          clientVersion: ver,
+          hl: (cfg && cfg.get('HL')) || 'en',
+          gl: (cfg && cfg.get('GL')) || 'US'
+        }
+      },
+      continuation: next
+    };
+    return fetch('/youtubei/v1/search?prettyPrint=false' +
+        (key ? '&key=' + encodeURIComponent(key) : ''), {
+      method: 'POST',
+      // Same origin, so this carries the reader's own session — which is the point. A
+      // signed-out request from anywhere else ranks differently and would describe a page
+      // nobody is looking at.
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Youtube-Client-Name': '1',
+        'X-Youtube-Client-Version': ver
+      },
+      body: JSON.stringify(body)
+    }).then((res) => (res.ok
+      ? res.json()
+      : Promise.reject(new Error('HTTP ' + res.status)))
+    ).then((json) => {
+      const out = [];
+      collectVideos(json, out, Object.create(null), 0, 120);
+      return { ok: true, rows: out, token: continuationToken(json, 0) };
+    }).catch((e) => ({ ok: false, reason: String((e && e.message) || e) }));
   }
 
   function collect() {
@@ -229,7 +319,7 @@
       // Bumped when the payload shape changes, so the content script can tell a stale
       // MAIN-world injection (which survives an extension reload in an open tab) from a
       // genuine read failure.
-      v: 6,
+      v: 7,
       apiKey: cfg ? cfg.get('INNERTUBE_API_KEY') || '' : '',
       clientVersion: cfg ? cfg.get('INNERTUBE_CLIENT_VERSION') || '' : '',
       visitorData: cfg ? cfg.get('VISITOR_DATA') || '' : '',
@@ -248,9 +338,21 @@
     // Reject a mismatched source (an iframe), but tolerate environments that leave it unset.
     if (event.source && event.source !== window) return;
     const data = event.data;
-    if (!data || data.type !== 'YTC_PAGE_REQUEST') return;
-    let payload = null;
-    try { payload = collect(); } catch (e) { payload = null; }
-    window.postMessage({ type: 'YTC_PAGE_DATA', id: data.id, payload }, '*');
+    if (!data) return;
+    if (data.type === 'YTC_PAGE_REQUEST') {
+      let payload = null;
+      try { payload = collect(); } catch (e) { payload = null; }
+      window.postMessage({ type: 'YTC_PAGE_DATA', id: data.id, payload }, '*');
+      return;
+    }
+    if (data.type === 'YTC_DEEP_REQUEST') {
+      // Answers on its own timing rather than same-tick: this one is a network round trip.
+      deepStep(String(data.token || '')).then((payload) => {
+        window.postMessage({ type: 'YTC_DEEP_DATA', id: data.id, payload }, '*');
+      }).catch((e) => {
+        window.postMessage({ type: 'YTC_DEEP_DATA', id: data.id,
+          payload: { ok: false, reason: String((e && e.message) || e) } }, '*');
+      });
+    }
   });
 })();

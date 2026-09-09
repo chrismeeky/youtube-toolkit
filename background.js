@@ -993,6 +993,174 @@ async function getChannelKeywords(key, force) {
   return entry;
 }
 
+/* ------------------------------------------------------------- pocket watch */
+
+/* Pockets have been storage and nothing else: a channel goes in, and the reader has to
+ * remember to go and look at it. This turns them into a watchlist — every few hours, ask what
+ * each saved channel has published lately and flag anything beating that channel's own
+ * average by a wide margin.
+ *
+ * The denominator is deliberately the same one the card badges use: stats.avgViews from the
+ * channel's /about page. A hit here therefore means exactly what a 3x badge on a card means,
+ * rather than being a second definition of "outlier" that quietly disagrees with the first.
+ *
+ * Everything is cached storage the extension already keeps. getSubscribers is the same call
+ * every badge makes, and channelVideosFor is the same walk the analytics panel makes, so a
+ * run costs little beyond what a reader browsing those channels would have spent anyway.
+ */
+/* The same key content.js writes pockets under. Declared again rather than imported because
+   the two run in different worlds and share no module scope — if one ever changes, this is
+   the line that has to change with it. */
+const POCKET_STORE_KEY = 'ytcPockets';
+const WATCH_ALARM = 'ytc-pocket-watch';
+const WATCH_STORE = 'ytcWatchHits';
+const WATCH_META = 'ytcWatchMeta';
+const WATCH_EVERY_MIN = 180;          // three hours
+/* How far back a video can be and still count as news. Beyond a week the reader has almost
+   certainly seen it through the front door, and flagging it is noise. */
+const WATCH_DAYS = 7;
+/* Two floors, not one.
+ *
+ * COLLECT is what gets stored: everything at twice its channel's average or better. SHOW is
+ * the default the reader sees, and each channel may override it. They are separate because
+ * the threshold is meant to be changed and to re-group what is already there — a reader who
+ * lowers a channel to 2.5x expects the uploads between 2.5 and 3 to appear, and they can only
+ * appear if they were kept. Collecting at the display floor would make every change of mind
+ * cost a wait for the next crawl, and lowering it would surface nothing at all.
+ *
+ * Three is where the existing outlier pills stop being interesting and start being notable,
+ * so the default agrees with the badges on the cards. */
+const WATCH_COLLECT_RATIO = 2;
+const WATCH_SHOW_RATIO = 3;
+const WATCH_PREFS = 'ytcWatchPrefs';
+/* A ceiling on one run. A reader with two hundred pocketed channels must not turn a
+   background alarm into a two hundred page crawl; the rest are picked up next time, oldest
+   checked first. */
+const WATCH_MAX_PER_RUN = 25;
+const WATCH_HITS_MAX = 60;
+
+async function watchChannels() {
+  const store = await chrome.storage.local.get(POCKET_STORE_KEY);
+  const pockets = store[POCKET_STORE_KEY] || [];
+  const seen = new Set();
+  const out = [];
+  for (const p of pockets) {
+    for (const c of (p.channels || [])) {
+      const key = c.handle || (c.id ? 'channel/' + c.id : '');
+      if (!key || seen.has(key.toLowerCase())) continue;
+      seen.add(key.toLowerCase());
+      out.push({ key, id: c.id || '', title: c.title || c.handle || '', pocket: p.title || '' });
+    }
+  }
+  return out;
+}
+
+async function runPocketWatch(reason) {
+  const meta = (await chrome.storage.local.get(WATCH_META))[WATCH_META] || {};
+  const channels = await watchChannels();
+  if (!channels.length) {
+    await chrome.storage.local.set({ [WATCH_META]: Object.assign({}, meta,
+      { ran: Date.now(), reason, checked: 0 }) });
+    return { ok: true, checked: 0, found: 0 };
+  }
+
+  /* Oldest first, so a pocket list longer than one run's ceiling still gets walked all the
+     way round rather than the first twenty-five being checked forever. */
+  const last = meta.lastByChannel || {};
+  channels.sort((a, b) => (last[a.key] || 0) - (last[b.key] || 0));
+  const batch = channels.slice(0, WATCH_MAX_PER_RUN);
+
+  /* A channel the reader stopped watching is not fetched, not merely hidden. The point of
+     stopping is to stop spending requests on it. */
+  const prefs = (await chrome.storage.local.get(WATCH_PREFS))[WATCH_PREFS] || {};
+  const byChannel = prefs.byChannel || {};
+  const prior = (await chrome.storage.local.get(WATCH_STORE))[WATCH_STORE] || [];
+  const known = new Set(prior.map((h) => h.videoId));
+  const fresh = [];
+  const cutoff = Date.now() - WATCH_DAYS * 86400000;
+
+  for (const c of batch) {
+    last[c.key] = Date.now();
+    if ((byChannel[c.key] || {}).paused) continue;
+    let avg = null;
+    try {
+      const subs = await getSubscribers(c.key);
+      avg = subs && subs.stats && subs.stats.avgViews > 0 ? subs.stats.avgViews : null;
+    } catch (e) { /* a channel that will not answer is skipped, not fatal */ }
+    // No average is no denominator. Guessing one would invent the very number being tested.
+    if (!avg) continue;
+
+    let res = null;
+    try {
+      res = await channelVideosFor(c.key, c.id, WATCH_DAYS);
+    } catch (e) { continue; }
+    if (!res || !res.ok) continue;
+
+    for (const v of (res.videos || [])) {
+      if (!v.id || known.has(v.id) || v.views == null) continue;
+      const when = v.publishedAt ? Date.parse(v.publishedAt) : 0;
+      if (!when || when < cutoff) continue;
+      const ratio = v.views / avg;
+      if (ratio < WATCH_COLLECT_RATIO) continue;
+      fresh.push({
+        videoId: v.id,
+        title: v.title || '',
+        views: v.views,
+        ratio: Math.round(ratio * 10) / 10,
+        avg: Math.round(avg),
+        publishedAt: v.publishedAt || '',
+        channelKey: c.key,
+        channelTitle: c.title,
+        pocket: c.pocket,
+        foundAt: Date.now(),
+        seen: false
+      });
+      known.add(v.id);
+    }
+  }
+
+  /* Newest first, capped. An unbounded list would grow for as long as the extension is
+     installed and is read from the top anyway. */
+  const merged = fresh.concat(prior)
+    .sort((a, b) => (Date.parse(b.publishedAt) || b.foundAt) - (Date.parse(a.publishedAt) || a.foundAt))
+    .slice(0, WATCH_HITS_MAX);
+
+  await chrome.storage.local.set({
+    [WATCH_STORE]: merged,
+    [WATCH_META]: { ran: Date.now(), reason: reason || '', checked: batch.length,
+                    total: channels.length, lastByChannel: last }
+  });
+  await paintWatchBadge(merged);
+  return { ok: true, checked: batch.length, found: fresh.length };
+}
+
+/* The count of things the reader has not looked at, on the toolbar icon. The only surface
+   this feature has that does not require opening something first, which is the entire point
+   of a watch. */
+async function paintWatchBadge(list) {
+  const got = await chrome.storage.local.get([WATCH_STORE, WATCH_PREFS]);
+  const hits = list || got[WATCH_STORE] || [];
+  /* Through the same filter the list uses, so the number on the icon is never a promise the
+     screen behind it cannot keep. */
+  const unseen = F.watchVisible(hits, got[WATCH_PREFS] || {}).filter((h) => !h.seen).length;
+  try {
+    // Clear badge text to remove the count from the extension icon.
+    await chrome.action.setBadgeText({ text: '' });
+  } catch (e) { /* the action may not be ready during install */ }
+}
+
+function armPocketWatch() {
+  try {
+    chrome.alarms.create(WATCH_ALARM, { periodInMinutes: WATCH_EVERY_MIN, delayInMinutes: 2 });
+  } catch (e) { /* alarms unavailable; the popup's own button still works */ }
+}
+
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name === WATCH_ALARM) runPocketWatch('alarm').catch(() => {});
+});
+chrome.runtime.onInstalled.addListener(() => { armPocketWatch(); paintWatchBadge(); });
+chrome.runtime.onStartup.addListener(() => { armPocketWatch(); paintWatchBadge(); });
+
 /* ------------------------------------------------------- audience overlap */
 
 /* Who a channel's viewers also watch, from YouTube's own recommendations as the crawler
@@ -1532,6 +1700,70 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     getSimilarChannels(msg.key, msg.titles, msg.about, msg.force, msg.opts)
       .then(sendResponse)
       .catch((e) => sendResponse({ channels: [], queries: [], reason: String(e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-watch-list') {
+    chrome.storage.local.get([WATCH_STORE, WATCH_META, WATCH_PREFS]).then((got) => {
+      sendResponse({ hits: got[WATCH_STORE] || [], meta: got[WATCH_META] || {},
+                     prefs: got[WATCH_PREFS] || {} });
+    });
+    return true;
+  }
+  if (msg.type === 'ytc-watch-run') {
+    runPocketWatch('manual')
+      .then((out) => sendResponse(out))
+      .catch((e) => sendResponse({ ok: false, reason: String(e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-watch-prefs') {
+    chrome.storage.local.get(WATCH_PREFS).then(async (got) => {
+      const prefs = got[WATCH_PREFS] || {};
+      const by = Object.assign({}, prefs.byChannel || {});
+      if (msg.channelKey) {
+        const cur = Object.assign({}, by[msg.channelKey] || {});
+        if (msg.threshold !== undefined) {
+          // Clearing back to the default is a real choice, so an empty value removes the
+          // override rather than storing a zero that would show everything collected.
+          if (msg.threshold === null || msg.threshold === '') delete cur.threshold;
+          else cur.threshold = Number(msg.threshold) || undefined;
+        }
+        if (msg.paused !== undefined) cur.paused = !!msg.paused;
+        by[msg.channelKey] = cur;
+      }
+      const next = Object.assign({}, prefs, { byChannel: by });
+      if (msg.defaultThreshold !== undefined) next.defaultThreshold = Number(msg.defaultThreshold) || undefined;
+      await chrome.storage.local.set({ [WATCH_PREFS]: next });
+      await paintWatchBadge();
+      sendResponse({ ok: true, prefs: next });
+    });
+    return true;
+  }
+  if (msg.type === 'ytc-watch-drop') {
+    chrome.storage.local.get(WATCH_STORE).then(async (got) => {
+      const all = got[WATCH_STORE] || [];
+      /* Dropping by channel is what "clear this channel" means; dropping one id is the row's
+         own delete. Neither stops the channel being watched — that is the pause switch, and
+         conflating them would make a tidy-up silently turn the watch off. */
+      const hits = msg.channelKey
+        ? all.filter((h) => h.channelKey !== msg.channelKey)
+        : all.filter((h) => h.videoId !== msg.videoId);
+      await chrome.storage.local.set({ [WATCH_STORE]: hits });
+      await paintWatchBadge(hits);
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+  if (msg.type === 'ytc-watch-seen') {
+    chrome.storage.local.get(WATCH_STORE).then(async (got) => {
+      const hits = (got[WATCH_STORE] || []).map((h) => {
+        const mine = msg.channelKey ? h.channelKey === msg.channelKey
+          : (!msg.videoId || h.videoId === msg.videoId);
+        return mine ? Object.assign({}, h, { seen: true }) : h;
+      });
+      await chrome.storage.local.set({ [WATCH_STORE]: hits });
+      await paintWatchBadge(hits);
+      sendResponse({ ok: true });
+    });
     return true;
   }
   if (msg.type === 'ytc-overlap' && msg.key) {
