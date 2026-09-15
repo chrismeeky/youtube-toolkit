@@ -3241,6 +3241,9 @@
      move the container the panel lives in, or rebuild the tab row without our active class.
      Called from every scan; when nothing has moved it is a few property reads. */
   function reassertPanels() {
+    /* Before anything is put back: a scan can land between the URL changing and
+       yt-navigate-finish, and it must not re-light the previous channel's tab here. */
+    closePanelsIfChannelChanged();
     if (!settings.showSimilar || !channelKeyFromLocation()) return;
     if (!simFilter.open && !analyticsOpen) return;
     const content = pageContent();
@@ -3288,6 +3291,18 @@
 
   let analyticsOpen = false;
 
+  /* The channel our open tab belongs to. The open flags are page-wide, so without this a
+     tab picked on one channel was still selected — and its panel still up — on the next one
+     the reader went to. Case-folded because a handle can be typed either way. */
+  let panelChannel = '';
+
+  function closePanelsIfChannelChanged() {
+    if (!simFilter.open && !analyticsOpen) return;
+    if (channelKeyFromLocation().toLowerCase() === panelChannel) return;
+    closeSimilarView();
+    closeAnalyticsView();
+  }
+
   /* A click that cannot place its panel yet must not read as a dead tab.
 
      Both open functions set their open flag before they look for a host, so reassertPanels()
@@ -3305,6 +3320,7 @@
   function openAnalyticsView() {
     closeSimilarView();
     analyticsOpen = true;
+    panelChannel = channelKeyFromLocation().toLowerCase();
     const host = analyticsHost();
     if (!host) { retryOpenPanel('Analytics'); return; }
     const content = pageContent();
@@ -4941,6 +4957,7 @@
   function openSimilarView() {
     closeAnalyticsView();
     simFilter.open = true;
+    panelChannel = channelKeyFromLocation().toLowerCase();
     /* Host first, page second. Hiding the content before the panel exists meant the panel was
        then created — and re-homed — against a container that was already display:none, and
        there was no longer anything to check the panel against. Build it, put it in the right
@@ -6499,8 +6516,11 @@
     { key: 'velocity', label: 'High velocity', note: 'Videos with the fastest view growth',
       apply: (f) => { f.vph = from('vph', 500); f.sort = 'vph'; } },
 
+    /* `kind` is declared rather than set inside apply: video type is chosen independently of
+       the preset, so only a preset that is meaningless without one gets to override it. */
     { key: 'trendshorts', label: 'Trending shorts', note: 'Shorts gaining views fastest',
-      apply: (f) => { f.kind = 'shorts'; f.age = upTo('age', 7); f.sort = 'vph'; } },
+      kind: 'shorts',
+      apply: (f) => { f.age = upTo('age', 7); f.sort = 'vph'; } },
 
     { key: 'hidden', label: 'Hidden outliers', note: 'High outlier scores from small creators',
       apply: (f) => { f.subs = upTo('subs', 50000); f.ratio = from('ratio', 3);
@@ -6522,7 +6542,8 @@
       apply: (f) => { f.subratio = from('subratio', 1); f.sort = 'subratio'; } },
 
     { key: 'longwin', label: 'Long-form winners', note: 'Full videos beating their average',
-      apply: (f) => { f.kind = 'long'; f.ratio = from('ratio', 2); f.sort = 'ratio'; } }
+      kind: 'long',
+      apply: (f) => { f.ratio = from('ratio', 2); f.sort = 'ratio'; } }
   ];
 
 
@@ -7863,7 +7884,7 @@
        bottom of the dialog would have had to guess which. */
     (has
       /* A small watch link above the note, and then the note input. */
-      ? '<a href="#" class="ytc-pk__watchlink-row" data-pocket="' + escapeHtml(p.id) + '">👀 Watch this channel <span class="ytc-pk__arrow">\u203a</span></a>' +
+      ? '<a href="#" class="ytc-pk__watchlink-row" data-watch-pocket="' + escapeHtml(p.id) + '">👀 Watch this channel <span class="ytc-pk__arrow">\u203a</span></a>' +
         '<label class="ytc-pk__noterow">' +
           '<span class="ytc-pk__notelbl">Notes about channel (optional)</span>' +
           '<input class="ytc-pk__note" type="text" maxlength="' + POCKET_NOTE_MAX + '"' +
@@ -8010,7 +8031,7 @@
     pkDlg.querySelectorAll('.ytc-pk__watchlink-row').forEach((a) => {
       a.addEventListener('click', (e) => {
         e.preventDefault();
-        const id = a.dataset.pocket;
+        const id = a.dataset.watchPocket;
         const p = pockets.find((x) => x.id === id);
         if (!p) return;
         pkView = 'watch';
@@ -8208,12 +8229,13 @@
       desc: saved.desc || '',
       note: presetNote(saved),
       mine: true,
+      // Saved under "All" means no opinion, so the reader's current type is left alone.
+      kind: st.kind === 'shorts' || st.kind === 'long' ? st.kind : '',
       apply: (f) => {
         for (const k of RANGE_KEYS) {
           const r = st[k];
           f[k] = Array.isArray(r) ? [r[0], r[1]] : [0, RANGE_MAX];
         }
-        f.kind = st.kind || 'all';
         f.sort = st.sort || FM_DEFAULT_SORT;
         f.desc = st.desc !== false;
       }
@@ -8875,6 +8897,10 @@
     if (!slot) return;
     const n = FM && FM.picked ? FM.picked.size : 0;
     if (!n) { slot.innerHTML = ''; return; }
+    /* Already showing: change the number only. Rebuilding the button replayed its pop-in and
+       restarted the sparkle on every tick, so the header flickered as videos were picked. */
+    const count = slot.querySelector('.ytc-fm__gen-n');
+    if (count) { count.textContent = n; return; }
     slot.innerHTML =
       '<button type="button" class="ytc-fm__gen">' +
         '<span class="ytc-fm__gen-spark" aria-hidden="true">✦</span>' +
@@ -8986,6 +9012,10 @@
     if (!host) return;
     const rows = pickedRows();
     if (!rows.length) { closeAiDialog(); return; }
+    /* Every change rebuilds the card, and a new card replays its entrance animation — which
+       read as the dialog flickering on each click. Only the first draw gets to animate. */
+    if (host.dataset.drawn) host.classList.add('ytc-modal--settled');
+    host.dataset.drawn = '1';
     host.innerHTML = aiDialogHtml(rows);
   }
 
@@ -10052,7 +10082,11 @@
     const clearing = !force && FILTER_STATE.preset === pz.key && pz.key !== NO_FILTER_KEY;
     const use = clearing
       ? filterPresets().find((x) => x.key === NO_FILTER_KEY) || pz : pz;
+    /* Video type survives a preset change. It is picked in its own control above the list,
+       and wiping it every time a chip was clicked made the two impossible to combine. */
+    const kind = FILTER_STATE.kind;
     resetRanges(FILTER_STATE);
+    FILTER_STATE.kind = use.kind || kind;
     FILTER_STATE.sort = FM_DEFAULT_SORT;
     FILTER_STATE.desc = true;
     FILTER_STATE.preset = use.key;
@@ -10533,7 +10567,12 @@
     modal.querySelectorAll('.ytc-fm__seg button').forEach((b) => {
       b.addEventListener('click', () => {
         FILTER_STATE.kind = b.dataset.kind;
-        FILTER_STATE.preset = 'all';
+        /* The preset stays on — its sliders are untouched. Only one that is defined by a
+           video type (Trending shorts, say) stops being true when a different type is picked. */
+        const active = filterPresets().find((x) => x.key === FILTER_STATE.preset);
+        if (active && active.kind && active.kind !== FILTER_STATE.kind) {
+          FILTER_STATE.preset = 'all';
+        }
         markActivePreset(modal);
         syncFilterControls(modal);
         redraw();
@@ -10771,6 +10810,9 @@
   function renderSettingsModal() {
     const modal = document.querySelector('.ytc-st');
     if (!modal) return;
+    // Only the first draw animates in; see renderAiDialog for why.
+    if (modal.dataset.drawn) modal.classList.add('ytc-modal--settled');
+    modal.dataset.drawn = '1';
     modal.innerHTML =
       '<div class="ytc-st__card" role="dialog" aria-modal="true" aria-label="Toolkit settings">' +
         '<div class="ytc-st__head">' +
@@ -13214,6 +13256,8 @@
      watch metadata, the sidebar and the channel header. */
   const NAV_SCANS = [300, 900, 2000, 4000, 8000];
   window.addEventListener('yt-navigate-finish', () => {
+    // Straight away, not on the first scan: the new channel should never show the old tab.
+    closePanelsIfChannelChanged();
     for (const delay of NAV_SCANS) setTimeout(scan, delay);
   });
 

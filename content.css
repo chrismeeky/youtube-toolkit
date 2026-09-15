@@ -3288,6 +3288,9 @@ html[dark] .ytc-fm__pick.on::after { border-color: #0f0f0f; }
   to   { opacity: 1; transform: none; }
 }
 html[dark] .ytc-ai__card { background: #212121; color: #f1f1f1; }
+/* Re-renders replace the card; once the dialog has opened, the replacement must not animate. */
+.ytc-modal--settled .ytc-ai__card,
+.ytc-modal--settled .ytc-st__card { animation: none; }
 
 /* A tinted band rather than a plain bar: it is the one part of the dialog that names what
    the whole thing is for, and the gradient ties it to the button that opened it. */
