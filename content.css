@@ -557,6 +557,9 @@ html[dark] .ytc-tm__hit:hover, html[dark] .ytc-tm__hit.on { background: rgba(176
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A weekday and a clock time are several characters longer than any figure beside them, and
+   the cell is a third of a sidebar — so this one value is set smaller rather than clipped. */
+.ytc-cs__cell--when .ytc-cs__value { font-size: 13px; }
 .ytc-cs__note {
   margin-top: 8px;
   font-size: 10px;

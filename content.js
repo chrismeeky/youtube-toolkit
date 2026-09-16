@@ -953,6 +953,32 @@
       '<div class="ytc-cs__value">' + value + '</div></div>';
   }
 
+  /* The weekday and clock time a video went up.
+
+     Two things are deliberately withheld. A date the extension worked back from "3 weeks ago"
+     — the fallback when the player cannot be read — is rounded to the week, so its weekday
+     would be a guess wearing the clothes of a fact. And a stamp whose own time reads exactly
+     midnight is a date with no clock in it, which is what YouTube publishes for a great many
+     videos; the day stands alone there rather than claiming it went up at 12:00 am. */
+  function publishedWhen(iso, approx) {
+    if (!iso || approx) return null;
+    const ymd = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!ymd) return null;
+    const clock = String(iso).match(/T(\d{2}):(\d{2})/);
+    const dateOnly = !clock || (clock[1] === '00' && clock[2] === '00');
+    /* Built from its parts when there is no time. "2023-06-27" parsed whole is read as UTC
+       midnight, which lands on the day before anywhere west of Greenwich — and the wrong day
+       is the one thing this cell cannot afford to report. */
+    const d = dateOnly ? new Date(+ymd[1], +ymd[2] - 1, +ymd[3]) : new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    const day = d.toLocaleDateString(undefined, { weekday: 'short' });
+    const time = dateOnly ? ''
+      : d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    const full = d.toLocaleDateString(undefined,
+      { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    return { short: time ? day + ', ' + time : day, full: full, time: time, dateOnly: dateOnly };
+  }
+
   function renderStatsCard() {
     const onWatch = /^\/watch/.test(location.pathname);
     const existing = document.querySelector('.ytc-cs');
@@ -989,6 +1015,7 @@
     const waitM = cardState.pending.metrics;
     const skel = '<span class="ytc-cs__skel"></span>';
     const soon = (waiting) => (waiting ? skel : dash);
+    const when = m ? publishedWhen(m.publishDate, m.approx) : null;
 
     const rows =
       '<div class="ytc-cs__row">' +
@@ -1047,6 +1074,17 @@
                 'cents per 1,000 views, so a long-form RPM would be the wrong unit entirely'
               : F.formatMoney(m.earnings.low) + ' to ' + F.formatMoney(m.earnings.high) +
                 ' (' + m.length.label + '). Not real revenue') +
+        cell('Published', !m ? soon(waitM) : when ? escapeHtml(when.short) : dash,
+          !m ? (waitM ? 'Reading video data' : 'Video data could not be read')
+            : !when
+              ? (m.approx
+                  ? 'Worked back from the relative date on the page, which is rounded to the ' +
+                    'week — the day it actually went up is not published there'
+                  : 'No publish date in this video\'s data')
+              : when.dateOnly
+                ? when.full + '. YouTube gives only the date for this video, not the time'
+                : when.full + ' at ' + when.time + ', in your own time zone',
+          'ytc-cs__cell--when') +
       '</div>' +
       '<div class="ytc-cs__note">' +
         (m && m.earnings == null

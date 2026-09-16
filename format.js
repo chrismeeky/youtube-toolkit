@@ -621,6 +621,9 @@
       category: stats.category || '',
       lengthSeconds: stats.lengthSeconds != null ? stats.lengthSeconds : null,
       length: len,
+      // Kept as the source string, not a timestamp: whether it carries a real clock time or
+      // only a date is a question about the text, and parsing throws that away.
+      publishDate: stats.publishDate || '',
       // Below 1/hr the number is noise, and NextLev blanks it too.
       vph: hours ? views / hours : null,
       engagement: stats.likes != null && views > 0 ? (stats.likes / views) * 100 : null,
