@@ -92,7 +92,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "icons/icon32.png"
+        "icons/icon32.png",
+        "icons/icon128.png"
       ],
       "matches": [
         "https://www.youtube.com/*",

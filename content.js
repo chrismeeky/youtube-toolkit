@@ -36,6 +36,28 @@
     return !!card && typeof card.matches === 'function' && card.matches(WATCH_SELECTOR);
   }
 
+  /* The recommendations beside a watch page are left as YouTube drew them. Every one carried a
+     Copy and Thumb row plus a badge row, in a column a third the width of the page, so a list
+     meant to be skimmed became a stack of controls with a thumbnail attached — and none of it
+     is what someone watching a video came for. The sidebar is still read for recommendation
+     edges; that reads YouTube's own links and never needed these. */
+  const WATCH_SIDEBAR = '#secondary, ytd-watch-next-secondary-results-renderer';
+
+  function inWatchSidebar(card) {
+    return /^\/watch/.test(location.pathname) && !!card.closest(WATCH_SIDEBAR);
+  }
+
+  /* YouTube keeps and reuses renderers across a soft navigation, so a card decorated on the
+     home page can reappear in the sidebar still wearing its controls. Taken off, not just
+     skipped. */
+  function undecorate(card) {
+    if (card.dataset.ytcReady !== '1' && !card.querySelector('.ytc-tools, .ytc-subs')) return;
+    card.querySelectorAll('.ytc-tools, .ytc-subs').forEach((el) => el.remove());
+    card.classList.remove('ytc-card', 'ytc-card--selected');
+    delete card.dataset.ytcReady;
+    selected.delete(card);
+  }
+
   function isOutermost(el) {
     const parent = el.parentElement && el.parentElement.closest(CARD_SELECTOR);
     return !parent;
@@ -744,6 +766,7 @@
     let n = 0;
     for (const card of cards) {
       if (!isOutermost(card)) continue;
+      if (inWatchSidebar(card)) { undecorate(card); continue; }
       decorate(card);
       resyncCard(card);
       n++;
@@ -1233,6 +1256,7 @@
       cardState.pending.metrics = false;
     }
     renderStatsCard();
+    syncWatchVph();
 
     /* Asked once per channel and cached in the service worker, then retried on backoff for as
        long as the answer is only a "not yet". When it lands the card is drawn again, because
@@ -4423,6 +4447,7 @@
   function resetShorts(id) {
     shortsState.videoId = id;
     shortsState.key = '';
+    shortsState.channelId = '';
     shortsState.video = null;
     shortsState.channel = null;
     shortsState.who = null;
@@ -4466,6 +4491,8 @@
       if (stats.channelName) {
         shortsState.who = Object.assign({}, shortsState.who, { name: stats.channelName });
       }
+      // For the header link when the channel has no handle — the id always resolves.
+      shortsState.channelId = stats.channelId || '';
     }
     shortsState.pending.video = false;
     renderShortsPanel();
@@ -4546,6 +4573,20 @@
     return n == null ? null : Math.round(n).toLocaleString();
   }
 
+  /* The channel name goes to the channel, the way it does on YouTube's own Shorts overlay.
+     Same tab, for the same reason: someone who clicks a creator's name mid-scroll means to go
+     there. Plain text until the player has named the channel — a link to a guessed address
+     would be worse than no link. */
+  function shortsChannelName(name, s) {
+    if (!name) return '<b class="ytc-sh__name">' + SH_SKEL + '</b>';
+    const path = /^@[\w.-]+$/.test(s.key || '') ? s.key
+      : /^UC[\w-]{20,24}$/.test(s.channelId || '') ? 'channel/' + s.channelId : '';
+    if (!path) return '<b class="ytc-sh__name">' + escapeHtml(name) + '</b>';
+    return '<a class="ytc-sh__name ytc-sh__name--link" href="https://www.youtube.com/' +
+      escapeHtml(path) + '" title="Open ' + escapeHtml(name) + '’s channel">' +
+      escapeHtml(name) + '</a>';
+  }
+
   function shortsPanelHtml() {
     const s = shortsState;
     const v = s.video || {};
@@ -4571,7 +4612,7 @@
         shortsBrandIcon() +
         avatar +
         '<span class="ytc-sh__ident">' +
-          '<b class="ytc-sh__name">' + (name ? escapeHtml(name) : SH_SKEL) + '</b>' +
+          shortsChannelName(name, s) +
           '<span class="ytc-sh__subs">' + subs + '</span>' +
         '</span>' +
         '<button type="button" class="ytc-sh__toggle" aria-expanded="' + (s.open ? 'true' : 'false') +
@@ -5829,16 +5870,15 @@
       if (settings.showStats) {
         try {
           const meta = findMeta(card);
-          const vph = meta.date
+          const exact = isWatchCard(card) ? watchExactVph(card) : null;
+          const vph = exact != null ? exact : meta.date
             ? F.vphFromRelative(meta.views, meta.date, Date.now())
             /* Shorts print no date at all, so there is no relative phrase to parse. When the
                id lookup supplied a real timestamp, use it directly — it is more precise than
                the "3 weeks ago" the other path has to work from, not less. */
             : vphFromStamp(meta.views, card.dataset.ytcPub);
           if (vph != null && vph >= 1) {
-            parts.push('<span class="ytc-vph" title="' +
-              Math.round(vph).toLocaleString() + ' views per hour on average since it was posted. ' +
-              'Estimated from the card\'s relative date, so approximate">' +
+            parts.push('<span class="ytc-vph" title="' + vphTitle(vph, exact != null) + '">' +
               F.formatVph(vph) + ' VPH</span>');
           }
         } catch (e) {
@@ -6163,6 +6203,40 @@
         ownerTimer = setTimeout(flushOwnerLookups, 4000);
       }
     });
+  }
+
+  /* The watch page's own figure, when the player has supplied it.
+
+     The pill under the title and the VPH cell in the stats card were answering the same
+     question from different clocks. The pill had only YouTube's "2 days ago", which is 48
+     hours whether the video went up 49 hours ago or 70; the card had the exact publish time.
+     On a 893K-view video that was 18.6K against 13.2K, side by side, both labelled VPH. On a
+     watch page the exact figure exists, so both show it. A card elsewhere still has only its
+     relative date, and keeps the estimate. */
+  function watchExactVph(card) {
+    const m = cardState.metrics;
+    // approx means the metrics were themselves read off the page's relative date.
+    if (!m || m.approx || m.vph == null) return null;
+    const id = findUrl(card).id;
+    return id && cardState.videoId === id ? m.vph : null;
+  }
+
+  function vphTitle(vph, exact) {
+    return Math.round(vph).toLocaleString() + ' views per hour on average since it was posted. ' +
+      (exact ? 'From the exact publish time'
+             : 'Estimated from the card\'s relative date, so approximate');
+  }
+
+  /* The pill is often drawn before the player data lands, from the relative date. Put the
+     exact figure in once it exists, rather than leaving the two disagreeing until some
+     unrelated re-render happens to fix it. */
+  function syncWatchVph() {
+    const watch = watchCard();
+    const pill = watch && watch.querySelector('.ytc-vph');
+    const vph = watch ? watchExactVph(watch) : null;
+    if (!pill || vph == null || vph < 1) return;
+    pill.textContent = F.formatVph(vph) + ' VPH';
+    pill.title = vphTitle(vph, true);
   }
 
   /* Views per hour from an exact timestamp, for cards that carry no relative date. */
@@ -10845,6 +10919,9 @@
     { k: 'channel', label: 'Your channel' }
   ];
 
+  // The same address the store listing's privacy text gives, so there is one way to reach us.
+  const CONTACT_EMAIL = 'nwodochristian@gmail.com';
+
   function renderSettingsModal() {
     const modal = document.querySelector('.ytc-st');
     if (!modal) return;
@@ -10860,12 +10937,22 @@
           '<button type="button" class="ytc-st__x" aria-label="Close">×</button>' +
         '</div>' +
         '<div class="ytc-st__body">' +
-          '<nav class="ytc-st__rail" role="tablist">' +
-            ST_TABS.map((t) =>
-              '<button type="button" class="ytc-st__tab' + (stTab === t.k ? ' on' : '') +
-                '" data-tab="' + t.k + '" role="tab" aria-selected="' + (stTab === t.k) + '">' +
-                escapeHtml(t.label) + '</button>').join('') +
-          '</nav>' +
+          /* The contact line sits under the tabs rather than among them: a tablist may only
+             hold tabs, and a link inside one is announced as a broken tab. Pinned to the
+             bottom of the column, so it is on every tab without taking room from any. */
+          '<div class="ytc-st__side">' +
+            '<nav class="ytc-st__rail" role="tablist">' +
+              ST_TABS.map((t) =>
+                '<button type="button" class="ytc-st__tab' + (stTab === t.k ? ' on' : '') +
+                  '" data-tab="' + t.k + '" role="tab" aria-selected="' + (stTab === t.k) + '">' +
+                  escapeHtml(t.label) + '</button>').join('') +
+            '</nav>' +
+            '<div class="ytc-st__contact">' +
+              '<span>Questions, bugs or ideas?</span>' +
+              '<a href="mailto:' + CONTACT_EMAIL + '?subject=' +
+                encodeURIComponent('YouTube Toolkit') + '">' + CONTACT_EMAIL + '</a>' +
+            '</div>' +
+          '</div>' +
           '<div class="ytc-st__main">' + settingsBody() + '</div>' +
         '</div>' +
       '</div>';
@@ -10935,6 +11022,137 @@
      an uncaught throw here would take the masthead button out with it. */
   function extIconUrl() {
     try { return chrome.runtime.getURL('icons/icon32.png'); } catch (e) { return ''; }
+  }
+
+  /* ---------------------------------------------------------- review prompt */
+
+  /* A request for a review, at most once a fortnight.
+
+     The extension is free with nothing held back, so reviews are the one thing that keeps it
+     visible in the store. Asking is fair; asking in a way that annoys is not, because an
+     annoyed reader is exactly who leaves one star. Hence the rules:
+
+       - never in the first few days: nobody can review a tool they have not used yet
+       - at most once every 14 days, across every tab — the date is written before the
+         dialog is drawn, so two tabs loading together cannot both show it
+       - never again once they have gone to review, or said not to ask
+       - never on top of another dialog, and never in a background tab; the next page
+         load simply tries again */
+  const REVIEW_KEY = 'ytcReviewPrompt';
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const REVIEW_FIRST_AFTER = 3 * DAY_MS;
+  const REVIEW_EVERY = 14 * DAY_MS;
+  // Long enough that the page has settled and the reader has started what they came for.
+  const REVIEW_DELAY_MS = 8000;
+  let reviewChecked = false;
+
+  /* The listing, named outright rather than built from chrome.runtime.id. That id only matches
+     the store for a store install; an unpacked copy — every developer build — has its own, and
+     the link would have opened a "not found" page to exactly the person testing it. */
+  const REVIEW_URL = 'https://chromewebstore.google.com/detail/youtube-toolkit/' +
+    'hjomjphdphbekpipfodadbkcohgbkcec/reviews';
+
+  function reviewUrl() {
+    return REVIEW_URL;
+  }
+
+  function setReviewState(patch) {
+    try {
+      chrome.storage.local.get([REVIEW_KEY], (got) => {
+        if (chrome.runtime.lastError) return;
+        chrome.storage.local.set({
+          [REVIEW_KEY]: Object.assign({}, got && got[REVIEW_KEY], patch)
+        });
+      });
+    } catch (e) { /* a review prompt is never worth an exception */ }
+  }
+
+  function maybeShowReviewPrompt() {
+    if (reviewChecked || window.top !== window) return;
+    reviewChecked = true;              // once per page load, whatever storage says
+    setTimeout(() => {
+      try {
+        chrome.storage.local.get([REVIEW_KEY], (got) => {
+          if (chrome.runtime.lastError) return;
+          const now = Date.now();
+          const st = Object.assign({}, got && got[REVIEW_KEY]);
+          // The clock starts the first time the extension runs, including for readers who
+          // installed it before this prompt existed.
+          if (typeof st.firstSeen !== 'number') {
+            chrome.storage.local.set({ [REVIEW_KEY]: Object.assign(st, { firstSeen: now }) });
+            return;
+          }
+          if (st.done) return;
+          if (now - st.firstSeen < REVIEW_FIRST_AFTER) return;
+          if (st.lastShown && now - st.lastShown < REVIEW_EVERY) return;
+          if (document.hidden) return;
+          if (document.querySelector('.ytc-st, .ytc-fm, .ytc-ai, .ytc-pk, .ytc-rv')) return;
+          st.lastShown = now;
+          st.shownCount = (st.shownCount || 0) + 1;
+          chrome.storage.local.set({ [REVIEW_KEY]: st });
+          showReviewPrompt();
+        });
+      } catch (e) { /* see setReviewState */ }
+    }, REVIEW_DELAY_MS);
+  }
+
+  function showReviewPrompt() {
+    let logo = '';
+    try { logo = chrome.runtime.getURL('icons/icon128.png'); } catch (e) { /* no logo */ }
+
+    const el = document.createElement('div');
+    el.className = 'ytc-rv';
+    el.innerHTML =
+      '<div class="ytc-rv__card" role="dialog" aria-modal="true" aria-labelledby="ytc-rv-title" ' +
+        'tabindex="-1">' +
+        '<button type="button" class="ytc-rv__x" aria-label="Close">×</button>' +
+        (logo ? '<img class="ytc-rv__logo" src="' + escapeHtml(logo) + '" alt="">' : '') +
+        '<h2 class="ytc-rv__title" id="ytc-rv-title">Enjoying YouTube Toolkit?</h2>' +
+        '<p class="ytc-rv__text">It’s completely free — no account, no subscription, ' +
+          'nothing locked behind an upgrade. A quick review on the Chrome Web Store is what ' +
+          'keeps it going, and it helps other creators find it.</p>' +
+        '<div class="ytc-rv__stars" aria-hidden="true">★★★★★</div>' +
+        '<button type="button" class="ytc-rv__go">Leave a review</button>' +
+        '<button type="button" class="ytc-rv__later">Maybe later</button>' +
+        '<button type="button" class="ytc-rv__never">Don’t ask again</button>' +
+      '</div>';
+    document.body.appendChild(el);
+
+    const close = () => {
+      el.remove();
+      document.removeEventListener('keydown', onKey, true);
+    };
+    // Escape is "maybe later": the date is already written, so it returns in two weeks.
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      close();
+    };
+    document.addEventListener('keydown', onKey, true);
+
+    el.addEventListener('click', (e) => {
+      const t = e.target;
+      if (t === el || t.closest('.ytc-rv__x, .ytc-rv__later')) { close(); return; }
+      if (t.closest('.ytc-rv__go')) {
+        // Treated as done: the store cannot tell us whether they finished, and asking again
+        // someone who already went to review would be the most annoying version of this.
+        setReviewState({ done: 'reviewed', doneAt: Date.now() });
+        window.open(reviewUrl(), '_blank', 'noopener');
+        close();
+        return;
+      }
+      if (t.closest('.ytc-rv__never')) {
+        setReviewState({ done: 'never', doneAt: Date.now() });
+        close();
+      }
+    });
+
+    /* Focus goes to the dialog, not to "Leave a review". Focusing the button drew a heavy
+       ring round it the moment it opened — pressure to click, and it read as a glitch to
+       anyone using a mouse. Keyboard and screen-reader users still land inside the dialog,
+       and Tab reaches the button first. */
+    const card = el.querySelector('.ytc-rv__card');
+    if (card) card.focus();
   }
 
   /* The trigger, in YouTube's own masthead between the microphone and Create.
@@ -13311,6 +13529,7 @@
      call site. Startup work goes here, next to the first scan, where everything exists. */
   loadPresets();
   loadPockets(() => refreshPocketMarks());
+  maybeShowReviewPrompt();
 
   scan();
 })();
