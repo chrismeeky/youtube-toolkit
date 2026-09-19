@@ -72,7 +72,10 @@ fi
 
 echo "index service on http://127.0.0.1:${PORT}"
 echo
-echo "Paste this into the extension popup's \"Index API\" field:"
+# There is no popup field for this, and saying there is sends the reader looking for a
+# control that does not exist: INDEX_API is read from config.js by importScripts at
+# service-worker start, which is also why the extension has to be reloaded afterwards.
+echo "Set INDEX_API in config.js to this, then reload the extension at chrome://extensions:"
 echo "    http://127.0.0.1:${PORT}/k/${TOKEN}"
 echo
 echo "Ctrl-C to stop."

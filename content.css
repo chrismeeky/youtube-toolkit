@@ -594,6 +594,90 @@ html[dark] .ytc-cs__skel {
 }
 
 html[dark] .ytc-cs { border-color: rgba(255,255,255,.15); background: rgba(255,255,255,.04); }
+
+/* Shorts promoting this video — the same card as the stats above it, so the two read as one
+   block of the sidebar rather than something YouTube put there. */
+.ytc-ps {
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+  border-radius: 12px; padding: 0; margin: 0 0 16px; overflow: hidden;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.03));
+  font-family: Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+html[dark] .ytc-ps { border-color: rgba(255,255,255,.15); background: rgba(255,255,255,.04); color: #f1f1f1; }
+/* Closed, the panel is this one row. The whole row is the toggle, not just the chevron. */
+.ytc-ps__head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 10px 12px; border: 0; background: none; cursor: pointer;
+  color: inherit; text-align: left; font-family: inherit;
+}
+.ytc-ps__head:hover { background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.04)); }
+html[dark] .ytc-ps__head:hover { background: rgba(255,255,255,.05); }
+.ytc-ps__head:focus-visible { outline: 2px solid #065fd4; outline-offset: -2px; border-radius: 12px; }
+.ytc-ps__label { font: 500 14px/1.3 Roboto, Arial, sans-serif; }
+.ytc-ps__chev {
+  margin-left: auto; flex: 0 0 auto; width: 16px; height: 16px;
+  fill: none; stroke: currentColor; stroke-width: 1.7;
+  color: var(--yt-spec-text-secondary, #606060);
+  transition: transform .15s ease;
+}
+html[dark] .ytc-ps__chev { color: #aaa; }
+.ytc-ps__head[aria-expanded="true"] .ytc-ps__chev { transform: rotate(180deg); }
+.ytc-ps__body { padding: 2px 12px 12px; }
+.ytc-ps__body > :last-child { margin-bottom: 0; }
+.ytc-ps__n {
+  min-width: 20px; padding: 1px 7px; border-radius: 999px; text-align: center;
+  font: 500 12px/18px Roboto, Arial, sans-serif;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.08));
+}
+html[dark] .ytc-ps__n { background: rgba(255,255,255,.12); }
+.ytc-ps__note, .ytc-ps__foot {
+  margin: 0 0 10px; font-size: 12px; line-height: 1.45;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-ps__foot { margin: 10px 0 0; }
+html[dark] .ytc-ps__note, html[dark] .ytc-ps__foot { color: #aaa; }
+.ytc-ps__go {
+  width: 100%; padding: 9px 14px; border: 0; border-radius: 999px; cursor: pointer;
+  font: 500 13px/1 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.08));
+}
+.ytc-ps__go:hover { background: var(--yt-spec-20-percent-layer, rgba(0,0,0,.14)); }
+html[dark] .ytc-ps__go { color: #f1f1f1; background: rgba(255,255,255,.12); }
+html[dark] .ytc-ps__go:hover { background: rgba(255,255,255,.2); }
+.ytc-ps__again {
+  padding: 0; border: 0; background: none; cursor: pointer; font: inherit;
+  color: #065fd4; font-weight: 500;
+}
+.ytc-ps__again:hover { text-decoration: underline; }
+html[dark] .ytc-ps__again { color: #3ea6ff; }
+.ytc-ps__row {
+  display: flex; gap: 10px; align-items: center; padding: 6px; margin: 0 -6px;
+  border-radius: 8px; text-decoration: none; color: inherit;
+}
+.ytc-ps__row:hover { background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.06)); }
+html[dark] .ytc-ps__row:hover { background: rgba(255,255,255,.08); }
+.ytc-ps__thumb {
+  flex: 0 0 auto; width: 40px; aspect-ratio: 9 / 16; border-radius: 6px;
+  object-fit: cover; background: rgba(0,0,0,.1);
+}
+.ytc-ps__text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ytc-ps__title {
+  font: 500 13px/1.3 Roboto, Arial, sans-serif;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden;
+}
+.ytc-ps__meta { font-size: 12px; color: var(--yt-spec-text-secondary, #606060); }
+html[dark] .ytc-ps__meta { color: #aaa; }
+/* Skeleton rows: the result row's own geometry, filled with the shared .ytc-sk shimmer, which
+   already carries its dark and reduced-motion variants. */
+.ytc-ps__skrow { display: flex; gap: 10px; align-items: center; padding: 6px 0; }
+.ytc-ps__skthumb { flex: 0 0 auto; width: 40px; height: 71px; border-radius: 6px; }
+.ytc-ps__sktext { display: flex; flex-direction: column; gap: 7px; flex: 1 1 auto; min-width: 0; }
+.ytc-ps__skl1 { height: 12px; width: 85%; }
+.ytc-ps__skl2 { height: 10px; width: 45%; }
+@media (prefers-reduced-motion: reduce) { .ytc-ps__chev { transition: none; } }
 html[dark] .ytc-cs__cell { background: rgba(255,255,255,.06); }
 html[dark] .ytc-cs__label, html[dark] .ytc-cs__note { color: #aaa; }
 html[dark] .ytc-cs__value { color: #f1f1f1; }
@@ -2876,8 +2960,10 @@ html[dark] .ytc-pkv__del:hover, html[dark] .ytc-pkv__drop:hover { color: #ff8a80
    ytd-shorts, which is the element the reel is centred within, so it tracks the player when
    the window resizes or YouTube's guide opens. content.js measures the gutter every scan and
    hides the panel outright rather than let it cover the video. */
+/* Inside the playing Short's own renderer, so it scrolls with the Short. Left is set inline
+   from the measured gutter; top lines it up with the top of the video. */
 .ytc-sh {
-  position: absolute; left: 16px; top: 16px; z-index: 3;
+  position: absolute; left: 16px; top: 0; z-index: 3;
   display: flex; flex-direction: column; gap: 10px;
   font-family: Roboto, Arial, sans-serif;
   /* Width is set inline from the measured gutter; this only bounds it. */

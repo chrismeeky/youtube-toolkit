@@ -99,7 +99,10 @@ const GAP_MS = 150;
 /* Bump whenever a cached value's MEANING changes, not just its shape. Similar-channel
    results are cached for a week, so six rounds of query fixes were invisible to anyone who
    had already opened the panel once — they kept seeing results built by the old logic. */
-const CACHE_VERSION = 16; // subscriber counts expire by channel size, not on a flat week
+const CACHE_VERSION = 17; // 17: police/confrontation niches added, so every cached niche
+                          // predates labels that did not exist — a channel classified as
+                          // legal commentary would otherwise keep that name for 30 days
+                          // (16: subscriber counts expire by channel size, not a flat week)
                           // (14: analytics sourced from the API, not the videos grid)
 
 const MAX_BYTES = 3000000;      // some channel pages bury the count deep in ytInitialData
@@ -470,6 +473,153 @@ async function getMonetization(key, force) {
   return entry;
 }
 
+/* Whether an upload is a Short. The index service now answers this from the channel's own
+   Shorts playlist, and its answer is final. The length rule is only the fallback for a
+   service that has not been updated: it was the whole test once, and it misfiled every
+   Short longer than a minute — MrBeast's 74-second "Can You Pass This Classroom Quiz?"
+   counted as long form. */
+function isShort(v) {
+  if (typeof v.shorts === 'boolean') return v.shorts;
+  return !!v.seconds && v.seconds <= 60;
+}
+
+/* ------------------------------------------------ Shorts made to promote a video */
+
+/* Which of a channel's Shorts point to one of its long videos through the Short's "Related
+   video" button — the way creators tie a promo Short to the full video.
+
+   Two halves, split by what each side is allowed to do. The index service lists the channel's
+   Shorts from around the video's upload through the API: cheap, exact, and a datacenter can
+   do it. Which of those actually link to the video is only on each Short's own page, and
+   YouTube blocks page fetches from datacenters — so that half runs here, from the reader's
+   browser, through the same queue and breaker as every other page fetch.
+
+   Each Short page is ~1.4MB and the button sits 70-85% of the way in, so this is never run
+   on its own: the watch page asks only when the reader presses the button, and each Short's
+   answer is kept for a month, so a second look at the same channel costs nothing. */
+const PROMO_BEFORE_MS = 2 * 24 * 60 * 60 * 1000;   // teasers can go up a little ahead
+const PROMO_AFTER_MS = 30 * 24 * 60 * 60 * 1000;   // promos cluster in the first days
+const PROMO_MAX_CHECK = 30;                          // pages per request, nearest first
+const SHORT_BYTES = 3000000;
+const TTL_SHORT_LINK = 30 * 24 * 60 * 60 * 1000;   // a Short's link rarely changes
+const TTL_PROMO = 12 * 60 * 60 * 1000;             // new Shorts may link it later
+
+async function linkedVideoFor(shortId) {
+  let res;
+  try {
+    res = await fetch('https://www.youtube.com/shorts/' + shortId + '?hl=en',
+      { credentials: 'include', headers: { 'Accept-Language': 'en' } });
+  } catch (e) {
+    return null;
+  }
+  if (!res.ok || !res.body) return null;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let read = 0;
+  let linked = '';
+  try {
+    while (read < SHORT_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      read += value.length;
+      buf += decoder.decode(value, { stream: true });
+      linked = F.shortLinkedVideo(buf);
+      if (linked) break;
+    }
+  } catch (e) {
+    return null;
+  } finally {
+    try { await reader.cancel(); } catch (e) { /* already closed */ }
+  }
+  /* "Links nothing" is only an answer from a page that was actually a Short. A consent wall
+     or a truncated read carries no ytInitialData, and caching that as "no link" would hide a
+     real promo Short for a month. */
+  if (!linked && buf.indexOf('ytInitialData') < 0) return null;
+  return { linked };
+}
+
+async function getPromoShorts(msg) {
+  const videoId = String(msg.videoId || '');
+  if (!/^[\w-]{11}$/.test(videoId)) return { ok: false, reason: 'no video' };
+  const id = 'promo:' + videoId;
+  const store = await chrome.storage.local.get(id);
+  const hit = store[id];
+  // "Check again" skips the stored answer but not each Short's own: new Shorts get read,
+  // the ones already read do not cost a second page load.
+  if (!msg.force && hit && hit.v === CACHE_VERSION && Date.now() - hit.t <= TTL_PROMO) return hit;
+  // A peek answers from the cache only: opening a watch page must never cost 30 page loads.
+  if (msg.peek) return { ok: false, reason: 'not checked' };
+
+  const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+  if (!base) return { ok: false, reason: 'no index' };
+  const pub = Date.parse(msg.publishedAt || '');
+  if (isNaN(pub)) return { ok: false, reason: 'no publish date' };
+  const iso = (t) => new Date(t).toISOString();
+
+  let out;
+  try {
+    const res = await fetch(base.replace(/\/$/, '') + '/shorts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel: msg.key || '',
+        channelId: msg.channelId || '',
+        since: iso(pub - PROMO_BEFORE_MS),
+        until: iso(Math.min(Date.now(), pub + PROMO_AFTER_MS)),
+        around: iso(pub)
+      })
+    });
+    if (!res.ok) return { ok: false, reason: 'index ' + res.status };
+    out = await res.json();
+  } catch (e) {
+    return { ok: false, reason: 'index unreachable' };
+  }
+  if (!out || !out.ok) return { ok: false, reason: (out && out.reason) || 'no shorts list' };
+
+  // Nearest to the upload first — the service sorts them — and never the video itself.
+  const candidates = (out.shorts || []).filter((s) => s && s.id !== videoId)
+    .slice(0, PROMO_MAX_CHECK);
+  const keys = candidates.map((s) => 'shortlink:' + s.id);
+  const known = keys.length ? await chrome.storage.local.get(keys) : {};
+
+  const LIMITED = {};
+  const results = await Promise.all(candidates.map(async (s) => {
+    const k = 'shortlink:' + s.id;
+    const c = known[k];
+    if (c && c.v === CACHE_VERSION && Date.now() - c.t <= TTL_SHORT_LINK) return c.linked;
+    // Checked when the job runs, not when it is queued: a breaker that trips on the fifth
+    // page must stop the twenty-five behind it.
+    const r = await schedule(() => (breakerOpen() ? Promise.resolve(LIMITED)
+                                                   : linkedVideoFor(s.id)));
+    if (r === LIMITED) return null;
+    noteResult(!!r);
+    if (!r) return null;
+    await chrome.storage.local.set({ [k]: { linked: r.linked, t: Date.now(), v: CACHE_VERSION } });
+    return r.linked;
+  }));
+
+  const checked = results.filter((r) => r !== null).length;
+  const matches = candidates.filter((s, i) => results[i] === videoId)
+    .sort((a, b) => Date.parse(a.publishedAt) - Date.parse(b.publishedAt));
+  const entry = {
+    ok: true,
+    shorts: matches,
+    checked,
+    candidates: candidates.length,
+    total: out.total == null ? candidates.length : out.total,
+    complete: !!out.complete,
+    limited: checked < candidates.length,
+    t: Date.now(),
+    v: CACHE_VERSION
+  };
+  // Only a finished answer is kept. One cut short by rate limiting would otherwise stand for
+  // twelve hours as if the Shorts it never read did not exist.
+  if (!entry.limited) await chrome.storage.local.set({ [id]: entry });
+  return entry;
+}
+
 /* ------------------------------------------------------------ similar channels */
 
 /* Search, not recommendations. YouTube's search results answer a query, so they are topical
@@ -828,8 +978,7 @@ async function getAnalytics(key, force) {
             seconds: v.seconds || null,
             views: v.views == null ? null : v.views,
             publishedAt: v.publishedAt || '',
-            // The API has no shorts flag. Under a minute is the practical test.
-            shorts: !!v.seconds && v.seconds <= 60
+            shorts: isShort(v)
           }));
         }
       }
@@ -840,7 +989,12 @@ async function getAnalytics(key, force) {
     ok: true,
     subs: subs && subs.text ? F.viewsToNumber(subs.text) : null,
     stats: (subs && subs.stats) || null,
-    niche: niche && niche.ok ? { label: niche.niche, rpm: niche.rpm, z: niche.z } : null,
+    /* `also` travels with the rate it helped produce. The panel names one niche beside a
+       number blended from two, which is how a channel came to show $6.08 under a label whose
+       own rate is $3.00 — the service now sends a runner-up only when it actually moved the
+       figure, and dropping it here would put that back. */
+    niche: niche && niche.ok
+      ? { label: niche.niche, rpm: niche.rpm, z: niche.z, also: niche.also || [] } : null,
     videos: videos.slice(0, 60),
     videosOk: videosOk,
     t: Date.now(),
@@ -1280,7 +1434,7 @@ async function channelVideosFor(key, channelId, days) {
         id: v.id, title: v.title || '', seconds: v.seconds || null,
         views: v.views == null ? null : v.views,
         publishedAt: v.publishedAt || '',
-        shorts: !!v.seconds && v.seconds <= 60
+        shorts: isShort(v)
       }));
       videoRuns.set(id, { out, t: Date.now() });
     } else {
@@ -1672,6 +1826,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
      channel page load pays for it; a year of a channel posting thirteen times a day is
      forty-eight quota units, which nobody should spend before being asked. So the panel opens
      on what it already has and this runs only when a range is chosen. */
+  if (msg.type === 'ytc-promo-shorts' && msg.videoId) {
+    getPromoShorts(msg)
+      .then((out) => sendResponse(out))
+      .catch((e) => sendResponse({ ok: false, reason: String(e) }));
+    return true;
+  }
   if (msg.type === 'ytc-channel-videos' && msg.key) {
     channelVideosFor(msg.key, msg.channelId, msg.days)
       .then((out) => sendResponse(out))

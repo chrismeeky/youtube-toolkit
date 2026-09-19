@@ -686,6 +686,21 @@
     }
   }
 
+  /* The video a Short's "Related video" button points to, read from the Short's own page.
+
+     This is how creators tie a promo Short to the full video — not the description, which
+     carried a link on 3 of 250 Shorts sampled across five channels. The button is a
+     reelCarouselButtonViewModel whose watchEndpoint names the video. It is set by the
+     creator: none of @ufc's Shorts carry one, and every one found pointed to a video on the
+     same channel. Returns '' when the Short links nothing (or the page has not got that far).
+     The block sits 70-85% of the way into a ~1.4MB page, inside ytInitialData. */
+  function shortLinkedVideo(html) {
+    const at = String(html || '').indexOf('"reelCarouselButtonViewModel":{');
+    if (at < 0) return '';
+    const m = html.slice(at, at + 4000).match(/"videoId":"([\w-]{11})"/);
+    return m ? m[1] : '';
+  }
+
   function revenueSignals(html) {
     if (!html) return null;
     const desc = descriptionFromHtml(html);
@@ -1458,7 +1473,7 @@
     parseChannelStats, parseChannelKeywords, adSignalFromHtml,
     watchVisible, watchThresholdFor, watchPaused, WATCH_DEFAULT_RATIO, monetizationVerdict, channelPairsFromSearch,
     revenueSignals, revenueSummary, descriptionFromHtml,
-    videoMetrics, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH,
+    videoMetrics, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH, shortLinkedVideo,
     relativeToDate, vphFromRelative,
     topicQueries, channelsFromSearch, rankSimilar,
     safeFilename, formatTranscript, stampMs, decodeEntities, parseJson3, parseTimedTextXml,

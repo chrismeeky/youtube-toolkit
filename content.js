@@ -792,6 +792,8 @@
     try { ensureCompanion(); } catch (e) { /* keep the rest of the scan */ }
     noteChannelSeen();
     renderStatsCard();
+    // Wrapped like its neighbours: an optional panel must never take the scan down with it.
+    try { ensurePromoShorts(); } catch (e) { /* keep the rest of the scan */ }
     const watch = watchCard();
     if (watch) {
       decorate(watch);
@@ -1079,6 +1081,14 @@
                       : '. Matched from what the channel publishes')
                   : 'Assumed rate for a video ' + m.length.label + '. Base band $' + F.RPM_LOW +
                     '-$' + F.RPM_HIGH + ', scaled for length') +
+                /* Named only when the runner-up actually moved the number — the service
+                   sends one only then. Without this the cell reads "RPM (challenges and
+                   stunts)" over a rate averaged with legal commentary, and the label and
+                   the figure quietly contradict each other. */
+                (m.nicheAlso && m.nicheAlso.length
+                  ? '. Averaged with ' + m.nicheAlso.join(' and ') +
+                    ', which fits this channel nearly as closely'
+                  : '') +
                 /* Only mentioned when it actually moved the number. A line explaining a
                    1.02x adjustment is noise; one explaining 1.45x is the difference between
                    this figure and the one the reader saw last month. */
@@ -1147,8 +1157,8 @@
   /* The channel's niche rate, once the index has classified it. Held for the current channel
      only, so a soft navigation to a different channel cannot price this video at the last
      one's rate. */
-  const nicheState = { key: '', rpm: 0, label: '', provisional: false, asked: false,
-                       tries: 0, timer: 0 };
+  const nicheState = { key: '', rpm: 0, label: '', also: [], provisional: false,
+                       asked: false, tries: 0, timer: 0 };
 
   /* The index answers "not indexed yet" on the first visit to a channel — asking is what
      starts the ingest, and it finishes after the answer has already been sent. The background
@@ -1165,6 +1175,7 @@
     nicheState.key = key;
     nicheState.rpm = 0;
     nicheState.label = '';
+    nicheState.also = [];
     nicheState.provisional = false;
     nicheState.asked = false;
     nicheState.tries = 0;
@@ -1178,6 +1189,7 @@
     const again = F.videoMetrics(cardState.stats, Date.now(), nicheState.rpm);
     if (!again) return;
     again.nicheLabel = nicheState.rpm > 0 ? nicheState.label : '';
+    again.nicheAlso = nicheState.rpm > 0 ? nicheState.also : [];
     again.nicheProvisional = nicheState.rpm > 0 && nicheState.provisional;
     cardState.metrics = again;
     renderStatsCard();
@@ -1195,6 +1207,7 @@
       if (!chrome.runtime.lastError && res && res.ok) {
         nicheState.rpm = Number(res.rpm) || 0;
         nicheState.label = res.niche || '';
+        nicheState.also = Array.isArray(res.also) ? res.also : [];
         nicheState.provisional = !res.indexed;
         repriceCard();
         /* An answer from the channel's own vector is final. One guessed from a single video
@@ -1250,6 +1263,7 @@
     // already showing this video's numbers alone rather than removing it.
     if (m) {
       m.nicheLabel = nicheState.rpm > 0 ? nicheState.label : '';
+      m.nicheAlso = nicheState.rpm > 0 ? nicheState.also : [];
       m.nicheProvisional = nicheState.rpm > 0 && nicheState.provisional;
       cardState.metrics = m;
       cardState.stats = stats;       // what a late niche reply reprices
@@ -1257,6 +1271,7 @@
     }
     renderStatsCard();
     syncWatchVph();
+    try { ensurePromoShorts(); } catch (e) { /* see scan() */ }
 
     /* Asked once per channel and cached in the service worker, then retried on backoff for as
        long as the answer is only a "not yet". When it lands the card is drawn again, because
@@ -4087,6 +4102,7 @@
       videoCount: st.videoCount || null, avgViews: st.avgViews || null,
       days, uploadsPerMo, avgLen, rpm,
       niche: res && res.niche ? res.niche.label : '',
+      nicheAlso: res && res.niche && Array.isArray(res.niche.also) ? res.niche.also : [],
       recentViews, recentCount: recent.length, window: win,
       revenue: rpm && recentViews ? (recentViews / 1000) * rpm : null,
       hasShorts: shorts.length > 0,
@@ -4113,11 +4129,17 @@
 
   /* Where this channel's rate falls across the reference table, which is what makes $5.25
      mean something: it is the middle of the range, not a number without a scale. */
-  function rpmMeter(rpm) {
+  function rpmMeter(rpm, also) {
     if (!rpm) return '';
     const pos = Math.max(0, Math.min(1, (rpm - 2) / (20 - 2)));
     const band = rpm >= 11 ? 'High' : rpm >= 5.5 ? 'Medium' : 'Low';
-    return '<span class="ytc-an__sub">' + band + '</span>' +
+    /* The card names one niche above a rate that can be an average of two. Where the second
+       one carried enough weight to move the figure — the service sends it only then — it is
+       named here, because otherwise the label and the number disagree with nobody saying so:
+       $6.08 sat under "Challenges and stunts", whose own rate is $3.00. */
+    const blend = (also && also.length)
+      ? ' · with ' + escapeHtml(also.join(' and ')) : '';
+    return '<span class="ytc-an__sub">' + band + blend + '</span>' +
       '<span class="ytc-an__meter"><i style="width:' + Math.round(pos * 100) + '%"></i></span>';
   }
 
@@ -4265,7 +4287,7 @@
           m.sampled ? 'On videos from ' + m.window.label
                     : 'Could not read this channel\u2019s video list', '\u25B6') +
         anCard('RPM' + (m.niche ? ' \u00b7 ' + escapeHtml(m.niche) : ''),
-          m.rpm ? '$' + m.rpm.toFixed(2) : dash, rpmMeter(m.rpm), '\u25CE') +
+          m.rpm ? '$' + m.rpm.toFixed(2) : dash, rpmMeter(m.rpm, m.nicheAlso), '\u25CE') +
       '</div>' +
 
       (m.sampled ? viewsChartHtml(res) : '') +
@@ -4522,6 +4544,13 @@
     });
   }
 
+  /* The panel belongs to the Short it describes: it is placed inside that Short's own
+     renderer, so it scrolls away with it and the next Short brings its own. Living inside the
+     feed also means the mouse wheel over it reaches YouTube's scroller natively — pinned in
+     ytd-shorts, above the feed but outside it, the wheel over the panel moved nothing.
+
+     The renderer is position:relative and overflow:visible (checked in a live page), so the
+     panel can sit in the space to the video's left without being clipped. */
   function shortsHost() {
     const root = document.querySelector('ytd-shorts');
     if (!root) return null;
@@ -4530,24 +4559,62 @@
       host = document.createElement('div');
       host.className = 'ytc-sh';
     }
-    if (host.parentElement !== root) root.appendChild(host);
-    return host;
+    const reel = settledReel();
+    if (reel && host.parentElement !== reel) {
+      // Moving from one Short to another: what it shows belongs to the one it left.
+      const moving = !!host.parentElement;
+      reel.appendChild(host);
+      shortsLastTop = null;
+      if (moving) markShortsStale();
+    }
+    return host.parentElement ? host : null;
   }
 
-  /* The gutter is not a constant: it grows and shrinks with the window, and with YouTube's
-     guide opening and closing. Measured every scan, and the panel stands down rather than
-     covering the video it is describing — a stats panel over the Short is worse than none. */
+  /* The Short sitting in the middle of the screen — or none, mid-scroll. The panel only moves
+     into a Short that has settled; moving it while two are sliding past would make it jump
+     from one to the other halfway through the scroll. */
+  function settledReel() {
+    const mid = window.innerHeight / 2;
+    for (const r of document.querySelectorAll('ytd-reel-video-renderer')) {
+      const b = r.getBoundingClientRect();
+      if (b.height > 0 && Math.abs((b.top + b.height / 2) - mid) < 40) return r;
+    }
+    return null;
+  }
+
   const SHORTS_MIN_ROOM = 232;
   const SHORTS_MAX_WIDTH = 300;
 
+  /* Where the video itself starts — not the renderer around it.
+
+     YouTube's newer Shorts layout moves the channel and title out of the video into the space
+     to its left, inside the same renderer. Measured from the renderer, that space read as
+     zero, so the panel drew and then hid itself a beat later. The video's own box is the edge
+     that matters; whichever candidate sits furthest right is it, because anything YouTube
+     adds goes beside the video, not inside. */
+  function shortsVideoLeft(reel) {
+    let left = reel.getBoundingClientRect().left;
+    for (const sel of ['#short-video-container', '.player-wrapper', 'video']) {
+      const el = reel.querySelector(sel);
+      if (!el) continue;
+      const b = el.getBoundingClientRect();
+      if (b.width >= 150) left = Math.max(left, b.left);
+    }
+    return left;
+  }
+
   function fitShortsPanel(host) {
     const root = document.querySelector('ytd-shorts');
-    const reel = activeReel();
-    if (!root || !reel) return false;
-    const gutter = reel.getBoundingClientRect().left - root.getBoundingClientRect().left;
-    const room = gutter - 32;                       // 16px of margin either side
+    const reel = host.parentElement;
+    if (!root || !reel || reel.tagName !== 'YTD-REEL-VIDEO-RENDERER') return false;
+    const gutter = root.getBoundingClientRect().left;
+    const reelLeft = reel.getBoundingClientRect().left;
+    const room = shortsVideoLeft(reel) - gutter - 32;   // 16px of margin either side
     if (!(room >= SHORTS_MIN_ROOM)) { host.hidden = true; return false; }
     host.hidden = false;
+    // Positioned against the Short but measured from the page's gutter: in the older layout
+    // the space to the video's left lies outside the renderer altogether.
+    host.style.left = Math.round(gutter + 16 - reelLeft) + 'px';
     host.style.width = Math.min(SHORTS_MAX_WIDTH, Math.floor(room)) + 'px';
     return true;
   }
@@ -4587,8 +4654,76 @@
       escapeHtml(name) + '</a>';
   }
 
+  /* The Short the panel sits in can start showing a different video before anything else says
+     so. YouTube recycles its Short renderers: measured in a live page, the renderer holding the
+     panel scrolled up out of view, jumped one Short's height to below the screen, and slid back
+     in carrying the NEXT Short — with the panel still showing the previous channel. The
+     address only caught up 340ms later and the panel reset after that, so the reader saw the
+     old channel arrive, then a skeleton, then the new one: a panel that seemed to load twice.
+
+     So the panel is blanked the moment its renderer is repurposed — a jump of more than half a
+     screen between two scroll events, or the panel moving into a different renderer — and it
+     arrives on the new Short as a skeleton that fills in once. */
+  const SHORTS_SAME_AGAIN_MS = 1500;
+  let shortsStale = false;
+  let shortsStaleAt = 0;
+  let shortsLastTop = null;
+
+  function markShortsStale() {
+    shortsStaleAt = Date.now();
+    if (!shortsStale) {
+      shortsStale = true;
+      renderShortsPanel();
+    }
+    /* Scrolling down and back up returns to the same Short without the address changing, so
+       nothing else would ever clear the mark. Look again once that wait has run out. */
+    setTimeout(() => { try { ensureShortsPanel(); } catch (e) { /* next scan will */ } },
+      SHORTS_SAME_AGAIN_MS + 50);
+  }
+
+  function checkShortsJump() {
+    const host = document.querySelector('.ytc-sh');
+    const reel = host && host.parentElement;
+    if (!reel) return;
+    const top = reel.getBoundingClientRect().top;
+    if (shortsLastTop !== null && Math.abs(top - shortsLastTop) > window.innerHeight * 0.5) {
+      markShortsStale();
+    }
+    shortsLastTop = top;
+  }
+
+  /* Checked every frame while the feed is moving, not only on scroll events. The recycle is
+     YouTube moving the renderer, not a scroll, so no scroll event marks it — checking on the
+     next one caught it a frame late, and that frame painted the old channel entering at the
+     bottom of the screen. A frame callback runs before the paint, so the blank gets there
+     first. The loop stops once the feed has been still for 300ms. */
+  let shortsScrollAt = 0;
+  let shortsRaf = 0;
+
+  function watchShortsScroll() {
+    const scroller = document.querySelector('ytd-shorts #shorts-container');
+    if (!scroller || scroller.dataset.ytcWatched) return;
+    scroller.dataset.ytcWatched = '1';
+    scroller.addEventListener('scroll', () => {
+      shortsScrollAt = performance.now();
+      checkShortsJump();
+      if (shortsRaf) return;
+      const frame = () => {
+        checkShortsJump();
+        shortsRaf = performance.now() - shortsScrollAt < 300 ? requestAnimationFrame(frame) : 0;
+      };
+      shortsRaf = requestAnimationFrame(frame);
+    }, { passive: true });
+  }
+
   function shortsPanelHtml() {
-    const s = shortsState;
+    // Blank while stale: whoever the renderer now shows, it is not the Short in shortsState.
+    const s = shortsStale
+      ? Object.assign({}, shortsState, {
+          video: null, channel: null, who: null, key: '', channelId: '',
+          pending: { video: true, channel: true }
+        })
+      : shortsState;
     const v = s.video || {};
     const c = s.channel || {};
     const waitV = s.pending.video;
@@ -4722,9 +4857,19 @@
     readShortsOpen();
     if (!fitShortsPanel(host)) return;      // no room; nothing to draw into
 
-    if (shortsState.videoId !== id) {
+    watchShortsScroll();
+
+    const changed = shortsState.videoId !== id;
+    if (changed) {
       resetShorts(id);
       loadShorts(id);
+    }
+    /* A new address means the new Short's own state, loading from scratch, so the blank can
+       go. The same address after the wait means the reader came back to the Short they were
+       on, and its figures are still good. */
+    if (shortsStale && (changed || (settledReel() === host.parentElement &&
+        Date.now() - shortsStaleAt > SHORTS_SAME_AGAIN_MS))) {
+      shortsStale = false;
     }
 
     /* The overlay hydrates after the reel is mounted, so the name and avatar are regularly
@@ -6203,6 +6348,208 @@
         ownerTimer = setTimeout(flushOwnerLookups, 4000);
       }
     });
+  }
+
+  /* ----------------------------------------------- Shorts promoting this video */
+
+  /* Under the stats card: the Shorts this channel tied to the video with YouTube's "Related
+     video" button — which of the promo Shorts actually carried the video, at a glance.
+
+     Asked for, never automatic. Finding them means reading each nearby Short's page, and at
+     ~1.4MB a page that is too much to spend on every video someone opens. Opening a watch
+     page only peeks at what is already known; the button does the reading, and the answer
+     is kept, so the next visit shows it straight away. */
+  let promoState = { videoId: '', status: 'idle', data: null, peeked: false, open: false };
+  /* Set when the index service answers 404 — a deployment older than this panel. The panel
+     then stays away for the rest of the session instead of offering a button that can only
+     ever say "couldn't check": the extension and the service ship separately, and either
+     may land first. */
+  let promoUnsupported = false;
+
+  function promoReady() {
+    const st = cardState.stats;
+    return !!(/^\/watch/.test(location.pathname) && settings.showStats && cardState.videoId &&
+      st && !st.approx && st.publishDate && (st.channelHandle || st.channelId) &&
+      // A Short opened on a watch URL has no promo Shorts of its own to find.
+      !st.shortsEligible);
+  }
+
+  function ensurePromoShorts() {
+    const card = document.querySelector('.ytc-cs');
+    let box = document.querySelector('.ytc-ps');
+    const vid = cardState.videoId;
+    // Unsupported hides the panel from the next video on; the one that found out keeps its
+    // explanation on screen.
+    const hidden = promoUnsupported && promoState.videoId !== vid;
+    if (hidden || !promoReady() || !card || !card.parentElement) {
+      if (box) box.remove();
+      return;
+    }
+    if (promoState.videoId !== vid) {
+      promoState = { videoId: vid, status: 'idle', data: null, peeked: false, open: false };
+    }
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'ytc-ps';
+      box.addEventListener('click', (e) => {
+        const b = e.target.closest && e.target.closest('[data-ps]');
+        if (!b) return;
+        if (b.dataset.ps === 'toggle') {
+          promoState.open = !promoState.open;
+          // Opening is the request: the check starts the moment there is room to show it.
+          if (promoState.open && promoState.status === 'idle') askPromo(false, false);
+          else paintPromo();
+          return;
+        }
+        askPromo(false, b.dataset.ps === 'refresh');
+      });
+    }
+    if (box.previousElementSibling !== card) card.parentElement.insertBefore(box, card.nextSibling);
+    if (!promoState.peeked) {
+      promoState.peeked = true;
+      askPromo(true, false);
+    }
+    paintPromo(box);
+  }
+
+  function askPromo(peek, force) {
+    const vid = cardState.videoId;
+    const st = cardState.stats;
+    if (!vid || !st) return;
+    if (!peek) {
+      promoState.status = 'loading';
+      paintPromo();
+    }
+    sendMessage({
+      type: 'ytc-promo-shorts', videoId: vid, peek, force,
+      key: st.channelHandle || '', channelId: st.channelId || '', publishedAt: st.publishDate
+    }, (res) => {
+      if (chrome.runtime.lastError) res = null;
+      if (promoState.videoId !== vid) return;           // moved on to another video
+      /* Said once, on the click that found it, then hidden on every later video. Removing the
+         panel there and then made the failure look like a bug: the section simply vanished
+         under the reader's pointer with nothing to say why. */
+      if (!peek && res && res.reason === 'index 404') {
+        promoUnsupported = true;
+        promoState.status = 'error';
+        promoState.data = { reason: 'this needs an updated index service' };
+        paintPromo();
+        return;
+      }
+      if (res && res.ok) {
+        promoState.status = 'done';
+        promoState.data = res;
+      } else if (!peek) {
+        promoState.status = 'error';
+        promoState.data = res || null;
+      }
+      paintPromo();
+    });
+  }
+
+  /* "2 days after", "5 hours after", "same hour" — how quickly the promo followed. */
+  function promoTiming(shortAt, videoAt) {
+    const diff = Date.parse(shortAt) - Date.parse(videoAt);
+    if (isNaN(diff)) return '';
+    const when = diff < 0 ? ' before' : ' after';
+    const hours = Math.abs(diff) / 3600000;
+    if (hours < 1) return 'within the hour';
+    if (hours < 24) {
+      const h = Math.round(hours);
+      return h + (h === 1 ? ' hour' : ' hours') + when;
+    }
+    const d = Math.round(hours / 24);
+    return d + (d === 1 ? ' day' : ' days') + when;
+  }
+
+  function promoRow(s, videoAt) {
+    const id = escapeHtml(s.id);
+    const title = escapeHtml(s.title || 'Untitled Short');
+    const meta = [s.views != null ? F.compact(s.views) + ' views' : '',
+                  promoTiming(s.publishedAt, videoAt)].filter(Boolean).join(' · ');
+    return '<a class="ytc-ps__row" href="https://www.youtube.com/shorts/' + id + '" title="' +
+        title + '">' +
+      // hqdefault is 4:3 with the vertical frame in its middle; cropping to 9:16 keeps
+      // exactly the frame.
+      '<img class="ytc-ps__thumb" src="https://i.ytimg.com/vi/' + id + '/hqdefault.jpg" ' +
+        'alt="" loading="lazy">' +
+      '<span class="ytc-ps__text">' +
+        '<span class="ytc-ps__title">' + title + '</span>' +
+        '<span class="ytc-ps__meta">' + escapeHtml(meta) + '</span>' +
+      '</span>' +
+    '</a>';
+  }
+
+  function paintPromo(box) {
+    box = box || document.querySelector('.ytc-ps');
+    if (!box) return;
+    const s = promoState;
+    const d = s.data || {};
+    const found = s.status === 'done' ? (d.shorts || []) : [];
+    const videoAt = (cardState.stats && cardState.stats.publishDate) || '';
+    let body;
+
+    if (s.status === 'loading' || s.status === 'idle') {
+      // Shaped like the rows that replace it, so the answer lands without the panel jumping.
+      const sk = '<div class="ytc-ps__skrow">' +
+          '<span class="ytc-sk ytc-ps__skthumb"></span>' +
+          '<span class="ytc-ps__sktext"><span class="ytc-sk ytc-ps__skl1"></span>' +
+            '<span class="ytc-sk ytc-ps__skl2"></span></span>' +
+        '</div>';
+      body = '<div aria-busy="true" aria-label="Checking this channel’s Shorts">' +
+        sk + sk + sk + '</div>';
+    } else if (s.status === 'error') {
+      body = '<p class="ytc-ps__note">Couldn’t check right now' +
+          (d.reason ? ' (' + escapeHtml(d.reason) + ')' : '') + '.</p>' +
+        '<button type="button" class="ytc-ps__go" data-ps="find">Try again</button>';
+    } else if (s.status === 'done') {
+      const n = d.checked || 0;
+      const notes = [];
+      if (d.limited) {
+        notes.push('YouTube slowed the check down after ' + n + ' of ' + (d.candidates || n) +
+          ' Shorts, so some were skipped.');
+      }
+      /* The Shorts list is walked newest first with a cap, so for an old video on a prolific
+         channel the window may not have been reached in full. Say so rather than presenting
+         a partial search as a complete one. */
+      if (!d.complete) notes.push('Only the channel’s most recent Shorts could be listed.');
+      // A prolific channel posts more Shorts in a month than are worth reading; say which ones.
+      const capped = (d.total || 0) > (d.candidates || 0);
+      const lead = !n ? ''
+        : capped
+          ? 'Checked the ' + n + ' Shorts posted nearest the upload, of ' + d.total +
+            ' in the month around it. '
+          : 'Checked ' + n + ' Short' + (n === 1 ? '' : 's') + ' from 2 days before to 30 ' +
+            'days after the upload. ';
+      const summary = found.length
+        ? found.map((x) => promoRow(x, videoAt)).join('')
+        : '<p class="ytc-ps__note">' + (n
+            ? 'None of the ' + n + ' Shorts this channel posted around the upload link to ' +
+              'this video.'
+            : 'This channel posted no Shorts in the month around this video.') + '</p>';
+      body = summary +
+        '<p class="ytc-ps__foot">' + lead + escapeHtml(notes.join(' ')) +
+          ' <button type="button" class="ytc-ps__again" data-ps="refresh">Check again</button>' +
+        '</p>';
+    }
+
+    /* One row until opened. The panel sits in the sidebar above YouTube's own recommendations
+       and was costing them a card's worth of height to offer a single button. The count shows
+       on the closed row whenever an earlier check already answered. */
+    const html =
+      '<button type="button" class="ytc-ps__head" data-ps="toggle" aria-expanded="' +
+          (s.open ? 'true' : 'false') + '" title="Shorts this channel linked to this video ' +
+          'with YouTube’s “Related video” button">' +
+        '<span class="ytc-ps__label">Shorts promoting this video</span>' +
+        (s.status === 'done' ? '<span class="ytc-ps__n">' + found.length + '</span>' : '') +
+        '<svg class="ytc-ps__chev" viewBox="0 0 16 16" aria-hidden="true">' +
+          '<path d="m3.5 6 4.5 4.5L12.5 6"/></svg>' +
+      '</button>' +
+      (s.open ? '<div class="ytc-ps__body">' + body + '</div>' : '');
+    if (box.dataset.sig !== html) {         // scan() runs on every mutation
+      box.dataset.sig = html;
+      box.innerHTML = html;
+    }
   }
 
   /* The watch page's own figure, when the player has supplied it.
@@ -10760,7 +11107,7 @@
         { k: 'showShorts', label: 'Stats panel beside Shorts',
           note: 'Shorts have no sidebar, so the figures go in the gutter' },
         { k: 'showPreview', label: 'Channel preview on hover',
-          note: 'Recent uploads without leaving the page' }
+          note: 'Recent uploads without leaving the page'}
       ]
     },
     {

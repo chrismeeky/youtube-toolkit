@@ -41,6 +41,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict, defaultdict, deque
@@ -306,6 +307,24 @@ NICHES = [
     ("Finance and economy news", 12.0, "economy, markets, inflation, recession, business news, economic analysis"),
     ("Legal commentary", 10.0, "legal analysis, court cases, trials, lawyers reacting, verdicts"),
     ("True crime", 6.0, "true crime, murder cases, criminal investigations, disappearances, cold cases"),
+    # Added after measuring: of 63 indexed channels whose own text says "bodycam", 46% were
+    # filed under True crime and 40% under Legal commentary, none refused, at a median z of
+    # 3.61 — higher than the general sample's 3.37. A missing label does not make the
+    # classifier hesitant, it makes it confidently wrong, because z asks how far the winner
+    # stands above the other hundred labels and a police channel genuinely is nothing like
+    # cooking. The two it was split between price at $6 and $10, so the same channel's
+    # earnings estimate moved 67% on which wrong label happened to win.
+    #
+    # The wording leans on policing rather than on the word "bodycam" alone: Bodycam is also
+    # a first-person shooter, and channels reviewing it must keep landing on gaming.
+    ("Police bodycam and arrests", 5.5, "police bodycam footage, dashcam, arrests, traffic stops, police encounters, officers, law enforcement, deputies, state trooper"),
+    # $4, not the $3 this was first given. The two labels above are one family — footage of
+    # an incident, narrated — and @thebodycamhubyt tied between them, which the new spread
+    # test then refused because $5.5 and $3 disagree by 59%. Two adjacent formats should not
+    # disagree by more than the evidence behind either number, and there is no evidence
+    # behind a 59% gap: both are advertiser-cautious real-world footage. Still a guess, and
+    # one the labelled set can revisit.
+    ("Public confrontation and freakouts", 4.0, "public freakouts, confrontations caught on camera, arguments in public, road rage, entitled people, karens, street incidents"),
     ("Mystery and unexplained", 4.5, "mysteries, unexplained, conspiracy, lost places, strange events"),
     ("Paranormal and horror", 4.0, "paranormal, ghosts, haunted, horror stories, scary, supernatural"),
     ("Celebrity and gossip", 3.0, "celebrities, gossip, drama, influencers, scandals, pop culture"),
@@ -390,6 +409,18 @@ def _cosine(a, b):
 NICHE_MIN_Z = 2.0
 NICHE_MIN_COS = 0.25
 
+# How close two niches have to be to count as tied, and how far their rates may disagree
+# before a tie is refused rather than blended. See the test in niche_for.
+#
+# Tunable from the environment because the right values are a measurement, not a principle:
+# raise the margin and more channels are called ties, raise the spread and fewer ties are
+# refused. niche_eval.py reports what each setting costs in refusals.
+NICHE_TIE_MARGIN = float(os.environ.get("NICHE_TIE_MARGIN") or 0.015)
+NICHE_TIE_SPREAD = float(os.environ.get("NICHE_TIE_SPREAD") or 0.5)
+
+# The share of the blended rate a runner-up must carry before it is worth naming.
+NICHE_BLEND_MIN = 0.05
+
 
 def niche_for(vector, top=2):
     """The closest niches, and an RPM blended between them by how close each one is.
@@ -422,9 +453,36 @@ def niche_for(vector, top=2):
     if best < NICHE_MIN_COS or zscore < NICHE_MIN_Z:
         return {"niche": None, "confidence": round(best, 3), "z": round(zscore, 2),
                 "reason": "no niche fits this channel well enough"}
+
+    # Several niches fitting equally well is not one niche fitting well, and z cannot tell
+    # the two apart. On @bodycamlockup the top three sat within 0.0056 of each other —
+    # Challenges and stunts, Legal commentary, True crime — and z was 3.07, because all
+    # three stand far above the other hundred. The winner took it by 0.0048, and the blend
+    # then reported $6.08: a rate belonging to neither of the labels it was drawn from,
+    # printed under the name of the one that won the coin toss.
+    #
+    # Closeness alone is not the fault. Blending exists for it, and where the tied labels
+    # agree about what a channel earns — aviation and documentary, $5 and $6 — averaging
+    # them is the honest answer. What cannot be defended is averaging $3 and $10 and
+    # publishing the result as a fact about a channel. So the test is closeness AND
+    # disagreement about the rate.
+    tied = [n for sc, n in every if best - sc <= NICHE_TIE_MARGIN]
+    if len(tied) > 1:
+        rates = [n[1] for n in tied]
+        spread = (max(rates) - min(rates)) / (sum(rates) / len(rates))
+        if spread > NICHE_TIE_SPREAD:
+            return {"niche": None, "confidence": round(best, 3), "z": round(zscore, 2),
+                    "tied": [n[0] for n in tied],
+                    "reason": "several niches fit this channel equally well and disagree "
+                              "about what it earns"}
+    share = [w / total for w in weights]
     return {
         "niche": scored[0][1][0],
-        "also": [n[0] for _, n in scored[1:]],
+        # Only a runner-up that actually moved the rate. The softmax leaves a distant second
+        # at a fraction of a percent, and naming it as part of a blend it did not affect
+        # would be its own small untruth — the caller shows this to the reader as the reason
+        # the number is what it is.
+        "also": [n[0] for (_, n), w in zip(scored[1:], share[1:]) if w >= NICHE_BLEND_MIN],
         "confidence": round(scored[0][0], 3),
         "z": round(zscore, 2),
         "rpm": round(rpm, 2)
@@ -832,7 +890,12 @@ def fetch_channel_records(ids):
         batch = [c for c in ids[i:i + 50] if re.match(r"^UC[\w-]{20,24}$", c or "")]
         if not batch:
             continue
-        url = ("%s/channels?part=snippet,statistics,contentDetails&id=%s&maxResults=50&key=%s"
+        # brandingSettings comes along for nothing: channels.list bills one quota unit for
+        # the call, not per part, and seed.py has always asked for it. Without it every
+        # channel discovered through user activity arrived with no keywords at all, which is
+        # why only 12% of the index has them — two grades of row in the same table again.
+        url = ("%s/channels?part=snippet,statistics,contentDetails,brandingSettings"
+               "&id=%s&maxResults=50&key=%s"
                % (YT_API, ",".join(batch), YT_KEY))
         try:
             data = _get_json(url)
@@ -1341,6 +1404,130 @@ VIDEO_PAGE = 50
 VIDEO_MAX_PAGES = _int("VIDEO_MAX_PAGES", 24)      # 1,200 videos, 48 units, worst case
 
 
+# ─── Shorts ──────────────────────────────────────────────────────────────────
+#
+# Every channel has a second uploads playlist holding only its Shorts: the channel id with
+# "UC" swapped for "UUSH". It is what makes "is this a Short?" a fact rather than a guess.
+# The old test was "sixty seconds or less", which stopped being the rule when YouTube let
+# Shorts run to three minutes — a 90-second Short was counted as long form, and a 50-second
+# long-form video as a Short. Checked against @ufc, @MrBeast, @ArielHelwani and
+# @veritasium: the playlist lists their Shorts exactly, and a channel that has never posted
+# one answers 404, which is an answer ("none"), not a failure.
+
+SHORTS_MAX_PAGES = _int("SHORTS_MAX_PAGES", 10)    # 500 Shorts, 10 units, worst case
+
+
+def _channel_id_for(handle, channel_id=None):
+    """A UC… id from whichever of the two the caller had."""
+    if channel_id and re.match(r"^UC[\w-]{20,24}$", channel_id):
+        return channel_id
+    if not handle:
+        return None
+    if handle.startswith("channel/"):
+        tail = handle[len("channel/"):]
+        return tail if re.match(r"^UC[\w-]{20,24}$", tail) else None
+    row = indexed_channel(handle)
+    cid = row.get("id") if row else None
+    if not cid:
+        found = resolve_handles([handle])
+        cid = found.get(handle if handle.startswith("@") else "@" + handle)
+    return cid
+
+
+def shorts_between(cid, since=None, until=None, max_pages=SHORTS_MAX_PAGES):
+    """The channel's Shorts published in [since, until], newest first.
+
+    Returns (shorts, complete, covered):
+      complete  True  — every Short in the range is listed
+                False — the walk stopped early (page cap, or a later page failed); only
+                        Shorts published at or after `covered` are known for certain
+                None  — nothing could be read at all
+    The playlist has no date filter, so the walk starts at the newest Short and pages back.
+    It stops at the first Short older than `since`, which makes a recent range cheap and an
+    old one on a prolific channel expensive — hence the cap, and hence `covered`.
+    """
+    if not (cid and cid.startswith("UC") and YT_KEY):
+        return [], None, None
+    playlist = "UUSH" + cid[2:]
+    out, token, pages, covered = [], None, 0, None
+    while pages < max_pages:
+        url = ("%s/playlistItems?part=snippet&playlistId=%s&maxResults=%d&key=%s%s"
+               % (YT_API, playlist, VIDEO_PAGE, YT_KEY,
+                  ("&pageToken=" + token) if token else ""))
+        try:
+            listing = _get_json(url)
+        except urllib.error.HTTPError as e:
+            if e.code == 404 and not pages:
+                return [], True, None           # never posted a Short
+            return out, (False if pages else None), covered
+        except Exception as e:
+            print("  shorts_between failed: %s: %s" % (type(e).__name__, e), flush=True)
+            return out, (False if pages else None), covered
+        pages += 1
+        past = False
+        for item in listing.get("items") or []:
+            snip = item.get("snippet") or {}
+            vid = ((snip.get("resourceId") or {}).get("videoId") or "").strip()
+            when = snip.get("publishedAt") or ""
+            if not vid:
+                continue
+            if when:
+                covered = when                   # newest first: only ever moves back
+            if since and when and when < since:
+                past = True
+                break
+            if until and when and when > until:
+                continue
+            out.append({"id": vid, "title": snip.get("title") or "", "publishedAt": when})
+        token = listing.get("nextPageToken")
+        if past or not token:
+            return out, True, covered
+    return out, False, covered
+
+
+def _iso_to_dt(s):
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def shorts_near(cid, since, until, around, limit=VIDEO_PAGE):
+    """Shorts in a window, nearest to `around` first, with view counts.
+
+    For finding the Shorts made to promote one video: they cluster just after it goes up, so
+    when the window holds more than the caller can check, the nearest are the ones worth
+    checking. One more quota unit for the views of the ones returned.
+    """
+    items, complete, _ = shorts_between(cid, since, until)
+    if complete is None:
+        return {"ok": False, "reason": "could not read this channel's Shorts"}
+    centre = _iso_to_dt(around)
+    if centre:
+        def distance(s):
+            t = _iso_to_dt(s.get("publishedAt"))
+            return abs((t - centre).total_seconds()) if t else float("inf")
+        items.sort(key=distance)
+    total = len(items)
+    items = items[:limit]
+    if items:
+        url = ("%s/videos?part=statistics&id=%s&maxResults=%d&key=%s"
+               % (YT_API, ",".join(s["id"] for s in items), VIDEO_PAGE, YT_KEY))
+        try:
+            detail = _get_json(url)
+            views = {}
+            for it in detail.get("items") or []:
+                try:
+                    views[it.get("id")] = int((it.get("statistics") or {}).get("viewCount"))
+                except (TypeError, ValueError):
+                    pass
+            for s in items:
+                s["views"] = views.get(s["id"])
+        except Exception as e:
+            print("  shorts_near views failed: %s: %s" % (type(e).__name__, e), flush=True)
+    return {"ok": True, "shorts": items, "total": total, "complete": complete}
+
+
 def channel_videos(handle, channel_id=None, want=50, days=None):
     """A channel's recent uploads with durations and view counts, through the API.
 
@@ -1446,6 +1633,24 @@ def channel_videos(handle, channel_id=None, want=50, days=None):
                 row["views"] = int(stats.get("viewCount"))
             except (TypeError, ValueError):
                 row["views"] = None
+
+    # Which of these are Shorts, from the channel's Shorts playlist rather than from length.
+    # Walked back only as far as the oldest video above, so it costs no more pages than the
+    # uploads walk did. A video the walk did not reach is left without a flag — the extension
+    # then falls back to its own guess, which is better than a confident wrong answer.
+    oldest = min((meta[v]["publishedAt"] for v in order
+                  if v in meta and meta[v].get("publishedAt")), default=None)
+    found, complete, covered = shorts_between(cid, since=oldest, max_pages=VIDEO_MAX_PAGES)
+    if complete is not None:
+        short_ids = {s["id"] for s in found}
+        for v in order:
+            row = meta.get(v)
+            if not row:
+                continue
+            if v in short_ids:
+                row["shorts"] = True
+            elif complete or (covered and (row.get("publishedAt") or "") >= covered):
+                row["shorts"] = False
 
     return {"ok": True, "videos": [meta[v] for v in order if v in meta],
             "truncated": truncated, "pages": pages}
@@ -1894,6 +2099,14 @@ def ingest_channels(pairs):
             "last_upload_at": newest,
             "uploads_per_mo": uploads_per_month(len(titles), oldest, newest),
             "embedding": vec,
+            # Stored, not yet embedded. The channel's own keywords are the most explicit
+            # statement of subject it ever makes, but only 12% of the index carries them —
+            # every row that arrived through this path had none until brandingSettings was
+            # asked for above. Feeding a signal into the vector that most channels lack
+            # would classify the two groups by different rules; collect first, measure on
+            # the labelled set, wire it in when there is a number to justify it.
+            "keywords": ((((ch.get("brandingSettings") or {}).get("channel") or {})
+                          .get("keywords") or "").strip()[:2000] or None),
             "embed_source": text[:500],
             # enriched_at stays null: a channel with no description is thereby queued for the
             # transcript pass, which /enrich drains. Ingest itself never fetches captions —
@@ -2527,6 +2740,28 @@ class Handler(BaseHTTPRequestHandler):
                 handle, str(body.get("channelId") or "") or None,
                 want=_pos("want", ceiling if body.get("days") else 50, ceiling),
                 days=(_pos("days", 0, 3650) if body.get("days") else None)))
+            return
+
+        if path == "/shorts":
+            # A channel's Shorts around one date — the candidates for "which Shorts were made
+            # to promote this video". Which of them actually link to it is read from each
+            # Short's own page, and that happens in the browser: YouTube blocks page fetches
+            # from datacenter addresses like this one.
+            if not YT_KEY:
+                self._send(200, {"ok": False, "reason": "no youtube key"})
+                return
+            handle = str(body.get("channel") or "").strip()
+            if handle and not handle.startswith("@") and "/" not in handle:
+                handle = "@" + handle
+            cid = _channel_id_for(handle, str(body.get("channelId") or "").strip() or None)
+            if not cid:
+                self._send(200, {"ok": False, "reason": "unknown channel"})
+                return
+            stamp = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+            def _when(name):
+                v = str(body.get(name) or "").strip()
+                return v if stamp.match(v) else None
+            self._send(200, shorts_near(cid, _when("since"), _when("until"), _when("around")))
             return
 
         if path == "/niche":
