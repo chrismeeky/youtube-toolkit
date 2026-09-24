@@ -790,6 +790,9 @@
        kind: it would leave no route to recovery. */
     try { ensureSettingsButton(); } catch (e) { /* keep the rest of the scan */ }
     try { ensureCompanion(); } catch (e) { /* keep the rest of the scan */ }
+    /* Wrapped like its neighbours. This one reaches into YouTube's comment markup, which
+       changes shape more often than anything else on the page. */
+    try { scanComments(); } catch (e) { /* keep the rest of the scan */ }
     noteChannelSeen();
     renderStatsCard();
     // Wrapped like its neighbours: an optional panel must never take the scan down with it.
@@ -6847,6 +6850,11 @@
     document.documentElement.classList.toggle('ytc-hide-transcript',
       !(TRANSCRIPT_UI && settings.showTranscript));
     refreshBadges();
+    /* Both directions, immediately: switched off, the pills have to leave the comments
+       rather than linger until the next navigation; switched on, they should appear without
+       one. Wrapped because applySettings also runs from the storage listener, where a throw
+       would leave the toggles half applied. */
+    try { scanComments(); } catch (e) { /* keep the rest of the settings applied */ }
   }
 
   chrome.storage.sync.get(null, (saved) => {
@@ -11098,6 +11106,8 @@
       items: [
         { k: 'showSubs', label: 'Subscriber count on thumbnails',
           note: 'How big a channel is, without opening it' },
+        { k: 'showCommentSubs', label: 'Subscriber count on commenters',
+          note: 'Who is talking under a video — a fetch per channel, so it is off until you ask' },
         { k: 'showRatio', label: 'Outlier scores',
           note: 'Views against the channel’s own average, and against its subscribers' },
         { k: 'showStats', label: 'Views per hour, engagement and earnings',
@@ -13843,6 +13853,190 @@
   }, true);
   window.addEventListener('yt-navigate-finish', pvClose);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && pvEl) pvClose(); });
+
+  /* ------------------------------------------- subscriber count on commenters */
+
+  /* Who is talking under a video is a research question, and YouTube answers it with a
+     handle and nothing else. A channel in your own niche replying under a competitor's
+     video is worth seeing; so is the difference between a viewer and a 200K creator making
+     the same complaint.
+
+     Everything below is shaped by what this costs. One watch page can show fifty different
+     channels, and every unfamiliar one is a channel-page fetch through a queue that runs two
+     at a time — so the badges resolve only what is on screen, ask for the light lookup (the
+     count alone, skipping the /about page the outlier denominators need), keep at most a
+     couple in flight so the thumbnail badges keep their turn, and stop after a per-page cap.
+     Resolved eagerly, this is exactly the burst that trips YouTube's "unusual traffic"
+     interstitial — which would take the rest of the extension's lookups down with it. That
+     is also why the setting is off by default. */
+  const COMMENT_SELECTOR = 'ytd-comment-view-model, ytd-comment-renderer';
+  const COMMENT_MARGIN = 400;       // px beyond the viewport that still counts as on screen
+  const COMMENT_MAX_ACTIVE = 2;     // lookups in flight at once
+  const COMMENT_MAX_LOOKUPS = 60;   // new channels resolved per page, then we stop asking
+  const COMMENT_SCROLL_MS = 300;
+  const COMMENT_RETRY_MS = 30000;   // how long a failure stands before it is worth re-asking
+
+  const commentSubs = new Map();    // channel key -> 'pending' | { text, reason }
+  const commentQueue = [];
+  const commentQueued = new Set();
+  let commentActive = 0;
+  let commentBudget = COMMENT_MAX_LOOKUPS;
+  let commentPage = '';
+  let commentScrollTimer = null;
+
+  /* The author link, in either generation of the comment markup. Parsed rather than pattern
+     matched, for the same reason findChannelKey does it: a commenter is linked by handle on
+     new comments and by /channel/UC… on old ones, and both have to land on the same key or
+     the same person gets looked up and cached twice. */
+  function commentAuthorKey(el) {
+    /* Only the author line, never the comment body. People link to channels in what they
+       write, and the first channel link inside a comment is regularly somebody else's — so
+       widening this selector would put a stranger's subscriber count under the name of
+       whoever mentioned them. The timestamp link lives here too, but it points at /watch and
+       yields no key, so walking the line in order is safe. */
+    const head = el.querySelector('#header-author') || el.querySelector('#author-text');
+    if (!head) return '';
+    const links = head.matches('a[href]') ? [head] : head.querySelectorAll('a[href]');
+    for (const a of links) {
+      const href = a.getAttribute('href');
+      if (!href || href[0] === '#') continue;
+      let path;
+      try { path = new URL(href, location.origin).pathname; } catch (e) { continue; }
+      const key = keyFromPath(path);
+      if (key) return key;
+    }
+    return '';
+  }
+
+  function nearViewport(el) {
+    const r = el.getBoundingClientRect();
+    if (!r.height) return false;
+    const h = window.innerHeight || document.documentElement.clientHeight || 0;
+    return r.bottom > -COMMENT_MARGIN && r.top < h + COMMENT_MARGIN;
+  }
+
+  /* A count that never arrived says nothing worth printing. Fifty dashed "— subs" pills down
+     a comment section is noise, not information — unlike a card badge, where the pill is the
+     only thing in that slot and its absence would read as a bug. */
+  function paintCommentSubs(el, entry) {
+    const old = el.querySelector(':scope .ytc-csubs');
+    if (old) old.remove();
+    const n = entry && entry.text ? F.viewsToNumber(entry.text) : null;
+    if (n == null) return;
+    const host = el.querySelector('#header-author') || el.querySelector('#author-text');
+    if (!host) return;
+    const pill = document.createElement('span');
+    pill.className = 'ytc-csubs';
+    pill.textContent = F.compact(n) + ' subs';
+    pill.title = entry.text;
+    host.appendChild(pill);
+  }
+
+  function paintCommentKey(key, entry) {
+    for (const el of document.querySelectorAll(COMMENT_SELECTOR)) {
+      if (el.dataset.ytcCsub === key) paintCommentSubs(el, entry);
+    }
+  }
+
+  function pumpComments() {
+    while (commentActive < COMMENT_MAX_ACTIVE && commentQueue.length) {
+      if (commentBudget <= 0) { commentQueue.length = 0; commentQueued.clear(); return; }
+      const key = commentQueue.shift();
+      commentQueued.delete(key);
+      if (commentSubs.has(key)) continue;
+      commentBudget--;
+      commentSubs.set(key, 'pending');
+      commentActive++;
+      sendMessage({ type: 'ytc-subs', key, light: true }, (res) => {
+        commentActive--;
+        const entry = {
+          text: (res && res.text) || null,
+          reason: (res && res.reason) || '',
+          t: Date.now()
+        };
+        /* A refusal from the circuit breaker never reached the network, so it must not cost
+           a slot in the page's allowance. Without this, opening a video while the breaker is
+           still cooling down burns all sixty on nothing and leaves the section bare until
+           the tab is reloaded. */
+        if (!entry.text && /rate limited/i.test(entry.reason)) commentBudget++;
+        commentSubs.set(key, entry);
+        paintCommentKey(key, entry);
+        // Next in line on a fresh task, so one channel's callback never runs the whole queue.
+        setTimeout(pumpComments, 0);
+      });
+    }
+  }
+
+  function requestCommentSubs(key) {
+    if (commentSubs.has(key) || commentQueued.has(key) || commentBudget <= 0) return;
+    commentQueued.add(key);
+    commentQueue.push(key);
+    pumpComments();
+  }
+
+  /* YouTube recycles comment elements as you scroll, so the marker records WHICH channel the
+     badge on this element belongs to, not merely that one was drawn. An element reused for a
+     different commenter fails the test and is redrawn — without this it would keep the
+     previous person's subscriber count under the new person's name. */
+  function processComment(el) {
+    const key = commentAuthorKey(el);
+    if (!key) return;
+    const known = commentSubs.get(key);
+    /* A failure has to be able to expire, and the expiry has to be checked BEFORE the
+       element marker — otherwise the marker, which is set the moment we ask, would make the
+       failed comment look finished forever and nothing would ever re-ask. Half a minute is
+       the same window a failed card badge re-asks in. */
+    const stale = known && known !== 'pending' && !known.text &&
+      Date.now() - known.t > COMMENT_RETRY_MS;
+    if (stale) commentSubs.delete(key);
+    if (el.dataset.ytcCsub === key && !stale) return;
+    el.dataset.ytcCsub = key;
+    if (known && known !== 'pending' && !stale) { paintCommentSubs(el, known); return; }
+    // Stale pill from whoever this element used to hold; the lookup will fill it back in.
+    const old = el.querySelector(':scope .ytc-csubs');
+    if (old) old.remove();
+    if (known === 'pending') return;   // already asked; paintCommentKey will find this one
+    requestCommentSubs(key);
+  }
+
+  function clearCommentSubs() {
+    document.querySelectorAll('.ytc-csubs').forEach((b) => b.remove());
+    document.querySelectorAll('[data-ytc-csub]').forEach((el) => {
+      delete el.dataset.ytcCsub;
+    });
+  }
+
+  function scanComments() {
+    const els = document.querySelectorAll(COMMENT_SELECTOR);
+    if (!settings.showCommentSubs) {
+      if (document.querySelector('.ytc-csubs')) clearCommentSubs();
+      return;
+    }
+    if (!els.length) return;
+    /* The budget is per page, not per session: moving to the next video should be able to
+       resolve its commenters too. The in-memory counts are deliberately NOT cleared — the
+       same channels recur across a niche, and a hit there costs nothing. */
+    const page = location.pathname + location.search;
+    if (page !== commentPage) {
+      commentPage = page;
+      commentBudget = COMMENT_MAX_LOOKUPS;
+    }
+    for (const el of els) {
+      if (nearViewport(el)) processComment(el);
+    }
+  }
+
+  /* Scrolling is the trigger that matters here — the mutation observer only fires when
+     YouTube appends more comments, which is not what happens when you read the ones already
+     on the page. Capture, because the comment column scrolls inside its own container on
+     some layouts. */
+  window.addEventListener('scroll', () => {
+    if (commentScrollTimer) return;
+    commentScrollTimer = setTimeout(() => {
+      commentScrollTimer = null;
+      try { scanComments(); } catch (e) { /* never break the page on a scroll */ }
+    }, COMMENT_SCROLL_MS);
+  }, true);
 
   /* -------------------------------------------------------------- observers */
 

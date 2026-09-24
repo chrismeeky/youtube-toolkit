@@ -127,6 +127,44 @@ is re-tried after 2 minutes, while a count that genuinely isn't on the page — 
 waits 12 hours. Fetching a dozen channels in a row can get you rate-limited, and that's a
 temporary state, not a verdict about the channel.
 
+### Commenters
+
+The comment section names everyone by handle and nothing else, so there is no way to tell a
+viewer from a 200K creator replying under a competitor's video. With **Subscriber count on
+commenters** on, a small outlined pill sits beside each handle, next to the timestamp:
+
+```
+@IrishRose-gx5xr  2 days ago  1.2K subs
+```
+
+It is the only research feature that ships **off**, and the reason is arithmetic. A single
+watch page can show fifty different channels, every unfamiliar one costs a channel-page fetch,
+and the queue runs two at a time — resolved eagerly that is precisely the burst that earns
+Google's "unusual traffic" interstitial, which then stalls the thumbnail badges and panels
+that the rest of the extension is built on.
+
+So the badges are deliberately cheap:
+
+- **Only what's on screen.** Comments are resolved as they come within 400px of the viewport,
+  driven by scrolling rather than by how many YouTube has loaded. Reading the first ten
+  comments costs ten lookups, not two hundred.
+- **A light lookup.** Card badges fetch `/about` because the outlier ratio needs the channel's
+  lifetime totals, and those sit at the very end of a multi-megabyte page. A commenter needs
+  only the count, so that attempt is skipped and the read aborts the moment the number
+  appears. Light and full answers are cached separately: a light one never overwrites totals a
+  card badge already paid for, and never gets served to something that needs them.
+- **Two in flight, 60 per page.** The cap resets when you open the next video. Counts already
+  in memory are kept across videos — the same channels recur across a niche, and a repeat
+  costs nothing.
+- **Silence on failure.** A count that never arrived prints nothing. Fifty dashed `— subs`
+  pills down a comment section is noise; on a card the pill is the only thing in its slot, so
+  there its absence would read as a bug.
+
+Handles and `/channel/UC…` links resolve to the same key as everywhere else, so a commenter
+whose videos you have already scrolled past is free. Only the author line is read, never the
+comment body: people link to channels in what they write, and the first channel link inside a
+comment is regularly somebody else's.
+
 ### Shorts
 
 YouTube's Shorts lockups carry a title, a view count and a thumbnail. That is the entire

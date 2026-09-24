@@ -19,6 +19,11 @@
        500K one. Empty by default, and every comparison it feeds is skipped while it is. */
     myChannel: '',
     showSubs: true,               // subscriber badge on each card
+    /* Subscriber counts beside commenters. Off by default, alone among the research
+       features: a watch page can hold fifty unfamiliar channels, each one a page fetch, and
+       that burst is what trips YouTube's rate limiting — which would then stall the badges
+       and panels the rest of the extension is built on. Opt in, per reader. */
+    showCommentSubs: true,       // subscriber count beside each commenter's handle
     showRatio: true,              // views ÷ channel average pill
     showMoney: true,              // monetization badge (inferred from ad placements)
     showStats: true,              // views/hour, engagement and an earnings estimate

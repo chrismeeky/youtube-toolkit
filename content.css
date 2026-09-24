@@ -197,6 +197,28 @@ html[dark] .ytc-btn:hover { color: #fff; }
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+/* Subscriber count beside a commenter's handle. Quieter than the card badge on purpose: it
+   sits in YouTube's own author line, next to the timestamp, and a filled black pill there
+   would outweigh the name it describes. Sized off the comment metadata, not the card. */
+.ytc-csubs {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid rgba(0, 0, 0, .18);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 15px;
+  font-weight: 500;
+  color: #606060;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  vertical-align: middle;
+}
+html[dark] .ytc-csubs {
+  border-color: rgba(255, 255, 255, .22);
+  color: #aaa;
+}
+
 /* retry / empty affordances */
 .ytc-subs--failed { cursor: pointer; }
 .ytc-subs--failed .ytc-subs__n {

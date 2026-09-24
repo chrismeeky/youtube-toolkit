@@ -235,19 +235,29 @@ async function fetchOnce(key, url, credentials, cap, wantStats) {
 }
 
 /* Three shots at a channel, cheapest first. Cookieless keeps the request clean; cookies get
-   past the consent interstitial; /about is a smaller page when the home tab is enormous. */
-function attempts(key) {
+   past the consent interstitial; /about is a smaller page when the home tab is enormous.
+
+   A light lookup drops the /about attempt entirely. That attempt is the expensive one — it
+   streams to the very end of the page because the lifetime totals live there — and it is
+   only worth paying for when something needs an outlier denominator. A caller that wants
+   nothing but the count (the commenter badges, where one watch page can ask about fifty
+   channels) takes the plain tab, which aborts the moment the count appears. */
+function attempts(key, light) {
   const base = 'https://www.youtube.com/' + channelPath(key);
-  return [
-    // /about leads because it is the only tab carrying viewCountText/videoCountText, the
-    // lifetime totals the outlier ratio needs — and it is the smallest of the three pages.
-    { url: base + '/about?hl=en', credentials: 'include', cap: ABOUT_BYTES, wantStats: true },
+  const cheap = [
     { url: base + '?hl=en', credentials: 'omit', cap: MAX_BYTES },
     { url: base + '?hl=en', credentials: 'include', cap: MAX_BYTES }
   ];
+  if (light) return cheap;
+  // /about leads because it is the only tab carrying viewCountText/videoCountText, the
+  // lifetime totals the outlier ratio needs — and it is the smallest of the three pages.
+  return [
+    { url: base + '/about?hl=en', credentials: 'include', cap: ABOUT_BYTES, wantStats: true },
+    ...cheap
+  ];
 }
 
-async function fetchSubscribers(key) {
+async function fetchSubscribers(key, light) {
   if (breakerOpen()) {
     return { text: null, reason: 'rate limited by YouTube — backing off', stats: null };
   }
@@ -258,7 +268,7 @@ async function fetchSubscribers(key) {
      indistinguishable from one that read /about in full and found none there, and both were
      cached as "this channel publishes no totals" for twelve hours. */
   let aboutRead = false;
-  for (const a of attempts(key)) {
+  for (const a of attempts(key, light)) {
     const out = await fetchOnce(key, a.url, a.credentials, a.cap, a.wantStats);
     // Only /about carries the totals, so a later attempt that finds the count must not
     // discard what the first attempt already learned.
@@ -272,11 +282,20 @@ async function fetchSubscribers(key) {
   return { text: null, reason: notes.join(' | '), stats, aboutRead };
 }
 
-async function readCache(key) {
+async function readCache(key, light) {
   const id = 'subs:' + key;
   const store = await chrome.storage.local.get(id);
   const hit = store[id];
   if (!hit || hit.v !== CACHE_VERSION) return null;
+  /* A light entry never asked for the lifetime totals, so it can neither answer a caller
+     that needs them nor be judged for missing them. Serve it to another light caller for as
+     long as the count itself is believable; hand a full caller a miss so the totals get
+     fetched properly rather than being reported as absent. */
+  if (hit.light) {
+    if (!light) return null;
+    const lightTtl = hit.text ? okTtl(hit.text) : failTtl(hit.reason);
+    return Date.now() - hit.t > lightTtl ? null : hit;
+  }
   /* A count with no lifetime totals has two very different causes and they were sharing one
      twelve-hour TTL. Read /about in full and found none: the channel does not publish them,
      so there is no point asking again soon. Never got through to /about and took the count
@@ -293,12 +312,12 @@ async function readCache(key) {
    consent redirect under load — so retry the whole chain a couple of times with backoff
    before showing the user a badge they have to click. Each round is scheduled separately so
    the queue slot is released while we wait, rather than blocking other channels. */
-async function lookupWithRetry(key) {
+async function lookupWithRetry(key, light) {
   let out = { text: null, reason: 'no attempt' };
   let used = 0;
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     used = round;
-    out = await schedule(() => fetchSubscribers(key));
+    out = await schedule(() => fetchSubscribers(key, light));
     if (out.text) {
       return round > 1 ? { ...out, reason: 'ok after ' + round + ' tries' } : out;
     }
@@ -308,12 +327,18 @@ async function lookupWithRetry(key) {
   return { ...out, reason: out.reason + (used > 1 ? ' (gave up after ' + used + ' tries)' : '') };
 }
 
-async function getSubscribers(key, force) {
-  const cached = force ? null : await readCache(key);
+async function getSubscribers(key, force, light) {
+  const cached = force ? null : await readCache(key, light);
   if (cached) return cached;
-  if (inflight.has(key)) return inflight.get(key);
+  /* A full lookup in flight answers a light caller too — it fetches everything the light one
+     wanted and more. The reverse is not true, so a light job never satisfies a full one, and
+     the two are queued under different ids to keep them apart. */
+  const full = inflight.get(key);
+  if (full) return full;
+  const id = light ? 'L:' + key : key;
+  if (light && inflight.has(id)) return inflight.get(id);
 
-  const job = lookupWithRetry(key)
+  const job = lookupWithRetry(key, light)
     .catch((e) => ({ text: null, reason: 'failed: ' + e.message }))
     .then(async (out) => {
       const entry = {
@@ -324,12 +349,18 @@ async function getSubscribers(key, force) {
         t: Date.now(),
         v: CACHE_VERSION
       };
-      await chrome.storage.local.set({ ['subs:' + key]: entry });
-      inflight.delete(key);
-      return entry;
+      if (light) entry.light = true;
+      /* Never let a light answer overwrite a full one: the full entry carries the lifetime
+         totals every outlier pill on the page is drawn from, and replacing it with a count
+         alone would blank them until the next full lookup. */
+      const prior = light ? (await chrome.storage.local.get('subs:' + key))['subs:' + key] : null;
+      const keepPrior = prior && prior.v === CACHE_VERSION && !prior.light && prior.stats;
+      if (!keepPrior) await chrome.storage.local.set({ ['subs:' + key]: entry });
+      inflight.delete(id);
+      return keepPrior ? prior : entry;
     });
 
-  inflight.set(key, job);
+  inflight.set(id, job);
   return job;
 }
 
@@ -1746,7 +1777,7 @@ async function transcriptFor(id) {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg) return;
   if (msg.type === 'ytc-subs' && msg.key) {
-    getSubscribers(msg.key, msg.force)
+    getSubscribers(msg.key, msg.force, msg.light)
       .then((entry) => sendResponse({
         key: msg.key, text: entry.text, reason: entry.reason, stats: entry.stats || null
       }))
