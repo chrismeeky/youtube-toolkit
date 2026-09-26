@@ -5,13 +5,13 @@
   const F = window.YTCopyFormat;
   let settings = F.merge(null);
   const TRANSCRIPT_UI = true;    // restored: reads YouTube's own panel, no server involved
-  /* The remake verdict ships but stays out of sight for this release. The scoring is sound
-     on the videos it was fitted to, but that was four of them, and the bands have already
-     been rewritten once — the first version capped every low-like-rate video at the same
-     number and flattened most of the scale. Held back rather than reverted so it can be
-     switched on without shipping code again. Flip to true to restore; the stored preference
-     and its settings row both follow this flag. */
-  const REMAKE_UI = false;
+  /* The remake verdict's kill switch. It shipped dark in 1.26.0 and is on from 1.27.0.
+     Kept rather than deleted because the bands behind the score were fitted to four videos
+     and have already been rewritten once — the first version capped every low-like-rate
+     video at the same number and flattened most of the scale — so the ability to take it
+     back off without shipping code is worth one constant. The stored preference and the
+     settings row both follow this flag. */
+  const REMAKE_UI = true;
   let selectMode = false;
   const selected = new Map(); // card element -> video object
 

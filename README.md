@@ -129,12 +129,10 @@ temporary state, not a verdict about the channel.
 
 ### Remake verdict
 
-> **Off in this release.** The code ships but the badge does not appear: `REMAKE_UI` in
-> `content.js` is `false`, which takes the settings row with it. The scoring is sound on the
-> videos it was fitted to, but that was four of them, and the bands have already been
-> rewritten once — the first version capped every low-like-rate video at the same number and
-> flattened most of the scale. Held back rather than reverted, so it can be switched on
-> without shipping code again. Flip the flag to restore.
+> **On from 1.27.0**, after shipping dark in 1.26.0. `REMAKE_UI` in `content.js` remains as a
+> kill switch — setting it to `false` hides the badge and takes the settings row with it —
+> because the bands below were fitted to four videos and have already been rewritten once.
+> Worth re-checking the thresholds against a larger sample.
 
 
 On a watch page the badge row carries a verdict on whether the video would transfer if you
