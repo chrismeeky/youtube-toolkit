@@ -127,6 +127,82 @@ is re-tried after 2 minutes, while a count that genuinely isn't on the page — 
 waits 12 hours. Fetching a dozen channels in a row can get you rate-limited, and that's a
 temporary state, not a verdict about the channel.
 
+### Remake verdict
+
+> **Off in this release.** The code ships but the badge does not appear: `REMAKE_UI` in
+> `content.js` is `false`, which takes the settings row with it. The scoring is sound on the
+> videos it was fitted to, but that was four of them, and the bands have already been
+> rewritten once — the first version capped every low-like-rate video at the same number and
+> flattened most of the scale. Held back rather than reverted, so it can be switched on
+> without shipping code again. Flip the flag to restore.
+
+
+On a watch page the badge row carries a verdict on whether the video would transfer if you
+remade it:
+
+```
+183K subs   7x   12 VPH   [███████░░░] Remake: Strong
+```
+
+Drawn as a battery. Five tiers on the same colour ladder as the outlier pills — **Strong,
+Good, Fair, Weak, Avoid** — with the fill showing where in the 0-100 scale the video actually
+landed. The two answer different questions, which is why both are on the badge: four videos
+can all read *Weak* and still be 22, 30, 35 and 39 out of 100. The word is what you scan a
+page for; the fill is what you compare two candidates with.
+
+The inputs are four things the page has already given up: the like rate, the outlier against
+the channel's lifetime average, the channel's subscriber count, and the video's age. Nothing
+extra is fetched. The like rate is already on its way for the Engagement cell and the outlier
+for the Outlier cell, so this is arithmetic on numbers that were arriving anyway.
+
+Two of the bands are counterintuitive, and they are the reason the badge exists.
+
+**A low like rate vetoes a high outlier.** In a 40-video sweep of the bodycam niche the
+biggest outlier by a distance was The Modesto Bee's Patterson traffic stop: 854,924 views on
+an 11,400-subscriber channel, a **645x** outlier. Two channels remade it and took **6,188 and
+117 views**. Its like rate was 1.30%. "Dog Abuser Meets The Wrong Cop" did comparable views
+(862,768) on a comparable channel (15,000 subs) at **5.67%**, on a premise eight unrelated
+channels have since cleared 800K with. The like rate told those two apart in advance; the
+outlier score ranked them the wrong way round.
+
+So the like rate **multiplies** the other three rather than adding to them: x0.25 where nobody
+cared, x1.0 where the payoff was exceptional. It began as a hard cap — under 2%, score = 35 —
+which was right about the ranking and wrong about everything else. Most videos in this niche
+sit under 2%, so every one of them landed on exactly 35 and the badge read the same on a 21x
+outlier from a 13K channel as on a 3x from a million-subscriber one. As a multiplier the same
+judgement survives with the ordering intact: a 1.3% like rate still cannot reach Strong from
+any base, because 0.32 x 100 is 31 — it just no longer collides with every other low-rate
+video on the way down.
+
+**An extreme outlier is a warning, not a prize.** Past roughly 100x the usual explanation is a
+channel whose own average is tiny — a local news desk posting raw footage between council
+meetings — so the ratio is measuring their quiet week rather than the video's pull.
+
+A base out of 100 for how far it travelled and how well that transfers, then the like rate
+scales it:
+
+| Input | Best band | Worst band |
+| --- | --- | --- |
+| Outlier (0-45) | 5–50x | < 1.5x, or > 100x |
+| Channel size (0-30) | ≤ 50K subs | > 1M subs |
+| Age (0-25) | 12–36 months | > 5 years |
+| Like rate (x0.25–x1.0) | ≥ 5% | < 1% |
+
+Measured against the four videos in the sweep: Dog Abuser **82**, Routine Stop **82**, Student
+Caught Packing Heat **25**, Patterson **20**.
+
+Hover the badge for the breakdown, the score out of 100, and the one thing it cannot see:
+**whether the theme repeats across other channels.** That is the strongest signal of the lot —
+eight independent channels clearing 800K on animal-cruelty bodycam footage is demand, where
+one channel's hit can be one thumbnail's luck — and it needs a search rather than a page, so
+the badge names it rather than quietly leaving it out.
+
+Watch pages only. The like count is free here because the player response carries an exact
+figure; feed markup never does. Scoring a card without it would mean guessing at the one input
+that exists to prevent a confident mistake, so no card gets a verdict. The badge needs the
+subscriber lookup and the stats reader for its two main inputs and draws nothing when either
+is switched off — no badge rather than a guess wearing a colour.
+
 ### Commenters
 
 The comment section names everyone by handle and nothing else, so there is no way to tell a
@@ -183,6 +259,39 @@ less.
 
 Without `INDEX_API` set there is nowhere to ask, and a Short keeps the dim `— subs` badge; its
 tooltip says so rather than blaming the video.
+
+### Tooltips
+
+Every figure here is inferred from something, and the explanation is usually a sentence or
+four: what the number divides by, where it came from, what it cannot see. The browser's native
+tooltip renders that as grey system text in a box it controls — no heading, no spacing, a
+delay it picks, and on a dark page a light box with light text.
+
+The monetization breakdown had already been built to escape all of that, so the rest of the
+tooltips now open on the same card. One chrome (`.ytc-pop`), one placement engine — below the
+badge if it fits, above if not, clamped to the window, re-placed on scroll — and two bodies:
+the monetization evidence rows, and a plain heading-and-prose panel for everything else.
+
+Attaching one is declarative. An element carries its explanation in `data-ytc-tip`
+(plus optional `data-ytc-tip-title` and `data-ytc-tip-foot`), or calls `setTip(el, {title,
+body, foot})`, and a single delegated listener does the rest. Nothing is wired per badge, so a
+badge that is recycled, rebuilt or redrawn keeps working — the explanation came with the
+element rather than living in a closure that outlived it. Body text is plain lines; a line
+opening with a bullet joins a list, anything else becomes a paragraph.
+
+`setTip` always strips the native `title`. An element carrying both gets two tooltips, the
+browser's drawn over ours saying the same thing in a greyer box — which is the exact bug the
+monetization panel had to fix when it was the only panel here.
+
+Three things the native tooltip could not do come free with it: the panel opens on keyboard
+focus and on tap, Escape closes it, and it closes itself when whatever it explains is rebuilt
+underneath it (the stats card replaces its cells on every scan, and a panel left anchored to a
+detached element measures a zero-sized rectangle and lands in the corner of the page pointing
+at nothing).
+
+Short control labels — *Copy this video*, *Expand*, *Filter the videos this page has loaded* —
+keep the native tooltip. They name an action rather than explaining a number, and a card that
+big for two words would be worse, not better.
 
 ### If badges don't appear
 

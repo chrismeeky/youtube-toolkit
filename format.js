@@ -25,6 +25,10 @@
        and panels the rest of the extension is built on. Opt in, per reader. */
     showCommentSubs: true,       // subscriber count beside each commenter's handle
     showRatio: true,              // views ÷ channel average pill
+    /* Reads the engagement figure and the outlier the watch page already computes, so it
+       costs nothing and is on by default. It needs both of those, which means it draws
+       nothing when showSubs or showStats is off. */
+    showRemake: true,             // "Remake: Strong/Good/Fair/Weak/Avoid" verdict on a watch page
     showMoney: true,              // monetization badge (inferred from ad placements)
     showStats: true,              // views/hour, engagement and an earnings estimate
     showSimilar: true,            // "Similar channels" button on channel pages
@@ -637,6 +641,130 @@
       season: season,
       earnings: len.factor === 0 ? null : { low: per(low), mid: per(mid), high: per(high) }
     };
+  }
+
+  /* ------------------------------------------------------------ remakability */
+
+  /* Whether a video is worth remaking, from the four things a watch page gives away for
+     free. Every band below was fitted to measured videos rather than chosen by feel, and the
+     two counterintuitive ones are the whole reason the score exists:
+
+     1. A LOW LIKE RATE VETOES A HIGH OUTLIER. The Modesto Bee's Patterson traffic stop did
+        854,924 views on an 11,400-subscriber channel — a 645x outlier, and the single
+        biggest number in a 40-video sweep of the niche. Two channels remade it and took
+        6,188 and 117 views. Its like rate was 1.30%. Meanwhile "Dog Abuser Meets The Wrong
+        Cop" did 862,768 on 15,000 subscribers at 5.67%, on a premise eight unrelated
+        channels have since cleared 800K with. The like rate, not the outlier, told those two
+        apart in advance.
+     2. AN EXTREME OUTLIER IS A WARNING, NOT A PRIZE. Past ~100x the usual cause is a channel
+        whose own average is tiny — a local news desk posting raw footage — so the ratio is
+        measuring their quiet week, not the video's pull.
+
+     What it cannot see: whether the THEME repeats across channels, which is the strongest
+     signal of the lot and needs a search rather than a page. The tooltip says so, because a
+     score that quietly omits its most important input is worse than no score. */
+  const REMAKE_TIERS = [
+    [78, 'great', 'Strong'],
+    [58, 'good', 'Good'],
+    [40, 'ok', 'Fair'],
+    [22, 'low', 'Weak']
+  ];
+  /* The like rate multiplies rather than caps.
+
+     It began as a hard clamp — under 2%, score = 35 — which was right about the ranking and
+     wrong about everything else: every video that would have scored above 35 landed on
+     exactly 35, so the badge read the same on a 21x outlier from a 13K channel as on a 3x
+     from a million-subscriber one. Most videos in this niche sit under 2%, so the clamp
+     flattened the majority of the scale into a single number and the score stopped saying
+     anything.
+
+     As a multiplier the same judgement survives with the ordering intact. The two questions
+     are genuinely separate — how far the video travelled and how much the audience cared —
+     and multiplying them is what "a lot of views nobody enjoyed is worth little" actually
+     means. A 1.3% like rate still cannot reach Strong from any base, because 0.32 x 100 is
+     31; it simply no longer collides with every other low-rate video on the way down. */
+  const REMAKE_LIKE_FACTOR = [
+    [1, 0.25, 'nobody cared'],
+    [1.5, 0.32, 'the audience barely responded'],
+    [2, 0.45, 'weak payoff'],
+    [3, 0.65, 'modest payoff'],
+    [4, 0.82, 'solid payoff'],
+    [5, 0.93, 'strong payoff'],
+    [Infinity, 1, 'exceptional payoff']
+  ];
+  // Under this the like rate is doing most of the damage, and the breakdown says so outright.
+  const REMAKE_WEAK_RATE = 2;
+
+  function band(value, bands) {
+    for (const [ceiling, points, note] of bands) {
+      if (value < ceiling) return { points, note };
+    }
+    const last = bands[bands.length - 1];
+    return { points: last[1], note: last[2] };
+  }
+
+  function remakeScore(input) {
+    const rate = input && input.engagement;
+    const outlier = input && input.outlier;
+    // No like rate means no verdict. This is the input the whole score turns on, so guessing
+    // without it would reproduce exactly the mistake it exists to prevent.
+    if (rate == null || outlier == null || !(outlier > 0)) return null;
+
+    const subs = input.subscribers > 0 ? input.subscribers : null;
+    const at = input.publishDate ? new Date(input.publishDate).getTime() : NaN;
+    const months = isNaN(at) ? null : (asMillis(input.now) - at) / (30.44 * 86400000);
+
+    /* The base is how far the video travelled and how well that transfers to you: out of
+       100 before the audience gets a say. */
+    const out = band(outlier, [
+      [1.5, 0, outlierText(outlier) + ' — it did not outperform'],
+      [3, 18, outlierText(outlier)],
+      [5, 33, outlierText(outlier)],
+      [50, 45, outlierText(outlier) + ' — travelled well beyond the channel'],
+      [100, 27, outlierText(outlier) + ' — very high; worth checking the channel average is ' +
+        'not simply tiny'],
+      [Infinity, 9, outlierText(outlier) + ' — so high the channel average is the anomaly, ' +
+        'not the video']
+    ]);
+    /* Small channel, big video: the story carried it with no audience behind it, which is
+       the part that transfers to you. The same views under a million subscribers prove only
+       that the channel has a million subscribers. */
+    const size = subs == null ? { points: 15, note: 'channel size unknown' } : band(subs, [
+      [50000, 30, compact(subs) + ' subs — no audience behind it, the story carried it'],
+      [250000, 21, compact(subs) + ' subs'],
+      [1000000, 12, compact(subs) + ' subs — some of this was their audience'],
+      [Infinity, 3, compact(subs) + ' subs — their audience carried it, not the story']
+    ]);
+    const age = months == null ? { points: 12, note: 'age unknown' } : band(months, [
+      [6, 10, Math.round(months) + 'mo old — still live, you would be competing with it'],
+      [12, 17, Math.round(months) + 'mo old'],
+      [36, 25, Math.round(months) + 'mo old — audience has turned over, ranking has gone stale'],
+      [60, 15, Math.round(months) + 'mo old'],
+      [Infinity, 5, Math.round(months / 12) + 'y old — the footage may not hold up']
+    ]);
+
+    const base = out.points + size.points + age.points;
+    const like = band(rate, REMAKE_LIKE_FACTOR);
+    const score = Math.max(1, Math.round(base * like.points));
+
+    const parts = [
+      'like rate ' + rate.toFixed(1) + '% — ' + like.note +
+        ' (x' + like.points.toFixed(2) + ' on everything below)',
+      out.note,
+      size.note,
+      age.note
+    ];
+
+    let tier = 'poor';
+    let label = 'Avoid';
+    for (const [floor, cls, text] of REMAKE_TIERS) {
+      if (score >= floor) { tier = cls; label = text; break; }
+    }
+    return { score, tier, label, parts, base, vetoed: rate < REMAKE_WEAK_RATE };
+  }
+
+  function outlierText(o) {
+    return (o >= 10 ? Math.round(o) : Math.round(o * 10) / 10) + 'x vs channel average';
   }
 
   function formatVph(vph) {
@@ -1478,7 +1606,7 @@
     parseChannelStats, parseChannelKeywords, adSignalFromHtml,
     watchVisible, watchThresholdFor, watchPaused, WATCH_DEFAULT_RATIO, monetizationVerdict, channelPairsFromSearch,
     revenueSignals, revenueSummary, descriptionFromHtml,
-    videoMetrics, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH, shortLinkedVideo,
+    videoMetrics, remakeScore, formatVph, formatMoney, RPM_LOW, RPM_MID, RPM_HIGH, shortLinkedVideo,
     relativeToDate, vphFromRelative,
     topicQueries, channelsFromSearch, rankSimilar,
     safeFilename, formatTranscript, stampMs, decodeEntities, parseJson3, parseTimedTextXml,

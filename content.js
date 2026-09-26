@@ -5,6 +5,13 @@
   const F = window.YTCopyFormat;
   let settings = F.merge(null);
   const TRANSCRIPT_UI = true;    // restored: reads YouTube's own panel, no server involved
+  /* The remake verdict ships but stays out of sight for this release. The scoring is sound
+     on the videos it was fitted to, but that was four of them, and the bands have already
+     been rewritten once — the first version capped every low-like-rate video at the same
+     number and flattened most of the scale. Held back rather than reverted so it can be
+     switched on without shipping code again. Flip to true to restore; the stored preference
+     and its settings row both follow this flag. */
+  const REMAKE_UI = false;
   let selectMode = false;
   const selected = new Map(); // card element -> video object
 
@@ -793,6 +800,7 @@
     /* Wrapped like its neighbours. This one reaches into YouTube's comment markup, which
        changes shape more often than anything else on the page. */
     try { scanComments(); } catch (e) { /* keep the rest of the scan */ }
+    try { closeOrphanPopover(); } catch (e) { /* keep the rest of the scan */ }
     noteChannelSeen();
     renderStatsCard();
     // Wrapped like its neighbours: an optional panel must never take the scan down with it.
@@ -974,9 +982,14 @@
     return null;
   }
 
+  /* The explanation rides on the cell as data rather than a native title, so it opens on the
+     extension's own card like every other tooltip. The label is reused as the panel's
+     heading: "Outlier" over the sentence explaining what it divides by reads as an answer to
+     a question, where the bare sentence read as a footnote. */
   function cell(label, value, title, cls) {
+    const attr = (k, v) => ' ' + k + '="' + String(v).replace(/"/g, '&quot;') + '"';
     return '<div class="ytc-cs__cell' + (cls ? ' ' + cls : '') + '"' +
-      (title ? ' title="' + String(title).replace(/"/g, '&quot;') + '"' : '') + '>' +
+      (title ? attr('data-ytc-tip', title) + attr('data-ytc-tip-title', label) : '') + '>' +
       '<div class="ytc-cs__label">' + label + '</div>' +
       '<div class="ytc-cs__value">' + value + '</div></div>';
   }
@@ -1007,7 +1020,105 @@
     return { short: time ? day + ', ' + time : day, full: full, time: time, dateOnly: dateOnly };
   }
 
+  /* ------------------------------------------------------------ remakability */
+
+  /* Watch pages only, and deliberately so. The score turns on the like rate, and the like
+     rate is free exactly here — the player response carries an exact like count, which the
+     feed markup never does. Scoring a card without it would mean guessing at the one input
+     that exists to stop a confident mistake: the biggest outlier in a 40-video sweep of the
+     bodycam niche (645x) was a local news desk's raw footage at a 1.3% like rate, and the two
+     channels that remade it took 6,188 and 117 views. See F.remakeScore for the bands.
+
+     Nothing new is fetched. Both inputs are already on their way for other reasons — the like
+     rate for the Engagement cell, the outlier for the Outlier cell — so this is arithmetic on
+     numbers the page had anyway. */
+  function remakeInputs() {
+    const card = watchCard();
+    const m = cardState.metrics;
+    if (!card || !m) return null;
+    const key = findChannelKey(card);
+    const entry = key ? subsByKey.get(key) : null;
+    const subs = entry && entry.text ? F.viewsToNumber(entry.text) : null;
+    return {
+      card,
+      input: {
+        engagement: m.engagement,
+        outlier: cardState.outlier,
+        subscribers: subs,
+        /* A date worked back from "3 weeks ago" is fine here in a way it is not for the
+           weekday cell: these bands are months wide, so a few days of slack cannot move the
+           answer. */
+        publishDate: m.publishDate,
+        now: Date.now()
+      }
+    };
+  }
+
+  function clearRemake(keep) {
+    document.querySelectorAll('.ytc-remake').forEach((el) => {
+      if (el !== keep) el.remove();
+    });
+  }
+
+  function decorateRemake() {
+    if (!REMAKE_UI || !/^\/watch/.test(location.pathname) || !settings.showRemake) {
+      clearRemake(null);
+      return;
+    }
+    const ctx = remakeInputs();
+    const verdict = ctx && F.remakeScore(ctx.input);
+    /* No verdict is not the same as a bad one. Likes hidden on the video, the subscriber
+       lookup switched off, the outlier still in flight — in every case the honest output is
+       no badge, not a guess wearing a colour. */
+    if (!verdict) { clearRemake(null); return; }
+
+    const tools = ensureTools(ctx.card);
+    let pill = tools.querySelector(':scope > .ytc-remake');
+    if (!pill) {
+      pill = document.createElement('span');
+      tools.appendChild(pill);
+    }
+    pill.className = 'ytc-remake ytc-remake--' + verdict.tier;
+    /* Rebuilt only when it would actually change. This runs from renderStatsCard, which runs
+       from every scan, and reassigning innerHTML on each pass restarts the fill's paint and
+       drops any text selection inside it. */
+    const shown = verdict.label + '|' + verdict.score;
+    if (pill.dataset.ytcShown !== shown) {
+      pill.dataset.ytcShown = shown;
+      pill.innerHTML = '<span class="ytc-remake__cell">' +
+        '<span class="ytc-remake__fill"></span>' +
+        '<span class="ytc-remake__text">Remake: ' + escapeHtml(verdict.label) + '</span>' +
+        '</span>';
+      /* Set as a property rather than in the markup: a style attribute built by string
+         concatenation is the kind of thing a page CSP can refuse, and this one is a number
+         we computed anyway. */
+      const fill = pill.querySelector('.ytc-remake__fill');
+      if (fill) fill.style.width = Math.max(4, Math.min(100, verdict.score)) + '%';
+    }
+    /* The panel this opens is why the verdict can be one word. Four bands, a veto and a
+       caveat do not fit on a pill, and a number that hides its reasoning is a number nobody
+       should act on — so the pill states the answer and the card shows the working. */
+    setTip(pill, {
+      title: 'Remake: ' + verdict.label + ' — ' + verdict.score + '/100',
+      body: 'How well this video would transfer if you remade it.\n' +
+        verdict.parts.map((p) => '· ' + p).join('\n') +
+        (verdict.vetoed
+          ? '\nHeld down by the like rate: under 2% the audience did not care enough for the ' +
+            'premise to travel, whatever the view count says.'
+          : ''),
+      foot: 'Not included: whether the theme repeats across other channels. That is the ' +
+        'strongest signal there is and needs a search rather than a page — check it by hand ' +
+        'before committing.'
+    });
+    clearRemake(pill);
+  }
+
   function renderStatsCard() {
+    /* First, and outside every early return below: this badge lives on the video, not in the
+       stats card, but it is fed by the same two lookups — so every path that settles one of
+       them already calls this function, and hanging the badge here means it updates when they
+       land without a second set of callbacks to keep in sync. */
+    try { decorateRemake(); } catch (e) { /* never take the stats card down with it */ }
     const onWatch = /^\/watch/.test(location.pathname);
     const existing = document.querySelector('.ytc-cs');
 
@@ -1533,7 +1644,8 @@
     if (!r) return '';
     const shown = ratioLabel(r);
     const tier = ratioTier(shown.value);
-    return '<span class="ytc-out ytc-out--' + tier + '" title="' +
+    return '<span class="ytc-out ytc-out--' + tier +
+      '" data-ytc-tip-title="Outlier" data-ytc-tip="' +
       escapeHtml(outlierTitle(c, tier)) + '">' + shown.text + '</span>';
   }
 
@@ -1586,8 +1698,12 @@
           const m = ROW_MONEY[(entry && entry.state)] || ROW_MONEY.unknown;
           el.className = 'ytc-mon ' + m.cls;
           el.textContent = m.label;
-          el.title = m.tip +
-            (entry && entry.checked ? ' (' + entry.withAds + ' of ' + entry.checked + ' checked)' : '');
+          setTip(el, {
+            title: m.label,
+            body: m.tip,
+            foot: entry && entry.checked
+              ? entry.withAds + ' of ' + entry.checked + ' sampled videos carried ad slots.' : ''
+          });
         }
         pumpRowMoney();
       });
@@ -5275,29 +5391,35 @@
      evidence for it was already being collected and thrown away. Each row names the stream,
      how many of the sampled videos carried it, and the line that decided it — so the reader
      can judge the call instead of taking it. */
-  let revOpenTimer = null;
-  let revCloseTimer = null;
+  let popOpenTimer = null;
+  let popCloseTimer = null;
 
-  function holdRevenuePanel() {
-    clearTimeout(revCloseTimer);
-    revCloseTimer = null;
+  function holdPopover() {
+    clearTimeout(popCloseTimer);
+    popCloseTimer = null;
   }
 
-  function scheduleRevenueClose() {
-    clearTimeout(revCloseTimer);
-    revCloseTimer = setTimeout(closeRevenuePanel, 260);
+  function schedulePopoverClose() {
+    clearTimeout(popCloseTimer);
+    popCloseTimer = setTimeout(closePopover, 260);
   }
 
-  function closeRevenuePanel() {
-    clearTimeout(revOpenTimer);
-    clearTimeout(revCloseTimer);
+  /* Every panel the extension opens, of either kind. They share one engine, so opening a
+     tooltip closes a monetization breakdown and vice versa — two cards floating over each
+     other is never what the reader asked for. */
+  function closePopover() {
+    clearTimeout(popOpenTimer);
+    clearTimeout(popCloseTimer);
+    /* Forgotten here, the anchor stays "current" after its panel is gone, and the next hover
+       over the same badge is read as "already open" and does nothing. */
+    tipAnchor = null;
     // The listeners outlive the element unless they are taken off with it.
-    document.querySelectorAll('.ytc-rev').forEach((n) => {
+    document.querySelectorAll('.ytc-pop').forEach((n) => {
       if (!n._reflow) return;
       window.removeEventListener('scroll', n._reflow);
       window.removeEventListener('resize', n._reflow);
     });
-    document.querySelectorAll('.ytc-rev').forEach((n) => n.remove());
+    document.querySelectorAll('.ytc-pop').forEach((n) => n.remove());
   }
 
   /* Below the badge if it fits, above it if not.
@@ -5308,14 +5430,14 @@
      were found. */
   const PANEL_GAP = 8;
 
-  function placeRevenuePanel(panel, anchorEl) {
+  function placePopover(panel, anchorEl) {
     const r = anchorEl.getBoundingClientRect();
     const h = panel.offsetHeight;
     const below = window.innerHeight - r.bottom - PANEL_GAP;
     const above = r.top - PANEL_GAP;
     const flip = h > below && above > below;
 
-    panel.classList.toggle('ytc-rev--above', flip);
+    panel.classList.toggle('ytc-pop--above', flip);
     // Clamped so neither edge leaves the window, whichever side it ended up on.
     const top = flip ? Math.max(PANEL_GAP, r.top - h - PANEL_GAP)
                      : Math.min(r.bottom + PANEL_GAP, window.innerHeight - h - PANEL_GAP);
@@ -5325,7 +5447,7 @@
   }
 
   function openRevenuePanel(anchorEl, res) {
-    closeRevenuePanel();
+    closePopover();
     const streams = (res && res.streams) || [];
     const label = MONEY_LABEL[res && res.state] || MONEY_LABEL.unknown;
     const note = (anchorEl.dataset && anchorEl.dataset.ytcNote) || '';
@@ -5357,7 +5479,7 @@
       : '';
 
     const panel = document.createElement('div');
-    panel.className = 'ytc-rev';
+    panel.className = 'ytc-pop ytc-rev';
     panel.innerHTML =
       '<div class="ytc-rev__head"><b>' + escapeHtml(label.big) + '</b></div>' +
       '<p class="ytc-rev__sub">Based on ' + (res && res.checked ? res.checked : 0) +
@@ -5371,23 +5493,183 @@
         'stream, not a measure of income. YouTube also runs ads on channels that are not ' +
         'monetized and keeps that revenue, so ad slots are a signal rather than a status.</p>';
 
+    mountPopover(panel, anchorEl);
+  }
+
+  /* Everything that is true of a panel once it exists, whichever kind it is. */
+  function mountPopover(panel, anchorEl) {
+    /* Kept so the panel can be closed when whatever it explains goes away. The stats card
+       rebuilds its cells on every scan, which is often — and a panel left anchored to a
+       detached element measures a zero-sized rectangle and lands in the top-left corner of
+       the page, pointing at nothing. */
+    panel._anchor = anchorEl;
     document.body.appendChild(panel);
-    placeRevenuePanel(panel, anchorEl);
+    placePopover(panel, anchorEl);
 
     /* Moving the pointer from the pill to the panel crosses a gap, so leaving either one
        only schedules the close; entering the other cancels it. Without that the panel shuts
        on the way to it and can never be read. */
-    panel.addEventListener('mouseenter', holdRevenuePanel);
-    panel.addEventListener('mouseleave', scheduleRevenueClose);
+    panel.addEventListener('mouseenter', holdPopover);
+    panel.addEventListener('mouseleave', schedulePopoverClose);
 
     /* Scrolling with the panel open moves the badge, and near the edge of the window the
        panel that fitted a moment ago no longer does. Re-placed rather than left behind;
        passive, because this never blocks the scroll itself. */
-    const reflow = () => { if (panel.isConnected) placeRevenuePanel(panel, anchorEl); };
+    const reflow = () => {
+      if (!panel.isConnected) return;
+      if (!anchorEl.isConnected) { closePopover(); return; }
+      placePopover(panel, anchorEl);
+    };
     window.addEventListener('scroll', reflow, { passive: true });
     window.addEventListener('resize', reflow);
     panel._reflow = reflow;
   }
+
+  /* ------------------------------------------------------------------- tooltips */
+
+  /* The extension's own tooltip, on the same card as the monetization breakdown.
+
+     Every figure this extension prints is inferred from something, and the explanation is
+     usually a sentence or four: what the number divides by, where it came from, what it
+     cannot see. The browser's native tooltip renders that as grey system text in a box it
+     controls — no heading, no spacing, a delay we cannot set, and on a dark page a light box
+     with light text. The monetization panel had already been built to escape all of that, so
+     the rest of the tooltips now open on the same card, through the same placement engine.
+
+     Declarative on purpose: an element carries its explanation in data-ytc-tip and one
+     delegated listener does the rest. Nothing has to be wired up per badge, and a badge that
+     is recycled, rebuilt or redrawn keeps working, because the data came with the element
+     rather than living in a closure that outlived it. */
+  const TIP_OPEN_MS = 200;      // long enough that crossing a badge does not flash a panel
+  let tipAnchor = null;
+
+  /* Body text is written as plain lines. A line opening with a bullet joins a list, anything
+     else becomes a paragraph — so callers compose an explanation without writing markup. */
+  function tipBlocks(body) {
+    const lines = String(body || '').split('\n').map((l) => l.trim()).filter(Boolean);
+    const out = [];
+    let list = null;
+    for (const line of lines) {
+      const bullet = /^[·•-]\s+/.test(line);
+      if (bullet) {
+        if (!list) { list = []; out.push({ list }); }
+        list.push(line.replace(/^[·•-]\s+/, ''));
+      } else {
+        list = null;
+        out.push({ text: line });
+      }
+    }
+    return out;
+  }
+
+  function tipHtml(el) {
+    const d = el.dataset;
+    const head = d.ytcTipTitle
+      ? '<div class="ytc-tip__head">' + escapeHtml(d.ytcTipTitle) + '</div>' : '';
+    const body = tipBlocks(d.ytcTip).map((b) => b.list
+      ? '<ul class="ytc-tip__list">' +
+          b.list.map((li) => '<li>' + escapeHtml(li) + '</li>').join('') + '</ul>'
+      : '<p class="ytc-tip__body">' + escapeHtml(b.text) + '</p>').join('');
+    const foot = d.ytcTipFoot
+      ? '<p class="ytc-tip__foot">' + escapeHtml(d.ytcTipFoot) + '</p>' : '';
+    return head + body + foot;
+  }
+
+  function openTip(el) {
+    const html = tipHtml(el);
+    if (!html) return;
+    closePopover();
+    tipAnchor = el;
+    const panel = document.createElement('div');
+    panel.className = 'ytc-pop ytc-tip';
+    panel.innerHTML = html;
+    mountPopover(panel, el);
+  }
+
+  /* Attach an explanation to an element. Pass a string for a plain one, or {title, body,
+     foot} for the full card. Passing nothing takes the explanation off again.
+
+     The native title is always removed: an element carrying both gets two tooltips, the
+     browser's drawn on top of ours saying the same thing in a greyer box. That is the exact
+     bug the monetization panel had to fix when it was the only panel here. */
+  function setTip(el, tip) {
+    if (!el) return;
+    const spec = typeof tip === 'string' ? { body: tip } : (tip || {});
+    if (!spec.body && !spec.title) {
+      delete el.dataset.ytcTip;
+      delete el.dataset.ytcTipTitle;
+      delete el.dataset.ytcTipFoot;
+      if (tipAnchor === el) closePopover();
+      return;
+    }
+    el.removeAttribute('title');
+    el.dataset.ytcTip = spec.body || '';
+    if (spec.title) el.dataset.ytcTipTitle = spec.title;
+    else delete el.dataset.ytcTipTitle;
+    if (spec.foot) el.dataset.ytcTipFoot = spec.foot;
+    else delete el.dataset.ytcTipFoot;
+    /* Open already, on this very element, when the text changed under it — a badge that
+       settles while being read should update rather than sit there stale. */
+    if (tipAnchor === el && document.querySelector('.ytc-tip')) openTip(el);
+  }
+
+  /* A panel whose subject has been rebuilt under it. Cheap enough to run on every scan: it
+     does nothing at all unless a panel is actually open. */
+  function closeOrphanPopover() {
+    const panel = document.querySelector('.ytc-pop');
+    if (panel && panel._anchor && !panel._anchor.isConnected) closePopover();
+  }
+
+  function tipTarget(node) {
+    if (!(node instanceof Element)) return null;
+    const el = node.closest('[data-ytc-tip]');
+    // Not for anything inside a panel: a tip opening over its own explanation is a loop.
+    return el && !el.closest('.ytc-pop') ? el : null;
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    const el = tipTarget(e.target);
+    if (!el) return;
+    /* Moving WITHIN the badge fires this repeatedly, and restarting the timer each time is
+       how a tooltip never opens at all for anyone who does not hold perfectly still. */
+    if (tipAnchor === el) { holdPopover(); return; }
+    holdPopover();
+    clearTimeout(popOpenTimer);
+    tipAnchor = el;
+    popOpenTimer = setTimeout(() => {
+      if (el.isConnected && tipAnchor === el) openTip(el);
+    }, TIP_OPEN_MS);
+  }, true);
+
+  document.addEventListener('mouseout', (e) => {
+    const el = tipTarget(e.target);
+    if (!el) return;
+    const to = e.relatedTarget instanceof Element ? e.relatedTarget : null;
+    // Into the panel, or deeper into the badge: both are still "on" it.
+    if (to && (el.contains(to) || to.closest('.ytc-pop'))) return;
+    clearTimeout(popOpenTimer);
+    tipAnchor = null;
+    schedulePopoverClose();
+  }, true);
+
+  /* Keyboard and touch. A native title answers neither — it needs a pointer hovering — so
+     moving to our own panel is a chance to cover both rather than a cost. */
+  document.addEventListener('focusin', (e) => {
+    const el = tipTarget(e.target);
+    if (el) openTip(el);
+  });
+  document.addEventListener('focusout', (e) => {
+    if (tipTarget(e.target)) { tipAnchor = null; schedulePopoverClose(); }
+  });
+  document.addEventListener('click', (e) => {
+    const el = tipTarget(e.target);
+    if (!el) return;
+    if (tipAnchor === el && document.querySelector('.ytc-tip')) { tipAnchor = null; closePopover(); }
+    else openTip(el);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.querySelector('.ytc-pop')) closePopover();
+  });
 
   function moneyTitle(res, videoNote) {
     const label = MONEY_LABEL[res.state] || MONEY_LABEL.unknown;
@@ -5466,26 +5748,30 @@
       if (videoNote) el.dataset.ytcNote = videoNote;
       else delete el.dataset.ytcNote;
     }
-    else el.title = moneyTitle(safe, videoNote) + (retryable ? '. Click to try again' : '');
+    else setTip(el, {
+      title: (MONEY_LABEL[safe.state] || MONEY_LABEL.unknown).big,
+      body: moneyTitle(safe, videoNote),
+      foot: retryable ? 'Click to try again.' : ''
+    });
 
     if (hasPanel) {
       el.classList.add('ytc-money--more');
       /* A short delay so passing over the pill on the way somewhere else does not flash the
          panel open. */
       el.onmouseenter = () => {
-        holdRevenuePanel();
-        clearTimeout(revOpenTimer);
-        revOpenTimer = setTimeout(() => openRevenuePanel(el, safe), 160);
+        holdPopover();
+        clearTimeout(popOpenTimer);
+        popOpenTimer = setTimeout(() => openRevenuePanel(el, safe), 160);
       };
       el.onmouseleave = () => {
-        clearTimeout(revOpenTimer);
-        scheduleRevenueClose();
+        clearTimeout(popOpenTimer);
+        schedulePopoverClose();
       };
       /* Touch has no hover, so the tap has to work too — and a second tap closes it. */
       el.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (document.querySelector('.ytc-rev')) closeRevenuePanel();
+        if (document.querySelector('.ytc-pop')) closePopover();
         else openRevenuePanel(el, safe);
       };
     }
@@ -5919,7 +6205,7 @@
     badge.dataset.key = '';
     badge.classList.remove('ytc-subs--loading', 'ytc-subs--failed');
     badge.classList.add('ytc-subs--none');
-    badge.title = why;
+    setTip(badge, { title: 'Subscriber count', body: why });
     badge.innerHTML = '<span class="ytc-subs__n">— subs</span>';
   }
 
@@ -5929,7 +6215,8 @@
     badge.dataset.key = findChannelKey(card);
     badge.classList.remove('ytc-subs--failed');
     badge.classList.add('ytc-subs--loading');
-    badge.title = retrying ? 'Retrying…' : 'Looking up subscriber count…';
+    setTip(badge, { title: 'Subscriber count',
+      body: retrying ? 'Retrying the lookup…' : 'Looking this channel up…' });
     badge.innerHTML =
       '<span class="ytc-subs__n"><span class="ytc-spin"></span>' +
       (retrying ? 'retrying' : 'subs') + '</span>';
@@ -5958,13 +6245,15 @@
       badge.classList.add('ytc-subs--failed');
       const more = (entry.tries || 0) < RETRY_DELAYS.length &&
         F.isRetryableFailure(entry.reason);
-      badge.title = 'Subscriber count unavailable' +
-        (entry.reason ? ' — ' + entry.reason : '') +
-        (more ? '. Retrying shortly; click to retry now.' : '. Click to retry.');
+      setTip(badge, {
+        title: 'Subscriber count unavailable',
+        body: entry.reason || 'The lookup did not come back with a count.',
+        foot: more ? 'Retrying shortly — click to retry now.' : 'Click to retry.'
+      });
       badge.innerHTML = '<span class="ytc-subs__n">— subs</span>';
     } else {
       badge.classList.remove('ytc-subs--failed');
-      badge.title = entry.text;
+      setTip(badge, { title: 'Subscriber count', body: entry.text });
       const subsN = F.viewsToNumber(entry.text);
       const hideCount = subsCountRedundant(card);
       const parts = hideCount
@@ -5994,8 +6283,9 @@
       if (settings.showRatio && viewsN != null) {
         if (avgViews > 0) {
           const shown = ratioLabel(viewsN / avgViews);
-          parts.push('<span class="ytc-ratio ' + ratioClass(shown.value) + '" title="' +
-            ratioTitle(shown.value, avgViews) + '">' + shown.text + '</span>');
+          parts.push('<span class="ytc-ratio ' + ratioClass(shown.value) +
+            '" data-ytc-tip-title="Outlier" data-ytc-tip="' +
+            escapeHtml(ratioTitle(shown.value, avgViews)) + '">' + shown.text + '</span>');
         }
         if (subsN > 0) {
           const shown = ratioLabel(viewsN / subsN);
@@ -6004,7 +6294,8 @@
              channel's average, outlined means against its subscribers; a 3x reads as a 3x
              either way, and the shape says which question was asked. */
           parts.push('<span class="ytc-vsub ytc-out--' + ratioTier(shown.value) +
-            '" title="' + subRatioTitle(shown.value, subsN) + '">' + shown.text + '</span>');
+            '" data-ytc-tip-title="Views vs subscribers" data-ytc-tip="' +
+            escapeHtml(subRatioTitle(shown.value, subsN)) + '">' + shown.text + '</span>');
         }
       }
       /* Views per hour, from the card's own metadata — no extra request. The card only has a
@@ -6026,7 +6317,8 @@
                the "3 weeks ago" the other path has to work from, not less. */
             : vphFromStamp(meta.views, card.dataset.ytcPub);
           if (vph != null && vph >= 1) {
-            parts.push('<span class="ytc-vph" title="' + vphTitle(vph, exact != null) + '">' +
+            parts.push('<span class="ytc-vph" data-ytc-tip-title="Views per hour" ' +
+              'data-ytc-tip="' + escapeHtml(vphTitle(vph, exact != null)) + '">' +
               F.formatVph(vph) + ' VPH</span>');
           }
         } catch (e) {
@@ -6586,7 +6878,7 @@
     const vph = watch ? watchExactVph(watch) : null;
     if (!pill || vph == null || vph < 1) return;
     pill.textContent = F.formatVph(vph) + ' VPH';
-    pill.title = vphTitle(vph, true);
+    setTip(pill, { title: 'Views per hour', body: vphTitle(vph, true) });
   }
 
   /* Views per hour from an exact timestamp, for cards that carry no relative date. */
@@ -6855,6 +7147,9 @@
        one. Wrapped because applySettings also runs from the storage listener, where a throw
        would leave the toggles half applied. */
     try { scanComments(); } catch (e) { /* keep the rest of the settings applied */ }
+    // Same reasoning: switched off, the verdict has to leave the badge row now rather than
+    // waiting for whatever mutation happens to trigger the next scan.
+    try { decorateRemake(); } catch (e) { /* keep the rest of the settings applied */ }
   }
 
   chrome.storage.sync.get(null, (saved) => {
@@ -8083,51 +8378,6 @@
       next = next.nextElementSibling;
     }
     return next || home;
-  }
-
-  function ensurePocketNav() {
-    if (!settings.showPockets) {
-      document.querySelectorAll('.ytc-nav').forEach((n) => n.remove());
-      return;
-    }
-    for (const kind of ['full', 'mini']) {
-      const anchor = guideAnchorFor(kind);
-      if (!anchor || !anchor.parentElement) continue;
-      const cls = 'ytc-nav ytc-nav--' + kind;
-      /* Scoped to this guide, not the document: the full guide and the mini rail both exist
-         at once, and a document-wide check would let whichever was built first satisfy the
-         other. */
-      const already = anchor.parentElement.querySelector('.ytc-nav--' + kind);
-      if (already) {
-        /* Present, but not necessarily still in the right place — an earlier build of this
-           put it above Home. Move it rather than leaving it wherever it landed. */
-        if (already.previousElementSibling !== anchor) {
-          anchor.parentElement.insertBefore(already, anchor.nextSibling);
-        }
-        matchGuideMetrics(already, anchor);
-        continue;
-      }
-      const item = document.createElement('div');
-      item.className = cls;
-      item.setAttribute('role', 'link');
-      item.setAttribute('tabindex', '0');
-      item.title = 'Pockets — your saved channels';
-      item.innerHTML = '<span class="ytc-nav__icon">' + pocketIconSvg() + '</span>' +
-        '<span class="ytc-nav__label">Pockets</span>' +
-        '<span class="ytc-nav__new" hidden></span>';
-      const go = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        openPocketsModal();
-      };
-      item.addEventListener('click', go);
-      item.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') go(e);
-      });
-      anchor.parentElement.insertBefore(item, anchor.nextSibling);
-      matchGuideMetrics(item, anchor);
-    }
-    paintPocketNav();
   }
 
   /* Take the row's geometry from the row above it rather than restating it.
@@ -11110,6 +11360,11 @@
           note: 'Who is talking under a video — a fetch per channel, so it is off until you ask' },
         { k: 'showRatio', label: 'Outlier scores',
           note: 'Views against the channel’s own average, and against its subscribers' },
+        { k: 'showRemake', label: 'Remake verdict on watch pages',
+          note: 'Whether a video would transfer if you remade it — needs the two above',
+          /* Listed only when the feature is on. A switch for something that cannot appear
+             reads as a broken switch, which is worse than no switch at all. */
+          hidden: !REMAKE_UI },
         { k: 'showStats', label: 'Views per hour, engagement and earnings',
           note: 'On cards, and in full on a watch page' },
         { k: 'showMoney', label: 'Monetization estimate',
@@ -11265,7 +11520,7 @@
     const g = SETTINGS_GROUPS.find((x) => x.key === stTab) || SETTINGS_GROUPS[0];
     return '<div class="ytc-st__sec">' +
       (g.note ? '<p class="ytc-st__lead">' + escapeHtml(g.note) + '</p>' : '') +
-      g.items.map(settingsRow).join('') +
+      g.items.filter((it) => !it.hidden).map(settingsRow).join('') +
     '</div>';
   }
 
@@ -13928,7 +14183,7 @@
     const pill = document.createElement('span');
     pill.className = 'ytc-csubs';
     pill.textContent = F.compact(n) + ' subs';
-    pill.title = entry.text;
+    setTip(pill, { title: 'Subscriber count', body: entry.text });
     host.appendChild(pill);
   }
 

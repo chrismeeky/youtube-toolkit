@@ -197,6 +197,63 @@ html[dark] .ytc-btn:hover { color: #fff; }
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+/* Remake verdict, in the watch card's badge row beside the subscriber and outlier pills.
+   Drawn as a battery: the word says which tier, the fill says how far into the scale it sits,
+   and the two answer different questions. Four videos can all read "Weak" and still be 22, 30,
+   35 and 39 out of 100 — the label is what you scan for, the fill is what you compare with.
+
+   The colour is carried in a custom property rather than by wearing .ytc-out--* directly,
+   because that ladder paints a background and a border onto the element it sits on, and here
+   those belong on the inner cell so the fill can be clipped by it. Same five hues, light and
+   dark, so a Strong is the same green a breakout outlier is. */
+.ytc-remake {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  cursor: help;
+  color: var(--ytc-rm, #606060);
+}
+.ytc-remake--great { --ytc-rm: #0f9d58; }
+.ytc-remake--good  { --ytc-rm: #4c8409; }
+.ytc-remake--ok    { --ytc-rm: #b26a15; }
+.ytc-remake--low   { --ytc-rm: #e2551f; }
+.ytc-remake--poor  { --ytc-rm: #c62828; }
+html[dark] .ytc-remake--great { --ytc-rm: #4ecb71; }
+html[dark] .ytc-remake--good  { --ytc-rm: #94d13d; }
+html[dark] .ytc-remake--ok    { --ytc-rm: #e8a44c; }
+html[dark] .ytc-remake--low   { --ytc-rm: #ff8a5c; }
+html[dark] .ytc-remake--poor  { --ytc-rm: #ff8a80; }
+
+/* The cell clips the fill, so the rounding on one is the rounding on the other. */
+.ytc-remake__cell {
+  position: relative;
+  overflow: hidden;
+  padding: 2px 7px;
+  border: 1px solid;
+  border-color: inherit;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.ytc-remake__fill {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  background: currentColor;
+  opacity: .2;
+}
+/* Above the fill rather than behind it — at 100% the fill would otherwise cover the word. */
+.ytc-remake__text { position: relative; }
+/* The terminal. Small enough to read as part of the shape rather than as a separate pill,
+   and outside the cell so the fill never runs into it. */
+.ytc-remake::after {
+  content: "";
+  width: 2px;
+  height: 7px;
+  margin-left: 1px;
+  border-radius: 0 2px 2px 0;
+  background: currentColor;
+  opacity: .55;
+}
+
 /* Subscriber count beside a commenter's handle. Quieter than the card badge on purpose: it
    sits in YouTube's own author line, next to the timestamp, and a filled black pill there
    would outweigh the name it describes. Sized off the comment metadata, not the card. */
@@ -1143,7 +1200,12 @@ html[dark] .ytc-money--lg.ytc-money--no { color: #ff8a80; border-color: #ff8a80;
 /* ---- revenue breakdown ---- */
 /* Anchored under the channel-page monetization pill. Fixed width so the example lines wrap
    predictably rather than stretching to whatever the longest one happens to be. */
-.ytc-rev {
+/* The card every panel in the extension is drawn on. One chrome, two bodies: the
+   monetization breakdown (.ytc-rev, rows of evidence) and the plain explanation panel
+   (.ytc-tip, a heading and prose) that replaced the browser's native tooltips. They share
+   this block, the placement engine in content.js, and the open/close timing — so a tooltip
+   looks the same wherever it opens. */
+.ytc-pop {
   position: absolute; z-index: 2600; width: 420px; max-width: calc(100vw - 24px);
   /* Taller than the window on a short screen with several streams: it scrolls inside itself
      rather than running off the bottom. */
@@ -1154,6 +1216,32 @@ html[dark] .ytc-money--lg.ytc-money--no { color: #ff8a80; border-color: #ff8a80;
   border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,.18);
   font-family: Roboto, Arial, sans-serif; overflow: hidden;
 }
+/* Narrower than the monetization breakdown: this one is a paragraph or a short list, and a
+   420px line of 12px text is an uncomfortable read. */
+.ytc-tip { width: 320px; }
+.ytc-tip__head { padding: 13px 15px 5px; font-size: 15px; font-weight: 500; }
+.ytc-tip__body { margin: 0; padding: 0 15px 13px; font-size: 13px; line-height: 1.45; }
+/* No head: the body is the whole panel, so it needs the top padding the head would have had. */
+.ytc-tip__body:first-child { padding-top: 13px; }
+.ytc-tip__list { margin: 0; padding: 0 15px 13px; list-style: none; }
+.ytc-tip__list:first-child { padding-top: 13px; }
+.ytc-tip__list li {
+  position: relative; padding-left: 13px; margin-top: 5px;
+  font-size: 13px; line-height: 1.45;
+}
+.ytc-tip__list li:first-child { margin-top: 0; }
+/* A real bullet rather than the "·" the text used to carry, so the wrapped second line of a
+   long reason lines up under the first instead of under the dot. */
+.ytc-tip__list li::before {
+  content: "\2022"; position: absolute; left: 2px;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-tip__foot {
+  margin: 0; padding: 11px 15px; font-size: 12px; line-height: 1.4;
+  color: var(--yt-spec-text-secondary, #606060);
+  border-top: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.08));
+}
+html[dark] .ytc-tip__foot { border-top-color: rgba(255,255,255,.1); color: #aaa; }
 .ytc-rev__head { padding: 14px 16px 6px; font-size: 16px; }
 .ytc-rev__sub {
   margin: 0 0 8px; padding: 0 16px;
@@ -1188,9 +1276,9 @@ html[dark] .ytc-money--lg.ytc-money--no { color: #ff8a80; border-color: #ff8a80;
 .ytc-money--more { cursor: pointer; }
 /* Opened upward: the shadow falls the other way, so it still reads as sitting above the
    badge rather than under it. */
-.ytc-rev--above { box-shadow: 0 -8px 28px rgba(0,0,0,.18); }
-html[dark] .ytc-rev--above { box-shadow: 0 -8px 28px rgba(0,0,0,.6); }
-html[dark] .ytc-rev {
+.ytc-pop--above { box-shadow: 0 -8px 28px rgba(0,0,0,.18); }
+html[dark] .ytc-pop--above { box-shadow: 0 -8px 28px rgba(0,0,0,.6); }
+html[dark] .ytc-pop {
   background: #212121; color: #f1f1f1; border-color: rgba(255,255,255,.16);
   box-shadow: 0 8px 28px rgba(0,0,0,.6);
 }
