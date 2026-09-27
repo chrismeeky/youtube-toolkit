@@ -8426,6 +8426,47 @@
     } catch (e) { /* leave the stylesheet's defaults in place */ }
   }
 
+  function buildPocketNav(kind) {
+    const item = document.createElement('div');
+    item.className = 'ytc-nav ytc-nav--' + kind;
+    item.setAttribute('role', 'link');
+    item.tabIndex = 0;
+    item.title = 'Pockets';
+    item.innerHTML =
+      '<span class="ytc-nav__icon">' + pocketIconSvg() + '</span>' +
+      '<span class="ytc-nav__label">Pockets</span>' +
+      '<span class="ytc-nav__new" hidden></span>';
+    const open = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openPocketsModal();
+    };
+    item.addEventListener('click', open);
+    item.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') open(e);
+    });
+    return item;
+  }
+
+  /* Runs on every scan. YouTube rebuilds the guide on its own schedule, so the entry is
+     re-placed whenever it has been dropped or has drifted from the row it belongs under. */
+  function ensurePocketNav() {
+    if (!settings.showPockets) {
+      document.querySelectorAll('.ytc-nav').forEach((n) => n.remove());
+      return;
+    }
+    let painted = false;
+    ['full', 'mini'].forEach((kind) => {
+      const anchor = guideAnchorFor(kind);
+      let item = document.querySelector('.ytc-nav--' + kind);
+      if (!anchor) return;
+      if (!item) { item = buildPocketNav(kind); painted = true; }
+      if (anchor.nextElementSibling !== item) anchor.after(item);
+      if (kind === 'full') matchGuideMetrics(item, anchor);
+    });
+    if (painted) paintPocketNav();
+  }
+
   /* How many channels are kept, across all pockets — the size of the collection rather than
      the number of drawers it is filed into. */
   /* The pocket total used to sit on this row beside the watch count. Two numbers asked the
