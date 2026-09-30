@@ -12,6 +12,7 @@
   "host_permissions": [
     "https://*.youtube.com/*",
     "https://i.ytimg.com/*",
+    "https://web.archive.org/*",
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
     "https://claude.ai/*",

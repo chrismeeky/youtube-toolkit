@@ -768,6 +768,193 @@ html[dark] .ytc-vt__copy:focus-visible, html[dark] .ytc-vt__tag:focus-visible,
 html[dark] .ytc-vt__more:focus-visible { outline-color: #3ea6ff; }
 html[dark] .ytc-vt__note { color: #aaa; }
 
+/* ---- thumbnail card: same shell as the tags card above it ---- */
+.ytc-th {
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
+  border-radius: 12px; margin: 0 0 16px; overflow: hidden;
+  background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.03));
+  font-family: Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+html[dark] .ytc-th { border-color: rgba(255,255,255,.15); background: rgba(255,255,255,.04); }
+.ytc-th svg, .ytc-tg svg {
+  width: 14px; height: 14px; flex: 0 0 auto;
+  fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.ytc-th__head { display: flex; align-items: center; gap: 7px; padding: 10px 12px 8px; }
+.ytc-th .ytc-vt__icon svg { width: 13px; height: 13px; }
+.ytc-th__body { display: flex; gap: 12px; align-items: center; padding: 0 12px 12px; }
+.ytc-th__pic {
+  flex: 0 0 44%; max-width: 180px; aspect-ratio: 16 / 9; padding: 0; border: 0;
+  border-radius: 8px; overflow: hidden; cursor: zoom-in;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.08));
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.ytc-th__pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ytc-th__pic:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.18); }
+.ytc-th__pic:focus-visible { outline: 2px solid #065fd4; outline-offset: 2px; }
+.ytc-th__side { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.ytc-th__title {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden; font: 500 13px/1.35 Roboto, Arial, sans-serif;
+}
+.ytc-th__dl {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border: 0; border-radius: 999px; cursor: pointer;
+  background: #065fd4; color: #fff; font: 500 12px/1 Roboto, Arial, sans-serif;
+  transition: background .12s ease;
+}
+.ytc-th__dl:hover { background: #0550b8; }
+.ytc-th__dl:focus-visible { outline: 2px solid #065fd4; outline-offset: 2px; }
+html[dark] .ytc-th__dl { background: #3ea6ff; color: #0f0f0f; }
+html[dark] .ytc-th__dl:hover { background: #65b8ff; }
+
+/* ---- thumbnail gallery modal ---- */
+.ytc-tg__veil {
+  position: fixed; inset: 0; z-index: 2900; background: rgba(0,0,0,.6);
+  animation: ytc-tg-fade .15s ease;
+}
+.ytc-tg {
+  position: fixed; z-index: 2901; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  /* Sized from the window's height as well as its width, so the whole gallery fits without
+     scrolling: everything but the picture takes about 440px, and the picture is 16:9, so the
+     width that leaves the picture room is (height - 440) x 16/9 plus the side padding. */
+  width: min(calc(100vw - 32px),
+             max(440px, min(760px, calc((100vh - 440px) * 16 / 9 + 56px))));
+  max-height: calc(100vh - 32px); overflow: auto; overscroll-behavior: contain;
+  box-sizing: border-box; padding: 20px 28px 18px; border-radius: 16px;
+  /* Where it still has to scroll (a very short window), a thin bar inset from the rounded
+     corners, not the full-width default. */
+  scrollbar-width: thin; scrollbar-color: rgba(0,0,0,.25) transparent;
+  background: var(--yt-spec-base-background, #fff); color: var(--yt-spec-text-primary, #0f0f0f);
+  box-shadow: 0 24px 64px rgba(0,0,0,.35); font-family: Roboto, Arial, sans-serif;
+  animation: ytc-tg-in .18s ease;
+}
+html[dark] .ytc-tg { background: #212121; color: #f1f1f1; box-shadow: 0 24px 64px rgba(0,0,0,.6); }
+@keyframes ytc-tg-fade { from { opacity: 0; } }
+@keyframes ytc-tg-in { from { opacity: 0; transform: translate(-50%, -48%) scale(.98); } }
+.ytc-tg__x {
+  position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; border: 0;
+  border-radius: 50%; background: none; color: inherit; cursor: pointer;
+  font: 400 22px/1 Roboto, Arial, sans-serif; opacity: .7;
+}
+.ytc-tg__x:hover { opacity: 1; background: rgba(0,0,0,.06); }
+html[dark] .ytc-tg__x:hover { background: rgba(255,255,255,.1); }
+.ytc-tg::-webkit-scrollbar { width: 8px; height: 8px; }
+.ytc-tg::-webkit-scrollbar-track { background: transparent; margin: 14px 0; }
+.ytc-tg::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(0,0,0,.25); }
+html[dark] .ytc-tg { scrollbar-color: rgba(255,255,255,.25) transparent; }
+html[dark] .ytc-tg::-webkit-scrollbar-thumb { background: rgba(255,255,255,.25); }
+.ytc-tg__strip::-webkit-scrollbar { height: 6px; }
+.ytc-tg__strip::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(0,0,0,.2); }
+html[dark] .ytc-tg__strip::-webkit-scrollbar-thumb { background: rgba(255,255,255,.2); }
+.ytc-tg__head { text-align: center; margin-bottom: 14px; }
+.ytc-tg__badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 10px; background: #065fd4; color: #fff;
+}
+.ytc-tg__badge svg { width: 20px; height: 20px; }
+.ytc-tg__head h2 { margin: 8px 0 2px; font: 500 20px/1.3 Roboto, Arial, sans-serif; }
+.ytc-tg__head p {
+  margin: 0; font: 400 13px/1.4 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-tg__head p { color: #aaa; }
+.ytc-tg__frame {
+  position: relative; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.08));
+}
+.ytc-tg__frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ytc-tg__res {
+  position: absolute; right: 10px; bottom: 10px; padding: 3px 8px; border-radius: 6px;
+  background: rgba(0,0,0,.75); color: #fff; font: 500 11px/1.4 Roboto, Arial, sans-serif;
+}
+.ytc-tg__cap { margin: 12px 2px 0; font: 400 13px/1.4 Roboto, Arial, sans-serif; }
+.ytc-tg__cap b { font-weight: 500; }
+.ytc-tg__cap span {
+  display: block; margin-top: 2px; font-size: 12px;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-tg__cap span { color: #aaa; }
+.ytc-tg__acts {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 14px;
+}
+.ytc-tg__btn {
+  display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px;
+  border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.12)); border-radius: 999px;
+  background: none; color: inherit; cursor: pointer; font: 500 13px/1 Roboto, Arial, sans-serif;
+  transition: background .12s ease, border-color .12s ease;
+}
+.ytc-tg__btn:hover { background: rgba(0,0,0,.05); border-color: rgba(0,0,0,.25); }
+.ytc-tg__btn--main { background: #065fd4; border-color: #065fd4; color: #fff; }
+.ytc-tg__btn--main:hover { background: #0550b8; border-color: #0550b8; }
+.ytc-tg__btn:focus-visible, .ytc-tg__x:focus-visible { outline: 2px solid #065fd4; outline-offset: 2px; }
+html[dark] .ytc-tg__btn { border-color: rgba(255,255,255,.18); }
+html[dark] .ytc-tg__btn:hover { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.35); }
+html[dark] .ytc-tg__btn--main { background: #3ea6ff; border-color: #3ea6ff; color: #0f0f0f; }
+html[dark] .ytc-tg__btn--main:hover { background: #65b8ff; border-color: #65b8ff; }
+html[dark] .ytc-tg__badge { background: #3ea6ff; color: #0f0f0f; }
+/* Which version is in the frame, top-left, so a 2019 thumbnail is never mistaken for today's. */
+.ytc-tg__when {
+  position: absolute; left: 10px; top: 10px; padding: 3px 8px; border-radius: 6px;
+  max-width: calc(100% - 20px); box-sizing: border-box;
+  background: rgba(0,0,0,.75); color: #fff; font: 500 11px/1.4 Roboto, Arial, sans-serif;
+}
+.ytc-tg__when:empty { display: none; }
+.ytc-tg__hist { margin-top: 14px; }
+.ytc-tg__histhead {
+  display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px;
+  font: 400 12px/1.3 Roboto, Arial, sans-serif;
+}
+.ytc-tg__histhead b { font-size: 13px; font-weight: 500; }
+.ytc-tg__status { color: var(--yt-spec-text-secondary, #606060); }
+html[dark] .ytc-tg__status { color: #aaa; }
+.ytc-tg__retry {
+  margin-left: 4px; padding: 0; border: 0; background: none; cursor: pointer;
+  color: #065fd4; font: inherit; font-weight: 500;
+}
+.ytc-tg__retry:hover { text-decoration: underline; }
+html[dark] .ytc-tg__retry { color: #3ea6ff; }
+.ytc-tg__strip {
+  display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 6px;
+  scrollbar-width: thin;
+}
+.ytc-tg__tile {
+  flex: 0 0 132px; display: flex; flex-direction: column; gap: 5px; padding: 0;
+  border: 0; background: none; color: inherit; cursor: pointer; text-align: left;
+}
+.ytc-tg__tile img, .ytc-tg__tile--sk {
+  width: 132px; aspect-ratio: 16 / 9; object-fit: cover; display: block; border-radius: 8px;
+  outline: 2px solid transparent; outline-offset: 1px;
+  background: var(--yt-spec-10-percent-layer, rgba(0,0,0,.08));
+  transition: outline-color .12s ease, opacity .12s ease;
+}
+.ytc-tg__tile--sk { display: flex; align-items: center; justify-content: center; cursor: default; }
+.ytc-tg__tile:not(.ytc-tg__tile--on):not(.ytc-tg__tile--sk) img { opacity: .75; }
+.ytc-tg__tile:hover img { opacity: 1; }
+.ytc-tg__tile--on img { outline-color: #065fd4; }
+html[dark] .ytc-tg__tile--on img { outline-color: #3ea6ff; }
+.ytc-tg__tile:focus-visible { outline: none; }
+.ytc-tg__tile:focus-visible img { outline-color: #065fd4; }
+.ytc-tg__tilelbl {
+  font: 400 11px/1.3 Roboto, Arial, sans-serif; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; color: var(--yt-spec-text-secondary, #606060);
+}
+.ytc-tg__tilelbl b { font-weight: 500; color: var(--yt-spec-text-primary, #0f0f0f); }
+html[dark] .ytc-tg__tilelbl { color: #aaa; }
+html[dark] .ytc-tg__tilelbl b { color: #f1f1f1; }
+.ytc-tg__btn:disabled { opacity: .45; cursor: not-allowed; }
+.ytc-tg__foot {
+  margin: 12px 0 0; text-align: center; font: 400 11px/1.4 Roboto, Arial, sans-serif;
+  color: var(--yt-spec-text-secondary, #606060);
+}
+html[dark] .ytc-tg__foot { color: #aaa; }
+@media (prefers-reduced-motion: reduce) {
+  .ytc-tg, .ytc-tg__veil { animation: none; }
+  .ytc-th__pic, .ytc-th__dl, .ytc-tg__btn { transition: none; }
+  .ytc-th__pic:hover { transform: none; }
+}
+
 /* Shorts promoting this video — the same card as the stats above it, so the two read as one
    block of the sidebar rather than something YouTube put there. */
 .ytc-ps {
@@ -2705,6 +2892,9 @@ html[dark] .ytc-pv__thumb { background: rgba(255, 255, 255, .1); }
 html[dark] .ytc-pkbtn { border-color: rgba(255, 255, 255, .2); }
 html[dark] .ytc-pkbtn:hover { background: rgba(255, 255, 255, .1); }
 html[dark] .ytc-pkbtn--on { border-color: #3ea6ff; color: #3ea6ff; }
+/* The watch page's copy, after Subscribe in the channel row. Held at its own width, since that
+   row shrinks the channel name first and must not squeeze the button instead. */
+.ytc-pkvbtn { margin-left: 12px; flex: 0 0 auto; }
 
 /* The star on a similar-channels row. It lives inside the row's own link, so it is a button
    that stops the click rather than a second link competing with it. */
@@ -3137,6 +3327,38 @@ html[dark] .ytc-pkv__folder--on .ytc-pkv__ico { color: #3ea6ff; }
 .ytc-pkv__noteinput:focus { outline: none; }
 html[dark] .ytc-pkv__note:hover { background: rgba(255, 255, 255, .08); }
 html[dark] .ytc-pkv__noteinput { border-color: #3ea6ff; }
+
+/* Saved videos: the same table as the channels, one column fewer (no New — the watcher
+   follows channels) and a thumbnail where the avatar would be. */
+.ytc-pkv__row--vid {
+  grid-template-columns: minmax(240px, 2.4fr) minmax(120px, 1.4fr) .8fr .7fr .8fr .7fr 40px;
+}
+.ytc-pkv__kind {
+  margin: 0; padding: 16px 20px 6px;
+  font: 500 11px/1 Roboto, Arial, sans-serif; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--yt-spec-text-primary, #0f0f0f);
+}
+.ytc-pkv__vid {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  text-decoration: none; color: inherit;
+}
+.ytc-pkv__thumb {
+  position: relative; flex: 0 0 auto; width: 96px; aspect-ratio: 16 / 9;
+  border-radius: 6px; overflow: hidden;
+  background: var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .08));
+}
+.ytc-pkv__thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ytc-pkv__len {
+  position: absolute; right: 3px; bottom: 3px; padding: 1px 4px; border-radius: 3px;
+  background: rgba(0, 0, 0, .8); color: #fff; font: 500 10px/1.3 Roboto, Arial, sans-serif;
+}
+.ytc-pkv__vtitle {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden; font: 500 13px/1.35 Roboto, Arial, sans-serif;
+}
+.ytc-pkv__vid:hover .ytc-pkv__vtitle { text-decoration: underline; }
+html[dark] .ytc-pkv__kind { color: #f1f1f1; }
+html[dark] .ytc-pkv__thumb { background: rgba(255, 255, 255, .08); }
 
 .ytc-pkv__drop {
   border: 0; background: none; cursor: pointer; border-radius: 6px; padding: 2px 6px;

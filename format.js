@@ -32,6 +32,7 @@
     showMoney: true,              // monetization badge (inferred from ad placements)
     showStats: true,              // views/hour, engagement and an earnings estimate
     showTags: true,               // the video's own tags, in a card under the watch-page figures
+    showThumbCard: true,          // the current thumbnail in the watch sidebar, with a download
     showSimilar: true,            // "Similar channels" button on channel pages
     /* Shorts have no sidebar and no description, so the figures every other page shows have
        nowhere to go. This puts them in the empty gutter beside the player. */

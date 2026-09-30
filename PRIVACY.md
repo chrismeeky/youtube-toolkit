@@ -1,6 +1,6 @@
 # YouTube Toolkit — Privacy Policy
 
-_Last updated: 28 August 2026_
+_Last updated: 30 September 2026_
 
 YouTube Toolkit shows statistics about YouTube channels and videos on the YouTube pages you
 are already viewing, and helps you copy that information as text. There is no account, no
@@ -17,7 +17,12 @@ requests it makes in the background. It is written against what the code actuall
   lookups, kept so the same channel is not fetched repeatedly. Stored locally and never
   synced. Clearing it is a button in the extension's popup.
 
-Neither is readable by us. Both disappear when you uninstall the extension.
+- **Thumbnail versions of videos you watch** — a fingerprint and a small (192×108) copy of a
+  video's thumbnail, kept only when it differs from the last one seen, so the thumbnail
+  gallery can show a change the Internet Archive never captured. Up to 300 videos; the oldest
+  are dropped first. Switching off "Thumbnail card on watch pages" stops it.
+
+None of this is readable by us. All of it disappears when you uninstall the extension.
 
 ## What is sent to YouTube
 
@@ -59,13 +64,23 @@ address in transit; it is not recorded against the data.
 no channel is reported, no recommendations are read, and no background pages are fetched for
 it. The rest of the extension continues to work.
 
+## What is sent to the Internet Archive
+
+When you open the **thumbnail gallery** on a watch page, the extension asks the Internet
+Archive (`web.archive.org`) which copies it holds of that video's thumbnail images, and
+downloads a sample of them to find the earlier versions. The request names the **video ID**
+and nothing else — no account, cookie or identifier of yours is sent (requests go without
+credentials). It happens only when you open the gallery, and the answer is cached for three
+days. The Internet Archive's own privacy policy covers what it logs.
+
 ## What is never collected
 
 No names, email addresses, passwords or payment details. No location. No health, financial
 or personal-communication data. No browsing history outside YouTube. No advertising or
 analytics libraries are included, and the extension contains no remotely loaded code.
 
-Nothing is sold, rented or shared with third parties, and nothing is used for advertising or
+Nothing is sold, rented or shared with third parties (the Internet Archive request above
+names only a public video ID), and nothing is used for advertising or
 for any purpose unrelated to showing you these statistics.
 
 ## Retention

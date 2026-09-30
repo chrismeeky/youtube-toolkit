@@ -782,6 +782,7 @@
     /* Kept out of decorateChannelHeader deliberately: that function returns early when the
        monetization badge is switched off, which would silently take the tab with it. */
     try { ensurePocketButton(); } catch (e) { /* keep the rest of the scan */ }
+    try { ensureVideoPocketButton(); } catch (e) { /* keep the rest of the scan */ }
     try { ensurePocketNav(); } catch (e) { /* keep the rest of the scan */ }
     ensureSimilarTab();
     /* After the tabs, because a rebuild there drops the active class and this puts it back. */
@@ -803,6 +804,7 @@
     try { closeOrphanPopover(); } catch (e) { /* keep the rest of the scan */ }
     noteChannelSeen();
     renderStatsCard();
+    try { ensureThumbCard(); } catch (e) { /* keep the rest of the scan */ }
     // Wrapped like its neighbours: an optional panel must never take the scan down with it.
     try { ensurePromoShorts(); } catch (e) { /* keep the rest of the scan */ }
     const watch = watchCard();
@@ -1211,6 +1213,353 @@
       const more = box.querySelector('.ytc-vt__more');
       if (more) more.remove();
     }
+  }
+
+  /* The cards we stack at the top of the watch sidebar, in their one order: stats, tags,
+     thumbnail, then the Shorts card. Each places itself after whatever of the ones above it
+     is present — asking this rather than naming a neighbour, because two cards that each
+     insist on sitting directly under the stats card swap places on every scan, and every
+     swap is a mutation that triggers the next scan. */
+  function sidebarStackTail(from, stopAt) {
+    let el = from;
+    while (el.nextElementSibling && el.nextElementSibling.matches('.ytc-vt, .ytc-th') &&
+           !(stopAt && el.nextElementSibling.matches(stopAt))) {
+      el = el.nextElementSibling;
+    }
+    return el;
+  }
+
+  /* ---- thumbnail card and gallery ---- */
+
+  /* The current thumbnail, shown small with the one thing people come to it for: getting a
+     copy. The small one is mqdefault because it is the only size that always exists and is
+     already 16:9 (see the filter rows). The gallery asks for the largest and walks down. */
+  const THUMB_SIZES_UI = ['maxresdefault', 'sddefault', 'hqdefault'];
+
+  function thumbVideo() {
+    const card = watchCard();
+    let id = '';
+    try { id = new URL(location.href).searchParams.get('v') || ''; } catch (e) { /* none */ }
+    if (!card || !id) return null;
+    const st = (cardState.videoId === id && cardState.stats) || {};
+    return {
+      id,
+      title: findTitle(card) || document.title.replace(/\s*-\s*YouTube\s*$/, ''),
+      channel: st.channelName || ''
+    };
+  }
+
+  function thumbIcon() {
+    return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" ' +
+      'height="16" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-9 9"/></svg>';
+  }
+
+  function dlIcon() {
+    return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/>' +
+      '<path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></svg>';
+  }
+
+  let thumbSeenId = '';
+
+  function ensureThumbCard() {
+    let box = document.querySelector('.ytc-th');
+    const v = settings.showThumbCard && /^\/watch/.test(location.pathname) ? thumbVideo() : null;
+    const host = v && sidebarHost();
+    if (!v || (!host && !box)) {
+      if (box && !v) box.remove();
+      return;
+    }
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'ytc-th';
+      box.addEventListener('click', (e) => {
+        if (e.target.closest('.ytc-th__dl, .ytc-th__pic')) openThumbGallery();
+      });
+    }
+    const stats = document.querySelector('.ytc-cs');
+    if (stats && stats.parentElement) {
+      const above = sidebarStackTail(stats, '.ytc-th');
+      if (box.previousElementSibling !== above) above.after(box);
+    } else if (host && host.firstElementChild !== box) {
+      host.insertBefore(box, host.firstChild);
+    }
+    const html =
+      '<div class="ytc-th__head">' +
+        '<span class="ytc-vt__icon">' + thumbIcon() + '</span>' +
+        '<span class="ytc-vt__label">Thumbnail</span>' +
+      '</div>' +
+      '<div class="ytc-th__body">' +
+        '<button type="button" class="ytc-th__pic" title="Open the full-size thumbnail">' +
+          '<img src="https://i.ytimg.com/vi/' + encodeURIComponent(v.id) +
+            '/mqdefault.jpg" alt="" loading="lazy">' +
+        '</button>' +
+        '<div class="ytc-th__side">' +
+          '<span class="ytc-th__title">' + escapeHtml(v.title) + '</span>' +
+          '<button type="button" class="ytc-th__dl">' + dlIcon() +
+            '<span>Download thumbnail</span></button>' +
+        '</div>' +
+      '</div>';
+    if (box.dataset.sig !== html) {
+      box.dataset.sig = html;
+      box.innerHTML = html;
+    }
+    /* Fingerprinted once per video per page, so a thumbnail swapped between two visits is
+       kept as a version even when the Internet Archive never saw it. */
+    if (thumbSeenId !== v.id) {
+      thumbSeenId = v.id;
+      // Nothing comes back; reading lastError keeps Chrome from logging the closed port.
+      sendMessage({ type: 'ytc-thumb-seen', id: v.id }, () => { void chrome.runtime.lastError; });
+    }
+  }
+
+  function thumbGalleryOpen() { return !!document.querySelector('.ytc-tg'); }
+
+  function closeThumbGallery() {
+    document.querySelectorAll('.ytc-tg, .ytc-tg__veil').forEach((n) => n.remove());
+    document.removeEventListener('keydown', thumbGalleryEsc, true);
+  }
+
+  function thumbGalleryEsc(e) {
+    // A pocket dialog opened from here is on top, and Escape belongs to it first.
+    if (e.key !== 'Escape' || !thumbGalleryOpen() || pkDlg) return;
+    e.stopPropagation();
+    closeThumbGallery();
+  }
+
+  /* "Jun 2025", or "Mar 2019 – Jun 2025" for a range, in the reader's own locale. */
+  function thMonth(t) {
+    return new Date(t).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+  }
+  function thRange(v) {
+    const a = thMonth(v.first);
+    const z = thMonth(v.last);
+    return a === z ? a : a + ' – ' + z;
+  }
+  /* The same to the day, for the frame's badge, where there is room for it. */
+  function thDay(t) {
+    return new Date(t).toLocaleDateString(undefined,
+      { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+  function thDayRange(v) {
+    const a = thDay(v.first);
+    const z = thDay(v.last);
+    return a === z ? a : a + ' – ' + z;
+  }
+  function openThumbGallery() {
+    const v = thumbVideo();
+    if (!v) return;
+    closeThumbGallery();
+    const veil = document.createElement('div');
+    veil.className = 'ytc-tg__veil';
+    veil.addEventListener('click', closeThumbGallery);
+    const box = document.createElement('div');
+    box.className = 'ytc-tg';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', 'Thumbnail gallery');
+    const base = 'https://i.ytimg.com/vi/' + encodeURIComponent(v.id) + '/';
+    const svgBtn = (d) => '<svg viewBox="0 0 24 24" aria-hidden="true">' + d + '</svg>';
+    box.innerHTML =
+      '<button type="button" class="ytc-tg__x" aria-label="Close">×</button>' +
+      '<div class="ytc-tg__head">' +
+        '<span class="ytc-tg__badge">' + thumbIcon() + '</span>' +
+        '<h2>Thumbnail gallery</h2>' +
+        '<p>View the history of thumbnails for this video</p>' +
+      '</div>' +
+      '<div class="ytc-tg__frame">' +
+        '<img alt="Thumbnail of ' + escapeHtml(v.title) + '">' +
+        '<span class="ytc-tg__when"></span>' +
+        '<span class="ytc-tg__res" hidden></span>' +
+      '</div>' +
+      '<div class="ytc-tg__hist">' +
+        '<div class="ytc-tg__histhead"><b>History</b><span class="ytc-tg__status"></span></div>' +
+        '<div class="ytc-tg__strip" role="listbox" aria-label="Thumbnail versions"></div>' +
+      '</div>' +
+      '<p class="ytc-tg__cap"><b>' + escapeHtml(v.title) + '</b>' +
+        (v.channel ? '<span>' + escapeHtml(v.channel) + '</span>' : '') + '</p>' +
+      '<div class="ytc-tg__acts">' +
+        '<button type="button" class="ytc-tg__btn ytc-tg__btn--main" data-tg="dl">' +
+          dlIcon() + '<span>Download thumbnail</span></button>' +
+        '<button type="button" class="ytc-tg__btn" data-tg="open">' +
+          svgBtn('<path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 ' +
+            '1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>') + '<span>Open full size</span></button>' +
+        (settings.showPockets
+          ? '<button type="button" class="ytc-tg__btn" data-tg="pocket">' +
+              svgBtn('<path d="M17 3H7a2 2 0 0 0-2 2v16l7-3 7 3V5a2 2 0 0 0-2-2z"/>') +
+              '<span>Add to pocket</span></button>'
+          : '') +
+        '<button type="button" class="ytc-tg__btn" data-tg="copy">' +
+          svgBtn('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/>' +
+            '<path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>') +
+          '<span>Copy image link</span></button>' +
+      '</div>' +
+      '<p class="ytc-tg__foot">A thumbnail used only briefly may not appear in the ' +
+        'history.</p>';
+    document.body.appendChild(veil);
+    document.body.appendChild(box);
+    document.addEventListener('keydown', thumbGalleryEsc, true);
+
+    const img = box.querySelector('.ytc-tg__frame img');
+    const res = box.querySelector('.ytc-tg__res');
+    const when = box.querySelector('.ytc-tg__when');
+    const strip = box.querySelector('.ytc-tg__strip');
+    const status = box.querySelector('.ytc-tg__status');
+
+    /* What the gallery can show. The first entry is always the live thumbnail, straight from
+       YouTube; the rest arrive from the history lookup. `sel` is the one in the big frame, and
+       every action below acts on it — downloading a 2019 version has to save the 2019 one. */
+    const live = { live: true, first: 0, last: 0, w: 0, h: 0 };
+    let versions = [live];
+    let sel = live;
+
+    /* The live one walks down from maxres on a 404 — maxres exists only for 720p+ uploads.
+       The smaller two are 4:3 with bars baked in; the frame is 16:9 and crops them off. */
+    let at = 0;
+    let liveSrc = base + THUMB_SIZES_UI[0] + '.jpg';
+    img.addEventListener('error', () => {
+      if (sel !== live) return;
+      at++;
+      if (at < THUMB_SIZES_UI.length) {
+        liveSrc = base + THUMB_SIZES_UI[at] + '.jpg';
+        img.src = liveSrc;
+      }
+    });
+    img.addEventListener('load', () => {
+      const w = (sel !== live && sel.w) || img.naturalWidth;
+      const h = (sel !== live && sel.h) || img.naturalHeight;
+      res.textContent = w && h ? w + ' × ' + h : '';
+      res.hidden = !(w && h);
+    });
+
+    const fullOf = (x) => (x.live ? liveSrc : x.full || '');
+
+    function show(x) {
+      sel = x;
+      res.hidden = true;
+      if (x.live) {
+        img.src = liveSrc;
+        when.textContent = 'Now' + (x.first ? ' · since ' + thDay(x.first) : '');
+      } else {
+        /* The small copy first, because it is already here and cannot be blocked; the
+           archive's full-size file replaces it if it loads while this one is still picked. */
+        img.src = x.img;
+        if (x.full) {
+          const hi = new Image();
+          hi.onload = () => { if (sel === x) img.src = x.full; };
+          hi.src = x.full;
+        }
+        when.textContent = thDayRange(x);
+      }
+      box.querySelectorAll('[data-tgv]').forEach((t) => {
+        const on = versions[Number(t.dataset.tgv)] === x;
+        t.classList.toggle('ytc-tg__tile--on', on);
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      const full = fullOf(x);
+      box.querySelectorAll('[data-tg="open"], [data-tg="copy"]').forEach((b) => {
+        b.disabled = !full;
+        b.title = full ? '' : 'Only a small copy of this version was kept on this device';
+      });
+    }
+
+    function tiles() {
+      strip.innerHTML = versions.map((x, i) =>
+        '<button type="button" class="ytc-tg__tile" role="option" data-tgv="' + i + '">' +
+          '<img src="' + escapeHtml(x.live ? base + 'mqdefault.jpg' : x.img) + '" alt="">' +
+          '<span class="ytc-tg__tilelbl">' +
+            (x.live ? '<b>Now</b>' : escapeHtml(thRange(x))) +
+          '</span>' +
+        '</button>').join('');
+      show(sel);
+    }
+
+    function skeleton() {
+      strip.innerHTML = '<button type="button" class="ytc-tg__tile" role="option" data-tgv="0">' +
+          '<img src="' + escapeHtml(base + 'mqdefault.jpg') + '" alt="">' +
+          '<span class="ytc-tg__tilelbl"><b>Now</b></span></button>' +
+        [0, 1, 2].map(() => '<span class="ytc-tg__tile ytc-tg__tile--sk">' +
+          '<span class="ytc-cs__skel"></span></span>').join('');
+      show(sel);
+    }
+
+    function load(force) {
+      versions = [live];
+      sel = live;
+      skeleton();
+      status.textContent = 'Looking for earlier thumbnails…';
+      sendMessage({ type: 'ytc-thumb-history', id: v.id, force: !!force }, (out) => {
+        if (!box.isConnected) return;
+        if (chrome.runtime.lastError || !out || !out.ok) {
+          versions = [live];
+          tiles();
+          status.innerHTML = 'Could not check the history. ' +
+            '<button type="button" class="ytc-tg__retry">Try again</button>';
+          return;
+        }
+        const past = [];
+        for (const x of out.versions || []) {
+          // The version on the video today is the live tile, not a second copy of it.
+          if (x.current) { live.first = x.first; continue; }
+          past.push(x);
+        }
+        versions = [live].concat(past);
+        tiles();
+        const n = past.length;
+        status.innerHTML = n
+          ? n + (n === 1 ? ' earlier version' : ' earlier versions')
+          : out.reason
+            ? 'Could not check the history. ' +
+              '<button type="button" class="ytc-tg__retry">Try again</button>'
+            : out.archived
+              ? 'No earlier thumbnails — the same one since ' +
+                (live.first ? thMonth(live.first) : 'it was first saved')
+              : 'No saved copies of this video’s thumbnail yet';
+      });
+    }
+
+    img.src = liveSrc;
+    load(false);
+
+    box.addEventListener('click', (e) => {
+      if (e.target.closest('.ytc-tg__x')) { closeThumbGallery(); return; }
+      if (e.target.closest('.ytc-tg__retry')) { load(true); return; }
+      const tile = e.target.closest('[data-tgv]');
+      if (tile) {
+        const x = versions[Number(tile.dataset.tgv)];
+        if (x) show(x);
+        return;
+      }
+      const b = e.target.closest('[data-tg]');
+      if (!b || b.disabled) return;
+      const act = b.dataset.tg;
+      const full = fullOf(sel);
+      if (act === 'dl') {
+        if (sel.live) {
+          saveThumbs([{ id: v.id, title: v.title }], 'Saved thumbnail');
+        } else {
+          sendMessage({ type: 'ytc-thumb-save', url: full || sel.img, id: v.id,
+                        title: v.title, when: sel.first }, (r) => {
+            const ok = !chrome.runtime.lastError && r && r.ok;
+            toast(ok ? 'Saved the ' + thRange(sel) + ' thumbnail' : 'Download failed', !ok);
+          });
+        }
+      } else if (act === 'open') {
+        window.open(full, '_blank', 'noopener');
+      } else if (act === 'copy') {
+        copyText(full).then((ok) => {
+          toast(ok ? 'Image link copied' : 'Could not copy the link', !ok);
+        });
+      } else if (act === 'pocket') {
+        const pv = currentVideoForPocket();
+        if (pv) {
+          openPocketDialog(pv, b, () => {
+            const vb = document.querySelector('.ytc-pkvbtn');
+            if (vb) paintVideoPocketButton(vb);
+          });
+        }
+      }
+    });
+    const x = box.querySelector('.ytc-tg__x');
+    if (x) x.focus();
   }
 
   function renderStatsCard() {
@@ -6802,9 +7151,8 @@
         askPromo(false, b.dataset.ps === 'refresh');
       });
     }
-    // Below the tags card when there is one, so the order holds: stats, tags, Shorts.
-    const above = (card.nextElementSibling && card.nextElementSibling.matches('.ytc-vt'))
-      ? card.nextElementSibling : card;
+    // Last of the stack, so the order holds: stats, tags, thumbnail, Shorts.
+    const above = sidebarStackTail(card);
     if (box.previousElementSibling !== above) card.parentElement.insertBefore(box, above.nextSibling);
     if (!promoState.peeked) {
       promoState.peeked = true;
@@ -7444,10 +7792,14 @@
         const list = (got && got[POCKET_STORE]) || [];
         pockets = Array.isArray(list)
           ? list.filter((p) => p && p.id && p.title)
-              .map((p) => Object.assign({ desc: '', channels: [] }, p, {
+              .map((p) => Object.assign({ desc: '', channels: [], videos: [] }, p, {
                 // note arrived later; channels saved before it have none.
                 channels: (Array.isArray(p.channels) ? p.channels : [])
-                  .map((c) => Object.assign({ note: '' }, c))
+                  .map((c) => Object.assign({ note: '' }, c)),
+                // videos arrived later still; pockets saved before them have none.
+                videos: (Array.isArray(p.videos) ? p.videos : [])
+                  .filter((v) => v && v.videoId)
+                  .map((v) => Object.assign({ note: '' }, v))
               }))
           : [];
         if (cb) cb();
@@ -7469,7 +7821,8 @@
       title: String(title || '').trim().slice(0, POCKET_TITLE_MAX),
       desc: String(desc || '').trim().slice(0, POCKET_DESC_MAX),
       created: Date.now(),
-      channels: []
+      channels: [],
+      videos: []
     };
     pockets.push(p);
     return p;
@@ -7554,8 +7907,81 @@
   }
 
   function pocketsHolding(c) {
+    if (c && c.kind === 'video') return pockets.filter((p) => pocketVideoHas(p, c));
     if (!pocketChannelKey(c)) return [];
     return pockets.filter((p) => (p.channels || []).some((x) => sameChannel(x, c)));
+  }
+
+  /* ---- videos ----
+
+     Kept beside channels in the same pocket rather than in a second store: a pocket is a
+     research question — "bodycam channels worth studying" — and the videos that made a niche
+     worth studying belong with the channels that made them. The watcher in the service worker
+     reads only p.channels, so videos in a pocket are kept, never swept.
+
+     Snapshotted for the same reason channels are: the views and outlier at the moment of
+     saving are why it was saved. A video is one video however it was reached, so its id is
+     the whole key. */
+  const POCKET_VIDEOS_MAX = 500;
+
+  function pocketVideoHas(pocket, v) {
+    return !!(v && v.videoId) && (pocket.videos || []).some((x) => x.videoId === v.videoId);
+  }
+
+  function pocketVideoAdd(pocket, v) {
+    if (!pocket || !v || !v.videoId || pocketVideoHas(pocket, v)) return false;
+    if (!Array.isArray(pocket.videos)) pocket.videos = [];
+    if (pocket.videos.length >= POCKET_VIDEOS_MAX) return false;
+    const num = (x) => (x == null || !isFinite(x) ? null : Number(x));
+    pocket.videos.push({
+      videoId: v.videoId,
+      title: String(v.title || '').slice(0, 200),
+      channelTitle: v.channelTitle || '',
+      handle: v.handle || '',
+      channelId: v.channelId || '',
+      views: num(v.views),
+      outlier: num(v.outlier),
+      vph: num(v.vph),
+      publishDate: v.publishDate || '',
+      lengthSeconds: num(v.lengthSeconds),
+      shorts: !!v.shorts,
+      note: String(v.note || '').slice(0, POCKET_NOTE_MAX),
+      added: Date.now()
+    });
+    return true;
+  }
+
+  function pocketVideoRemove(pocket, videoId) {
+    const before = (pocket.videos || []).length;
+    pocket.videos = (pocket.videos || []).filter((x) => x.videoId !== videoId);
+    return pocket.videos.length !== before;
+  }
+
+  /* The save dialog takes either kind, and asks these rather than knowing which it holds. */
+  function pkKey(t) {
+    return t && t.kind === 'video' ? (t.videoId ? 'v:' + t.videoId : '') : pocketChannelKey(t);
+  }
+  function pkHas(p, t) { return t && t.kind === 'video' ? pocketVideoHas(p, t) : pocketHas(p, t); }
+  function pkAdd(p, t) { return t && t.kind === 'video' ? pocketVideoAdd(p, t) : pocketAdd(p, t); }
+  function pkRemove(p, t) {
+    return t && t.kind === 'video' ? pocketVideoRemove(p, t.videoId)
+      : pocketRemove(p, pocketChannelKey(t));
+  }
+  function pkEntry(p, t) {
+    return t && t.kind === 'video'
+      ? (p.videos || []).find((x) => x.videoId === t.videoId) || null
+      : pocketEntry(p, t);
+  }
+
+  /* "4 channels · 2 videos", leaving out whichever kind is empty — but never both, because
+     an empty pocket still has to say so. */
+  function pocketSizeText(p, nc, nv) {
+    const c = nc == null ? (p.channels || []).length : nc;
+    const v = nv == null ? (p.videos || []).length : nv;
+    const cs = c + (c === 1 ? ' channel' : ' channels');
+    const vs = v + (v === 1 ? ' video' : ' videos');
+    if (c && v) return cs + ' \u00b7 ' + vs;
+    return v ? vs : cs;
   }
 
 
@@ -7579,15 +8005,18 @@
      is never a list of empty headings. */
   function pocketSearch(list, q) {
     const needle = String(q || '').trim().toLowerCase();
-    if (!needle) return list.map((p) => ({ pocket: p, channels: p.channels || [] }));
+    const all = (p) => ({ pocket: p, channels: p.channels || [], videos: p.videos || [] });
+    if (!needle) return list.map(all);
     const hit = (v) => String(v || '').toLowerCase().indexOf(needle) >= 0;
     const out = [];
     for (const p of list) {
       const self = hit(p.title) || hit(p.desc);
       const kids = (p.channels || []).filter((c) =>
         hit(c.title) || hit(c.handle) || hit(c.note));
-      if (self) out.push({ pocket: p, channels: p.channels || [] });
-      else if (kids.length) out.push({ pocket: p, channels: kids });
+      const vids = (p.videos || []).filter((v) =>
+        hit(v.title) || hit(v.channelTitle) || hit(v.handle) || hit(v.note));
+      if (self) out.push(all(p));
+      else if (kids.length || vids.length) out.push({ pocket: p, channels: kids, videos: vids });
     }
     return out;
   }
@@ -7729,8 +8158,8 @@
   /* One row of the rail. Under a search the count reads "2/7" — the pocket still holds seven,
      and hiding that would make a filtered view look like channels had gone missing. */
   function pocketSideItem(p, shown, on) {
-    const n = (p.channels || []).length;
-    const m = (shown || []).length;
+    const n = (p.channels || []).length + (p.videos || []).length;
+    const m = (shown.channels || []).length + (shown.videos || []).length;
     return '<button type="button" class="ytc-pkv__folder' +
         (on ? ' ytc-pkv__folder--on' : '') + '" data-open="' + escapeHtml(p.id) + '"' +
         (on ? ' aria-current="true"' : '') + '>' +
@@ -7755,8 +8184,11 @@
 
   /* The pane beside the rail: everything about the one pocket that is open. */
   function pocketDetail(p, shown) {
-    const list = shown || p.channels || [];
-    const n = (p.channels || []).length;
+    const list = (shown && shown.channels) || p.channels || [];
+    const vlist = (shown && shown.videos) || p.videos || [];
+    const n = (p.channels || []).length + (p.videos || []).length;
+    // Headed only when there is a second kind to tell it apart from.
+    const titled = !!(list.length && vlist.length);
     const editing = pkEdit === p.id;
     const confirming = pkConfirm === p.id;
     return '<section class="ytc-pkv__pocket">' +
@@ -7776,8 +8208,7 @@
             '</div>'
           : '<div class="ytc-pkv__meta">' +
               '<b>' + escapeHtml(p.title) + '</b>' +
-              '<span class="ytc-pkv__count">' + n + (n === 1 ? ' channel' : ' channels') +
-              '</span>' +
+              '<span class="ytc-pkv__count">' + pocketSizeText(p) + '</span>' +
               (p.desc ? '<i>' + escapeHtml(p.desc) + '</i>' : '') +
             '</div>' +
             '<div class="ytc-pkv__acts">' +
@@ -7793,8 +8224,8 @@
       (confirming
         ? '<div class="ytc-pkv__warn">' +
             (n
-              ? '<b>Delete “' + escapeHtml(p.title) + '” and the ' + n +
-                (n === 1 ? ' channel' : ' channels') + ' in it?</b> This cannot be undone.'
+              ? '<b>Delete “' + escapeHtml(p.title) + '” and the ' + pocketSizeText(p) +
+                ' in it?</b> This cannot be undone.'
               : '<b>Delete “' + escapeHtml(p.title) + '”?</b> It is empty.') +
             '<span class="ytc-pkv__warnacts">' +
               '<button type="button" class="ytc-pkv__delyes" data-pocket="' +
@@ -7803,6 +8234,7 @@
             '</span>' +
           '</div>'
         : '') +
+      (titled ? '<h3 class="ytc-pkv__kind">Channels</h3>' : '') +
       (list.length
         /* Header cells take .ytc-t__c exactly like the data cells do. Without it they were
            bare spans, so every heading sat left in its column while the figure under it sat
@@ -7820,11 +8252,92 @@
             '</div>' +
             list.map((c) => pocketChannelRow(p, c)).join('') +
           '</div>'
+        : vlist.length ? ''
         : '<p class="ytc-pkv__empty">' + (n
-            ? 'No channel in here matches that search.'
-            : 'Nothing saved here yet. Use the ☆ on a channel page or in Similar ' +
-              'channels.') + '</p>') +
+            ? 'Nothing in here matches that search.'
+            : 'Nothing saved here yet. Use ☆ Pocket on a channel page or a video, or the ☆ ' +
+              'in Similar channels.') + '</p>') +
+      (titled ? '<h3 class="ytc-pkv__kind">Videos</h3>' : '') +
+      (vlist.length
+        ? '<div class="ytc-pkv__table">' +
+            '<div class="ytc-pkv__row ytc-pkv__row--vid ytc-pkv__row--head">' +
+              '<span>Video</span>' +
+              PKV_COLS.map((c) => '<span class="ytc-t__c' + (c.cls ? ' ' + c.cls : '') + '">' +
+                c.label + '</span>').join('') +
+              '<span class="ytc-t__c"></span>' +
+            '</div>' +
+            vlist.map((v) => pocketVideoRow(p, v)).join('') +
+          '</div>'
+        : '') +
     '</section>';
+  }
+
+  /* A video's columns. Figures are as they stood when it was saved — the reason it was kept —
+     so the views column says so rather than passing for today's count. */
+  const PKV_COLS = [
+    { label: 'Note', cls: 'ytc-pkv__note' },
+    { label: 'Views then',
+      cell: (v) => (v.views != null ? escapeHtml(F.compact(v.views)) : '\u2014') },
+    { label: 'Outlier', cls: 'ytc-t__out', cell: (v) => {
+        if (!v.outlier) return '\u2014';
+        const shown = ratioLabel(v.outlier);
+        return '<span class="ytc-onum ytc-onum--' + ratioTier(shown.value) +
+          '" title="Views against the channel\u2019s average when saved">' + shown.text +
+          '</span>';
+      } },
+    { label: 'Published',
+      cell: (v) => (v.publishDate ? escapeHtml(agoLabel(v.publishDate)) : '\u2014') },
+    { label: 'Added', cell: (v) => (v.added ? escapeHtml(agoLabel(new Date(v.added).toISOString()))
+                                            : '\u2014') }
+  ];
+
+  function pocketVideoRow(p, v) {
+    const href = 'https://www.youtube.com/' + (v.shorts ? 'shorts/' : 'watch?v=') +
+      encodeURIComponent(v.videoId);
+    const len = v.lengthSeconds ? fmtLen(v.lengthSeconds) : '';
+    const token = p.id + '|v:' + v.videoId;
+    const note = pkNoteEdit === token
+      ? '<span class="ytc-t__c ytc-pkv__note">' +
+          '<input class="ytc-pkv__noteinput" type="text" maxlength="' + POCKET_NOTE_MAX +
+          '" data-noteedit="' + escapeHtml(token) + '" aria-label="Note about this video"' +
+          ' value="' + escapeHtml(v.note || '') + '"></span>'
+      : '<button type="button" class="ytc-t__c ytc-pkv__note" data-editnote="' +
+          escapeHtml(token) + '" title="Click to edit this note">' +
+          '<span class="ytc-pkv__notetext">' +
+            (v.note ? escapeHtml(v.note) : '<i class="ytc-pkv__noteempty">Add a note</i>') +
+          '</span><span class="ytc-pkv__pencil" aria-hidden="true">\u270e</span></button>';
+    return '<div class="ytc-pkv__row ytc-pkv__row--vid">' +
+      '<a class="ytc-pkv__vid" href="' + escapeHtml(href) + '" target="_blank" ' +
+        'rel="noopener noreferrer">' +
+        '<span class="ytc-pkv__thumb">' +
+          '<img src="https://i.ytimg.com/vi/' + encodeURIComponent(v.videoId) +
+            '/mqdefault.jpg" alt="" loading="lazy">' +
+          (len ? '<span class="ytc-pkv__len">' + escapeHtml(len) + '</span>' : '') +
+        '</span>' +
+        '<span class="ytc-t__names">' +
+          '<span class="ytc-pkv__vtitle">' + escapeHtml(v.title || v.videoId) + '</span>' +
+          '<span class="ytc-t__handle">' + escapeHtml(v.channelTitle || v.handle || '') +
+          '</span>' +
+        '</span>' +
+      '</a>' +
+      PKV_COLS.map((col) => (col.cls === 'ytc-pkv__note' ? note
+        : '<span class="ytc-t__c' + (col.cls ? ' ' + col.cls : '') + '">' + col.cell(v) +
+          '</span>')).join('') +
+      '<span class="ytc-t__c">' +
+        '<button type="button" class="ytc-pkv__drop" data-pocket="' + escapeHtml(p.id) +
+        '" data-pkvid="' + escapeHtml(v.videoId) +
+        '" title="Remove from this pocket" aria-label="Remove from this pocket">×</button>' +
+      '</span>' +
+    '</div>';
+  }
+
+  /* 754 -> "12:34", 3723 -> "1:02:03", the way YouTube stamps a thumbnail. */
+  function fmtLen(sec) {
+    const t = Math.max(0, Math.round(sec));
+    const h = Math.floor(t / 3600);
+    const m = Math.floor((t % 3600) / 60);
+    const ss = String(t % 60).padStart(2, '0');
+    return h ? h + ':' + String(m).padStart(2, '0') + ':' + ss : m + ':' + ss;
   }
 
   /* --------------------------------------------------- pocket watch (sidebar) */
@@ -8067,6 +8580,7 @@
     if (!modal) return;
     const found = pocketSearch(pockets, pkFind);
     const total = pockets.reduce((a, p) => a + ((p.channels || []).length), 0);
+    const totalV = pockets.reduce((a, p) => a + ((p.videos || []).length), 0);
     /* The rail is the navigation, so something in it is always open. A search that hides the
        pocket you were reading, or a delete that removes it, moves the selection to the first
        row still standing rather than leaving an empty pane beside a list of results. */
@@ -8077,14 +8591,14 @@
         '<b>Pockets</b>' +
         (pockets.length
           ? '<span class="ytc-pkm__count">' + pockets.length +
-            (pockets.length === 1 ? ' pocket' : ' pockets') + ' · ' + total +
-            (total === 1 ? ' channel' : ' channels') + '</span>'
+            (pockets.length === 1 ? ' pocket' : ' pockets') + ' · ' +
+            pocketSizeText(null, total, totalV) + '</span>'
           : '') +
         (pockets.length && !pkWatchChan
           /* Hidden alongside the rail it filters. A search box that reorders a list nobody
              can see reads as broken. */
-          ? '<input class="ytc-pkm__find" type="search" placeholder="Search pockets and ' +
-            'channels" aria-label="Search pockets and channels" value="' +
+          ? '<input class="ytc-pkm__find" type="search" placeholder="Search pockets, ' +
+            'channels and videos" aria-label="Search pockets, channels and videos" value="' +
             escapeHtml(pkFind) + '">'
           : '') +
         '<button type="button" class="ytc-pkm__x" aria-label="Close">×</button>' +
@@ -8097,13 +8611,13 @@
         (pkWatchChan ? ' ytc-pkm__body--watch' : '') + '">' +
         (!pockets.length
           ? '<p class="ytc-pkv__empty">No pockets yet. Open a channel and press ' +
-            '<b>☆ Pocket</b> beside Subscribe, or use the ☆ on a row of the ' +
-            'Similar channels table.</p>'
+            '<b>☆ Pocket</b> beside Subscribe, press it beside Like on a video, or use ' +
+            'the ☆ on a row of the Similar channels table.</p>'
           : (pkWatchChan ? '' :
             '<nav class="ytc-pkv__side" aria-label="Your pockets">' +
               (found.length
                 ? found.map((f) =>
-                    pocketSideItem(f.pocket, f.channels, f.pocket.id === pkOpen)).join('')
+                    pocketSideItem(f.pocket, f, f.pocket.id === pkOpen)).join('')
                 : '<p class="ytc-pkv__sideempty">Nothing matches “' +
                   escapeHtml(pkFind) + '”.</p>') +
             '</nav>') +
@@ -8111,9 +8625,9 @@
               (pkWatchChan
                 ? watchScreenHtml(pkWatchChan)
                 : cur
-                  ? pocketDetail(cur.pocket, cur.channels)
+                  ? pocketDetail(cur.pocket, cur)
                   : '<p class="ytc-pkv__empty">Nothing matches “' + escapeHtml(pkFind) +
-                    '” — not a pocket name, a description, a channel or a note.</p>') +
+                    '” — not a pocket name, a description, a channel, a video or a note.</p>') +
             '</div>') +
       '</div>';
     modal.querySelector('.ytc-pkm__x').addEventListener('click', closePocketsModal);
@@ -8299,7 +8813,10 @@
       const parts = String(f.dataset.noteedit || '').split('|');
       const commit = (keepOpen) => {
         const p = pockets.find((x) => x.id === parts[0]);
-        const entry = p && (p.channels || []).find((x) => pocketChannelKey(x) === parts[1]);
+        const vid = /^v:/.test(parts[1] || '') ? parts[1].slice(2) : '';
+        const entry = p && (vid
+          ? (p.videos || []).find((x) => x.videoId === vid)
+          : (p.channels || []).find((x) => pocketChannelKey(x) === parts[1]));
         if (entry) {
           entry.note = String(f.value || '').slice(0, POCKET_NOTE_MAX);
           savePockets();
@@ -8318,7 +8835,8 @@
     host.querySelectorAll('.ytc-pkv__drop').forEach((b) => b.addEventListener('click', () => {
       const p = byId(b);
       if (!p) return;
-      pocketRemove(p, b.dataset.pkchan);
+      if (b.dataset.pkvid) pocketVideoRemove(p, b.dataset.pkvid);
+      else pocketRemove(p, b.dataset.pkchan);
       savePockets();
       renderPockets();
       refreshPocketMarks();
@@ -8329,8 +8847,10 @@
      to follow a change made anywhere else — including in another tab. */
   function refreshPocketMarks() {
     paintPocketNav();
-    const btn = document.querySelector('.ytc-pkbtn');
+    const btn = document.querySelector('.ytc-pkbtn:not(.ytc-pkvbtn)');
     if (btn) paintPocketButton(btn);
+    const vbtn = document.querySelector('.ytc-pkvbtn');
+    if (vbtn) paintVideoPocketButton(vbtn);
     document.querySelectorAll('[data-star]').forEach((b) => {
       // data-star is built as `handle || title`, so match it the same way — a channel with
       // no handle is identified by its title in both places or in neither.
@@ -8611,9 +9131,9 @@
     };
   }
 
-  function pocketButtonHtml(saved) {
+  function pocketButtonHtml(saved, label) {
     return '<span class="ytc-pkbtn__icon" aria-hidden="true">' + (saved ? '★' : '☆') +
-      '</span><span>' + (saved ? 'Pocketed' : 'Pocket') + '</span>';
+      '</span><span>' + (saved ? 'Pocketed' : (label || 'Pocket')) + '</span>';
   }
 
   /* Beside Subscribe, in YouTube's own action row — the same host the monetization badge
@@ -8621,7 +9141,7 @@
   function ensurePocketButton() {
     const key = channelKeyFromLocation();
     if (!settings.showPockets || !key) {
-      document.querySelectorAll('.ytc-pkbtn').forEach((n) => n.remove());
+      document.querySelectorAll('.ytc-pkbtn:not(.ytc-pkvbtn)').forEach((n) => n.remove());
       return;
     }
     const host = channelHeaderHost();
@@ -8630,7 +9150,7 @@
        action row on its own, so the host can be a different element than last time — and
        creating a second button then left the first one in the page, catching clicks that went
        nowhere. Move the one we have instead. */
-    let btn = document.querySelector('.ytc-pkbtn');
+    let btn = document.querySelector('.ytc-pkbtn:not(.ytc-pkvbtn)');
     if (btn && btn.parentElement !== host) host.appendChild(btn);
     if (!btn) {
       btn = document.createElement('button');
@@ -8679,6 +9199,90 @@
     btn.title = holding.length
       ? 'Saved in ' + holding.map((p) => p.title).join(', ')
       : 'Save this channel to a pocket';
+  }
+
+  /* ---- the same button, for the video being watched ---- */
+
+  /* The video in the shape the pocket store wants, from what the watch page already read:
+     the player's stats for views, date and channel, the card's outlier and views/hour. Only
+     trusted when they are about THIS video — after a soft navigation cardState can still
+     describe the last one for a moment, and a figure from the wrong video is worse than
+     none. */
+  function currentVideoForPocket() {
+    const card = watchCard();
+    let id = '';
+    try { id = new URL(location.href).searchParams.get('v') || ''; } catch (e) { /* none */ }
+    if (!card || !id) return null;
+    const mine = cardState.videoId === id;
+    const st = (mine && cardState.stats) || {};
+    const m = (mine && cardState.metrics) || {};
+    const ownerLink = card.querySelector('#owner #channel-name a, ytd-channel-name a');
+    const key = st.channelHandle || findChannelKey(card) || '';
+    return {
+      kind: 'video',
+      videoId: id,
+      title: findTitle(card) || document.title.replace(/\s*-\s*YouTube\s*$/, ''),
+      channelTitle: st.channelName || (ownerLink ? text(ownerLink) : ''),
+      handle: key[0] === '@' ? key : '',
+      channelId: st.channelId || '',
+      views: st.views == null ? null : st.views,
+      outlier: mine && cardState.outlier ? cardState.outlier : null,
+      vph: m.vph == null ? null : m.vph,
+      publishDate: st.publishDate || '',
+      lengthSeconds: st.lengthSeconds == null ? null : st.lengthSeconds,
+      shorts: !!st.shortsPath
+    };
+  }
+
+  /* Right after Subscribe, where the eye already is when deciding whether this is worth
+     keeping — and where the channel page puts its own Pocket button. Labelled "Pocket video"
+     because beside Subscribe a bare "Pocket" reads as saving the channel. */
+  function videoSubscribeAnchor(card) {
+    return card.querySelector('#owner #subscribe-button') ||
+      card.querySelector('#owner ytd-subscribe-button-renderer') ||
+      card.querySelector('#owner yt-subscribe-button-view-model');
+  }
+
+  function ensureVideoPocketButton() {
+    const card = watchCard();
+    if (!settings.showPockets || !card) {
+      document.querySelectorAll('.ytc-pkvbtn').forEach((n) => n.remove());
+      return;
+    }
+    const anchor = videoSubscribeAnchor(card);
+    if (!anchor || !anchor.parentElement) return;
+    // One button, moved rather than duplicated when YouTube rebuilds the row under it.
+    let btn = document.querySelector('.ytc-pkvbtn');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ytc-pkbtn ytc-pkvbtn';
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const v = currentVideoForPocket();
+        if (!v) return;
+        openPocketDialog(v, btn, () => paintVideoPocketButton(btn));
+      });
+    }
+    if (anchor.nextElementSibling !== btn) anchor.after(btn);
+    paintVideoPocketButton(btn);
+  }
+
+  function paintVideoPocketButton(btn) {
+    if (!btn || !btn.isConnected) return;
+    const v = currentVideoForPocket();
+    const holding = v ? pocketsHolding(v) : [];
+    btn.classList.toggle('ytc-pkbtn--on', holding.length > 0);
+    // Rewritten only on change, for the dropped-click reason given in paintPocketButton.
+    const html = pocketButtonHtml(holding.length > 0, 'Pocket video');
+    if (btn.dataset.state !== html) {
+      btn.dataset.state = html;
+      btn.innerHTML = html;
+    }
+    btn.title = holding.length
+      ? 'Saved in ' + holding.map((p) => p.title).join(', ')
+      : 'Save this video to a pocket';
   }
 
   /* ---------------------------------------------------------- pocket dialog */
@@ -8734,23 +9338,25 @@
   }
 
   function pocketRowHtml(p) {
-    const has = pocketHas(p, pkTarget);
-    const n = (p.channels || []).length;
-    const entry = has ? pocketEntry(p, pkTarget) : null;
+    const has = pkHas(p, pkTarget);
+    const video = pkTarget && pkTarget.kind === 'video';
+    const entry = has ? pkEntry(p, pkTarget) : null;
     return '<button type="button" class="ytc-pk__opt' + (has ? ' ytc-pk__opt--in' : '') +
         '" data-pocket="' + escapeHtml(p.id) + '">' +
       '<span class="ytc-pk__optname">' + escapeHtml(p.title) + '</span>' +
-      '<span class="ytc-pk__optn">' + n + (n === 1 ? ' channel' : ' channels') + '</span>' +
+      '<span class="ytc-pk__optn">' + pocketSizeText(p) + '</span>' +
       '<span class="ytc-pk__tick">' + (has ? '\u2713 Saved' : 'Save') + '</span>' +
     '</button>' +
     /* Only under the pocket it belongs to. A note is about this channel IN this pocket — the
        same channel can be kept in two lists for two different reasons — so one field at the
        bottom of the dialog would have had to guess which. */
     (has
-      /* A small watch link above the note, and then the note input. */
-      ? '<a href="#" class="ytc-pk__watchlink-row" data-watch-pocket="' + escapeHtml(p.id) + '">👀 Watch this channel <span class="ytc-pk__arrow">\u203a</span></a>' +
+      /* A small watch link above the note, and then the note input. Channels only: the
+         watcher looks for a channel's next outlier, and a video has no next one. */
+      ? (video ? '' : '<a href="#" class="ytc-pk__watchlink-row" data-watch-pocket="' + escapeHtml(p.id) + '">👀 Watch this channel <span class="ytc-pk__arrow">\u203a</span></a>') +
         '<label class="ytc-pk__noterow">' +
-          '<span class="ytc-pk__notelbl">Notes about channel (optional)</span>' +
+          '<span class="ytc-pk__notelbl">Notes about ' + (video ? 'video' : 'channel') +
+            ' (optional)</span>' +
           '<input class="ytc-pk__note" type="text" maxlength="' + POCKET_NOTE_MAX + '"' +
           ' data-note="' + escapeHtml(p.id) + '" placeholder="Why this one?"' +
           ' value="' + escapeHtml((entry && entry.note) || '') + '">' +
@@ -8821,7 +9427,8 @@
 
   function renderPocketDialog() {
     if (!pkDlg) return;
-    const name = pkTarget ? (pkTarget.title || pkTarget.handle || 'this channel') : '';
+    const name = pkTarget ? (pkTarget.title || pkTarget.handle ||
+      (pkTarget.kind === 'video' ? 'this video' : 'this channel')) : '';
     if (pkView === 'watch') {
       pkDlg.innerHTML = pocketWatchScreen(name);
     } else {
@@ -8861,8 +9468,8 @@
         /* The row toggles. It is the only thing on screen saying whether this channel is in
            that pocket, so it has to be the thing that takes it back out — otherwise saving to
            the wrong list means going to find the Pockets tab to undo it. */
-        if (pocketHas(p, pkTarget)) pocketRemove(p, pocketChannelKey(pkTarget));
-        else if (pocketAdd(p, Object.assign({}, pkTarget, { note: pkSeed }))) {
+        if (pkHas(p, pkTarget)) pkRemove(p, pkTarget);
+        else if (pkAdd(p, Object.assign({}, pkTarget, { note: pkSeed }))) {
           maybeShowPocketHint();
         }
         savePockets();
@@ -8877,7 +9484,7 @@
       let t = 0;
       const commit = () => {
         const p = pockets.find((x) => x.id === f.dataset.note);
-        const entry = p && pocketEntry(p, pkTarget);
+        const entry = p && pkEntry(p, pkTarget);
         if (!entry) return;
         entry.note = String(f.value || '').slice(0, POCKET_NOTE_MAX);
         savePockets();
@@ -8927,7 +9534,7 @@
         }
         if (pockets.length >= POCKET_MAX) return;
         const p = newPocket(t, desc.value);
-        if (pocketAdd(p, Object.assign({}, pkTarget, { note: pkSeed }))) maybeShowPocketHint();
+        if (pkAdd(p, Object.assign({}, pkTarget, { note: pkSeed }))) maybeShowPocketHint();
         savePockets();
         pkNewOpen = false;
         renderPocketDialog();
@@ -9000,7 +9607,7 @@
 
   function openPocketDialog(channel, anchor, onChange, seed) {
     closePocketDialog();
-    if (!channel || !pocketChannelKey(channel)) return;
+    if (!channel || !pkKey(channel)) return;
     pkTarget = channel;
     pkDone = onChange || null;
     pkSeed = String(seed || '');
@@ -9008,7 +9615,8 @@
     pkDlg = document.createElement('div');
     pkDlg.className = 'ytc-pk';
     pkDlg.setAttribute('role', 'dialog');
-    pkDlg.setAttribute('aria-label', 'Save channel to a pocket');
+    pkDlg.setAttribute('aria-label',
+      channel.kind === 'video' ? 'Save video to a pocket' : 'Save channel to a pocket');
       pkView = 'save';
     if (anchor && anchor.getBoundingClientRect) {
       const r = anchor.getBoundingClientRect();
@@ -11514,6 +12122,8 @@
           hidden: !REMAKE_UI },
         { k: 'showStats', label: 'Views per hour, engagement and earnings',
           note: 'On cards, and in full on a watch page' },
+        { k: 'showThumbCard', label: 'Thumbnail card on watch pages',
+          note: 'The current thumbnail in the sidebar, with a full-size view and download' },
         { k: 'showTags', label: 'Video tags on watch pages',
           note: 'The tags the uploader set, under the figures — needs the one above' },
         { k: 'showMoney', label: 'Monetization estimate',
@@ -11536,7 +12146,7 @@
         { k: 'showCompanion', label: 'Search companion',
           note: 'Keyword score, story clock and title patterns beside search results' },
         { k: 'showPockets', label: 'Pockets',
-          note: 'Save channels into lists and watch them for outliers' },
+          note: 'Save channels and videos into lists, and watch the channels for outliers' },
         { k: 'showTranscript', label: 'Transcript button',
           note: 'Copy or save a video’s captions' }
       ]

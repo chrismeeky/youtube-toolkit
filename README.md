@@ -412,6 +412,26 @@ is the one that was hidden rather than whatever the selector resolves to by then
 re-asserts whichever view is open, since YouTube rebuilds the body on its own tabs and on
 hydration.
 
+## Thumbnail card and gallery
+
+On a watch page the sidebar carries the video's current thumbnail with a **Download
+thumbnail** button. It opens a gallery: the thumbnail at the largest size YouTube serves, and
+a **history** strip of earlier thumbnails with the months each was in use. Picking one puts it
+in the frame, and Download, Open full size and Copy image link then act on that version.
+
+YouTube keeps no thumbnail history — swapping one replaces the image at the same URL — so the
+history comes from two places that kept copies. The **Internet Archive**, asked for its
+captures of the video's `i.ytimg.com` / `img.youtube.com` thumbnail files; coverage follows
+popularity. And **this device**: each watch page fingerprints the thumbnail and keeps a small
+copy when it is new, so a change between two visits shows even if the archive missed it.
+
+Versions are decided by pixels, not by the archive's file digests, because YouTube re-encodes
+the same picture constantly. A 256-bit difference hash, taken after cropping the letterbox
+bars off 4:3 sizes, separates them cleanly: on a video with five known thumbnails, re-encodes
+differed by 0–10 bits and real changes by 48–103 (a 64-bit hash was too coarse — it scored a
+logo recolour at 5 of 64). Up to 24 captures are sampled evenly across the video's life, the
+largest size in each window. A thumbnail used only between two samples will not appear.
+
 ## Pockets
 
 Named lists of channels, kept in the browser. Open a channel and press **☆ Pocket** beside
@@ -419,6 +439,13 @@ Subscribe, or press the **☆** on any row of the Similar channels table — bot
 chooser: pick an existing pocket, or make one with a name and an optional description. Clicking
 a pocket you are already in takes the channel back out, since that row is the only thing on
 screen saying it is in there.
+
+**Videos go in pockets too.** On a watch page, **☆ Pocket video** sits right after Subscribe and
+opens the same chooser. A video is saved with its title, channel, length, publish
+date, and the views and outlier it had when you saved it — shown as "Views then", since that
+snapshot is why it was kept. A pocket shows its channels and its videos as two tables, headed
+only when it holds both; the search box matches video titles, channel names and notes. The
+pocket watcher still follows channels only: a video has no next upload to watch for.
 
 **Pockets live in YouTube's own sidebar, under Shorts** — they belong to you, not to whatever
 channel happens to be on screen, so they sit beside YouTube's other global destinations rather

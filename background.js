@@ -1702,6 +1702,334 @@ async function downloadThumbnail(video) {
   }
 }
 
+/* --------------------------------------------------------- thumbnail history */
+
+/* YouTube keeps no history of a video's thumbnails: swapping one replaces the image at the
+   same URL. So a history can only come from somewhere that kept copies, and there are two:
+
+   - The Internet Archive, which has captured i.ytimg.com thumbnail URLs for years. Each
+     capture is a real past image with a real date. Coverage follows popularity — a big
+     video has hundreds of captures, a small one may have none.
+   - This extension, which fingerprints the thumbnail each time a watch page opens and keeps
+     a small copy of every version it has not seen before. Only ever on this device.
+
+   The archive's content digests cannot tell versions apart on their own: YouTube re-encodes
+   the same picture constantly, so one thumbnail shows up under dozens of digests. Versions
+   are decided by the pixels instead — a 256-bit difference hash of the image, letterbox bars
+   cropped off first so a 4:3 hqdefault and a 16:9 maxres of the same picture agree.
+
+   Measured on a video with five known thumbnails (dQw4w9WgXcQ, 29 archived files): the same
+   picture re-encoded or served at another size differs by 0-10 bits, real changes by 48-103.
+   A 64-bit hash was tried first and is too coarse — it scored a pink-to-white logo swap at
+   5 of 64, inside its own re-encode noise. */
+const TH_TTL = 3 * 24 * 60 * 60 * 1000;
+const TH_SAMPLE = 24;               // archive captures actually downloaded, spread over time
+const TH_SAME = 30;                 // differing bits (of 256) still counted as the same picture
+const TH_CONCURRENCY = 4;
+const TH_NAME = /\/(maxresdefault|hq720|sddefault|hqdefault|mqdefault|0)\.(?:jpg|webp)(?:\?|$)/;
+const TH_RANK = { maxresdefault: 5, hq720: 4, sddefault: 3, hqdefault: 2, 0: 2, mqdefault: 1 };
+const TH_SEEN_PREFIX = 'ths:';      // per-video record of versions seen on this device
+const TH_SEEN_INDEX = 'thsIdx';     // { videoId: lastSeen } for eviction
+const TH_SEEN_MAX = 300;
+const TH_SEEN_GAP = 6 * 60 * 60 * 1000;   // fingerprint a video at most this often
+const thSeenRecent = new Map();
+
+async function thFetch(url, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms || 20000);
+  try {
+    return await fetch(url, { signal: controller.signal, credentials: 'omit' });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function thDate(ts) {
+  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?/.exec(ts || '');
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0)) : 0;
+}
+
+/* The 16:9 picture inside whatever was served. hqdefault and sddefault are 4:3 with the bars
+   baked into the pixels; hashing them whole would call every one a different thumbnail. */
+function thCrop(w, h) {
+  if (h / w > 0.62) {
+    const ch = Math.round(w * 9 / 16);
+    return { sx: 0, sy: Math.round((h - ch) / 2), sw: w, sh: ch };
+  }
+  return { sx: 0, sy: 0, sw: w, sh: h };
+}
+
+/* Difference hash: shrink to 17x16 greys, one bit per left-right comparison. Drawn at
+   136x128 first and box-averaged down, because a straight 17x16 draw point-samples and two
+   encodes of the same picture can then land on different pixels. */
+const TH_N = 16;
+function thHash(bmp) {
+  const c = thCrop(bmp.width, bmp.height);
+  const W = (TH_N + 1) * 8;
+  const H = TH_N * 8;
+  const cv = new OffscreenCanvas(W, H);
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bmp, c.sx, c.sy, c.sw, c.sh, 0, 0, W, H);
+  const px = ctx.getImageData(0, 0, W, H).data;
+  const g = new Array((TH_N + 1) * TH_N);
+  for (let by = 0; by < TH_N; by++) {
+    for (let bx = 0; bx <= TH_N; bx++) {
+      let sum = 0;
+      for (let y = by * 8; y < by * 8 + 8; y++) {
+        for (let x = bx * 8; x < bx * 8 + 8; x++) {
+          const i = (y * W + x) * 4;
+          sum += px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114;
+        }
+      }
+      g[by * (TH_N + 1) + bx] = sum;
+    }
+  }
+  let hex = '';
+  for (let y = 0; y < TH_N; y++) {
+    for (let x0 = 0; x0 < TH_N; x0 += 4) {
+      let nib = 0;
+      for (let x = x0; x < x0 + 4; x++) {
+        const i = y * (TH_N + 1) + x;
+        nib = (nib << 1) | (g[i] > g[i + 1] ? 1 : 0);
+      }
+      hex += nib.toString(16);
+    }
+  }
+  return hex;
+}
+
+function thDistance(a, b) {
+  if (!a || !b || a.length !== b.length) return 256;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) {
+    let x = parseInt(a[i], 16) ^ parseInt(b[i], 16);
+    while (x) { d += x & 1; x >>= 1; }
+  }
+  return d;
+}
+
+function thBase64(buf) {
+  const a = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+/* A 16:9 JPEG as a data URL, so the page can show it whatever its own image policy is. */
+async function thPreview(bmp, w) {
+  const h = Math.round(w * 9 / 16);
+  const c = thCrop(bmp.width, bmp.height);
+  const cv = new OffscreenCanvas(w, h);
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bmp, c.sx, c.sy, c.sw, c.sh, 0, 0, w, h);
+  const blob = await cv.convertToBlob({ type: 'image/jpeg', quality: 0.82 });
+  return 'data:image/jpeg;base64,' + thBase64(await blob.arrayBuffer());
+}
+
+async function thDecode(url) {
+  const res = await thFetch(url, 20000);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const blob = await res.blob();
+  if (!/^image\//.test(blob.type || 'image/')) throw new Error('not an image');
+  return createImageBitmap(blob);
+}
+
+async function thPool(items, n, run) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      try { out[i] = await run(items[i]); } catch (e) { out[i] = null; }
+    }
+  }));
+  return out;
+}
+
+async function thCaptures(id) {
+  const hosts = ['i.ytimg.com', 'img.youtube.com'];
+  const lists = await Promise.all(hosts.map(async (host) => {
+    const q = 'https://web.archive.org/cdx/search/cdx?url=' +
+      encodeURIComponent(host + '/vi/' + id + '/') +
+      '&matchType=prefix&output=json&fl=timestamp,original,digest' +
+      '&filter=statuscode:200&filter=mimetype:image/.*&limit=3000';
+    const res = await thFetch(q, 25000);
+    if (!res.ok) throw new Error('Internet Archive answered ' + res.status);
+    const rows = await res.json();
+    return (Array.isArray(rows) ? rows.slice(1) : []).map((r) => {
+      const m = TH_NAME.exec(r[1] || '');
+      return m ? { ts: r[0], t: thDate(r[0]), url: r[1], digest: r[2], rank: TH_RANK[m[1]] || 1 }
+        : null;
+    }).filter(Boolean);
+  }));
+  // One entry per distinct file; the same bytes captured twenty times are one sample.
+  const byDigest = new Map();
+  for (const c of [].concat(...lists)) {
+    const had = byDigest.get(c.digest);
+    if (!had || c.t < had.t) byDigest.set(c.digest, c);
+  }
+  return [...byDigest.values()].sort((a, b) => a.t - b.t);
+}
+
+/* Spread the downloads across the video's whole life rather than taking the first N: a
+   thumbnail swapped two years in must not be crowded out by a burst of captures in week one.
+   The span is cut into equal windows and each contributes its highest-resolution capture. */
+function thSample(caps) {
+  if (caps.length <= TH_SAMPLE) return caps;
+  const t0 = caps[0].t;
+  const span = Math.max(1, caps[caps.length - 1].t - t0);
+  const buckets = new Map();
+  for (const c of caps) {
+    const k = Math.min(TH_SAMPLE - 1, Math.floor((c.t - t0) / span * TH_SAMPLE));
+    const had = buckets.get(k);
+    if (!had || c.rank > had.rank) buckets.set(k, c);
+  }
+  return [...buckets.values()].sort((a, b) => a.t - b.t);
+}
+
+async function thumbHistory(id, force) {
+  const key = 'th:' + id;
+  if (!force) {
+    try {
+      const hit = (await chrome.storage.session.get(key))[key];
+      if (hit && Date.now() - hit.t <= TH_TTL) return hit.out;
+    } catch (e) { /* no session store: compute */ }
+  }
+
+  let archiveErr = '';
+  let caps = [];
+  try { caps = await thCaptures(id); } catch (e) { archiveErr = String((e && e.message) || e); }
+  const sample = thSample(caps);
+
+  const decoded = await thPool(sample, TH_CONCURRENCY, async (c) => {
+    const bmp = await thDecode('https://web.archive.org/web/' + c.ts + 'id_/' + c.url);
+    // 120x90 is YouTube's grey "no thumbnail" placeholder, served for a size that did not
+    // exist yet. It is not a version of anything.
+    if (bmp.width <= 120) { bmp.close(); return null; }
+    return Object.assign({}, c, { bmp, hash: thHash(bmp), w: bmp.width, h: bmp.height });
+  });
+
+  /* Consecutive captures of the same picture become one version. Compared with the previous
+     version only, not all of them: a channel that swaps A → B → back to A has three
+     versions in its history, and folding the third into the first would hide the test. */
+  const groups = [];
+  for (const d of decoded.filter(Boolean)) {
+    const g = groups[groups.length - 1];
+    if (g && thDistance(g.hash, d.hash) <= TH_SAME) {
+      g.last = d.t;
+      g.captures++;
+      if (d.rank > g.best.rank || (d.rank === g.best.rank && d.w > g.best.w)) g.best = d;
+    } else {
+      groups.push({ hash: d.hash, first: d.t, last: d.t, captures: 1, best: d });
+    }
+  }
+
+  const versions = [];
+  for (const g of groups) {
+    const b = g.best;
+    versions.push({
+      hash: g.hash, first: g.first, last: g.last, captures: g.captures,
+      w: b.w, h: b.h, sources: ['archive'],
+      full: 'https://web.archive.org/web/' + b.ts + 'id_/' + b.url,
+      img: await thPreview(b.bmp, 480)
+    });
+  }
+  decoded.forEach((d) => { if (d && d.bmp) d.bmp.close(); });
+
+  // Versions this device has seen, folded into the archive's where they are the same picture.
+  const seen = ((await chrome.storage.local.get(TH_SEEN_PREFIX + id))[TH_SEEN_PREFIX + id]) || [];
+  for (const s of seen) {
+    const match = versions.find((v) => thDistance(v.hash, s.h) <= TH_SAME);
+    if (match) {
+      match.first = Math.min(match.first, s.first);
+      match.last = Math.max(match.last, s.last);
+      if (match.sources.indexOf('seen') < 0) match.sources.push('seen');
+    } else {
+      versions.push({ hash: s.h, first: s.first, last: s.last, captures: 0, w: 0, h: 0,
+                      sources: ['seen'], full: '', img: s.img });
+    }
+  }
+
+  // Which of them is on the video today.
+  let live = null;
+  try {
+    const url = await thumbnailUrl(id);
+    if (url) {
+      const bmp = await thDecode(url);
+      live = { hash: thHash(bmp), w: bmp.width, h: bmp.height, url };
+      bmp.close();
+    }
+  } catch (e) { /* the gallery shows the live image itself either way */ }
+  if (live) {
+    const match = versions.find((v) => thDistance(v.hash, live.hash) <= TH_SAME);
+    if (match) {
+      match.current = true;
+      match.last = Math.max(match.last, Date.now());
+    }
+  }
+
+  versions.sort((a, b) => (b.current ? 1 : 0) - (a.current ? 1 : 0) || b.last - a.last);
+  versions.forEach((v) => { delete v.hash; });
+  const out = { ok: true, versions, archived: caps.length, sampled: sample.length,
+                reason: archiveErr };
+  // Only complete answers are kept; an archive that failed to answer is worth asking again.
+  if (!archiveErr) {
+    try { await chrome.storage.session.set({ [key]: { t: Date.now(), out } }); }
+    catch (e) {
+      // Session storage is 10MB; previews fill it eventually. Start over rather than fail.
+      try {
+        const all = await chrome.storage.session.get(null);
+        await chrome.storage.session.remove(Object.keys(all).filter((k) => k.startsWith('th:')));
+      } catch (e2) { /* uncached is fine */ }
+    }
+  }
+  return out;
+}
+
+/* The on-device half: fingerprint the thumbnail of a video being watched, and keep a small
+   copy when it is a picture this device has not seen on that video before. mqdefault because
+   it is always present, already 16:9, and about 15KB. */
+async function noteThumbSeen(id) {
+  const now = Date.now();
+  if (!id || (thSeenRecent.get(id) || 0) > now - TH_SEEN_GAP) return;
+  thSeenRecent.set(id, now);
+  const bmp = await thDecode('https://i.ytimg.com/vi/' + id + '/mqdefault.jpg');
+  const h = thHash(bmp);
+  const key = TH_SEEN_PREFIX + id;
+  const got = await chrome.storage.local.get([key, TH_SEEN_INDEX]);
+  const list = got[key] || [];
+  const lastV = list[list.length - 1];
+  if (lastV && thDistance(lastV.h, h) <= TH_SAME) {
+    lastV.last = now;
+  } else {
+    list.push({ h, first: now, last: now, img: await thPreview(bmp, 192) });
+  }
+  bmp.close();
+  const idx = got[TH_SEEN_INDEX] || {};
+  idx[id] = now;
+  const drop = Object.keys(idx).sort((a, b) => idx[a] - idx[b])
+    .slice(0, Math.max(0, Object.keys(idx).length - TH_SEEN_MAX));
+  drop.forEach((k) => { delete idx[k]; });
+  await chrome.storage.local.set({ [key]: list.slice(-8), [TH_SEEN_INDEX]: idx });
+  if (drop.length) await chrome.storage.local.remove(drop.map((k) => TH_SEEN_PREFIX + k));
+}
+
+/* A past version, saved under the video's title and the date it was captured. */
+async function downloadThumbVersion(msg) {
+  const stamp = new Date(msg.when || Date.now()).toISOString().slice(0, 10);
+  const name = F.safeFilename((msg.title || msg.id) + ' ' + stamp, msg.id, 'jpg');
+  try {
+    await chrome.downloads.download({ url: msg.url, filename: 'yt-thumbnails/' + name,
+                                      conflictAction: 'uniquify' });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: String((e && e.message) || e) };
+  }
+}
+
 /* ---------------------------------------------------------------- transcript */
 
 /* Fallback only: the content script tries first from the page's own origin, which InnerTube
@@ -1973,6 +2301,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     getNicheMonetization(msg.niche, msg.report)
       .then(sendResponse)
       .catch((e) => sendResponse({ ok: false, reason: String(e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-thumb-history' && msg.id) {
+    thumbHistory(String(msg.id), !!msg.force)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String((e && e.message) || e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-thumb-seen' && msg.id) {
+    noteThumbSeen(String(msg.id)).catch(() => {});
+    return false;
+  }
+  if (msg.type === 'ytc-thumb-save' && msg.url) {
+    downloadThumbVersion(msg).then(sendResponse);
     return true;
   }
   if (msg.type === 'ytc-thumbs') {
