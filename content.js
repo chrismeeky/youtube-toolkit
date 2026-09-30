@@ -958,7 +958,7 @@
      no number"; a sweeping bar means "one is coming". Without the distinction a cell waiting
      on its lookup was drawn exactly like one whose lookup had failed, and the only way to
      tell them apart was to reload and watch it fill in. */
-  const cardState = { videoId: '', metrics: null, outlier: null, stats: null,
+  const cardState = { videoId: '', metrics: null, outlier: null, stats: null, tagsOpen: false,
                       pending: { metrics: true, outlier: true }, giveUp: 0 };
 
   /* Comfortably past every retry chain that feeds this card. Each of those settles its own
@@ -1113,6 +1113,106 @@
     clearRemake(pill);
   }
 
+  /* The uploader's own tags, from the player response. "None set" and "could not read" are
+     told apart the same way as channel keywords: stats read from the DOM fallback (or from a
+     page.js injected before this field existed) carry no tags array at all, which says
+     nothing about the video, whereas an empty array from the player means it has none. */
+  function videoTagsHtml(waiting) {
+    const s = cardState.stats;
+    const svg = (d) => '<svg viewBox="0 0 24 24" aria-hidden="true">' + d + '</svg>';
+    const head = (n, copy) => '<div class="ytc-vt__head">' +
+      '<span class="ytc-vt__icon">' + svg('<path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/>' +
+        '<circle cx="7.5" cy="7.5" r="1.5"/>') + '</span>' +
+      '<span class="ytc-vt__label">Tags</span>' +
+      (n ? '<span class="ytc-vt__n">' + n + '</span>' : '') +
+      (copy ? '<button type="button" class="ytc-vt__copy">' +
+        svg('<rect x="9" y="9" width="11" height="11" rx="2"/>' +
+          '<path d="M5 15V5a1 1 0 0 1 1-1h10"/>') + 'Copy all</button>' : '') +
+      '</div>';
+    let body;
+    if (!s) {
+      body = waiting
+        ? '<div class="ytc-vt__list">' + [58, 84, 70, 96].map((w) =>
+            '<span class="ytc-cs__skel" style="width:' + w + 'px"></span>').join('') + '</div>'
+        : '<p class="ytc-vt__note">Video data could not be read.</p>';
+      return head(0, false) + '<div class="ytc-vt__body">' + body + '</div>';
+    }
+    if (!Array.isArray(s.tags)) {
+      return head(0, false) + '<div class="ytc-vt__body">' +
+        '<p class="ytc-vt__note">Tags could not be read. Reload the page to try again.</p></div>';
+    }
+    if (!s.tags.length) {
+      return head(0, false) +
+        '<div class="ytc-vt__body"><p class="ytc-vt__note">This video has no tags.</p></div>';
+    }
+    /* A peek, not the lot: 38 chips would push the related videos off the first screen.
+       The fade says there is more; the toggle opens it. Whether the peek actually hides
+       anything is only known once laid out, so renderTagsCard measures and drops the toggle
+       when every tag already fits. */
+    const open = cardState.tagsOpen;
+    return head(s.tags.length, true) +
+      '<div class="ytc-vt__body">' +
+        '<div class="ytc-vt__list' + (open ? '' : ' ytc-vt__list--peek') + '">' +
+          s.tags.map((t) => '<button type="button" class="ytc-vt__tag" title="Copy this tag">' +
+            escapeHtml(t) + '</button>').join('') +
+        '</div>' +
+        '<button type="button" class="ytc-vt__more" aria-expanded="' + open + '">' +
+          '<span>' + (open ? 'Show less' : 'Show all ' + s.tags.length + ' tags') + '</span>' +
+          svg('<path d="M6 9l6 6 6-6"/>') + '</button>' +
+      '</div>';
+  }
+
+  /* Its own card under the stats rather than a section inside it: the figures are a glance,
+     the tags are something to read and lift, and they got in each other's way as one block.
+     Driven from renderStatsCard, since the same player read feeds both. */
+  function renderTagsCard(statsCard, waiting) {
+    let box = document.querySelector('.ytc-vt');
+    if (!statsCard || !statsCard.parentElement || !settings.showTags) {
+      if (box) box.remove();
+      return;
+    }
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'ytc-vt';
+      // Delegated, because the card's markup is replaced whenever its content changes.
+      box.addEventListener('click', (e) => {
+        if (e.target.closest('.ytc-vt__more')) {
+          cardState.tagsOpen = !cardState.tagsOpen;
+          renderTagsCard(document.querySelector('.ytc-cs'), false);
+          return;
+        }
+        /* One tag at a time, for lifting the good ones rather than the whole list. */
+        const one = e.target.closest('.ytc-vt__tag');
+        if (one) {
+          const t = one.textContent;
+          copyText(t).then((ok) => {
+            toast(ok ? 'Copied \u201c' + t + '\u201d' : 'Could not copy the tag', !ok);
+          });
+          return;
+        }
+        if (!e.target.closest('.ytc-vt__copy')) return;
+        const tags = (cardState.stats && cardState.stats.tags) || [];
+        /* Comma-separated, the format Studio's own tags box accepts on paste. */
+        copyText(tags.join(', ')).then((ok) => {
+          toast(ok ? tags.length + ' tags copied' : 'Could not copy the tags', !ok);
+        });
+      });
+    }
+    if (box.previousElementSibling !== statsCard) {
+      statsCard.parentElement.insertBefore(box, statsCard.nextSibling);
+    }
+    const html = videoTagsHtml(waiting);
+    if (box.dataset.sig === html) return;   // avoid rewriting the DOM on every scan
+    box.dataset.sig = html;
+    box.innerHTML = html;
+    const peek = box.querySelector('.ytc-vt__list--peek');
+    if (peek && peek.clientHeight > 0 && peek.scrollHeight <= peek.clientHeight + 1) {
+      peek.classList.remove('ytc-vt__list--peek');
+      const more = box.querySelector('.ytc-vt__more');
+      if (more) more.remove();
+    }
+  }
+
   function renderStatsCard() {
     /* First, and outside every early return below: this badge lives on the video, not in the
        stats card, but it is fed by the same two lookups — so every path that settles one of
@@ -1128,6 +1228,7 @@
        persists while the page does, showing placeholders instead of vanishing. */
     if (!onWatch || !settings.showStats) {
       if (existing) existing.remove();
+      renderTagsCard(null);
       return;
     }
 
@@ -1244,6 +1345,7 @@
       card.dataset.sig = rows;
       card.innerHTML = rows;
     }
+    renderTagsCard(card, waitM);
   }
 
   /* Which video the card describes is decided by the address bar, not by whichever feature
@@ -1256,6 +1358,7 @@
     cardState.outlier = null;          // all of these belong to the previous video
     cardState.metrics = null;
     cardState.stats = null;
+    cardState.tagsOpen = false;        // each video opens on the peek
     cardState.pending.metrics = true;
     cardState.pending.outlier = true;
     if (cardState.giveUp) clearTimeout(cardState.giveUp);
@@ -6699,7 +6802,10 @@
         askPromo(false, b.dataset.ps === 'refresh');
       });
     }
-    if (box.previousElementSibling !== card) card.parentElement.insertBefore(box, card.nextSibling);
+    // Below the tags card when there is one, so the order holds: stats, tags, Shorts.
+    const above = (card.nextElementSibling && card.nextElementSibling.matches('.ytc-vt'))
+      ? card.nextElementSibling : card;
+    if (box.previousElementSibling !== above) card.parentElement.insertBefore(box, above.nextSibling);
     if (!promoState.peeked) {
       promoState.peeked = true;
       askPromo(true, false);
@@ -11408,6 +11514,8 @@
           hidden: !REMAKE_UI },
         { k: 'showStats', label: 'Views per hour, engagement and earnings',
           note: 'On cards, and in full on a watch page' },
+        { k: 'showTags', label: 'Video tags on watch pages',
+          note: 'The tags the uploader set, under the figures — needs the one above' },
         { k: 'showMoney', label: 'Monetization estimate',
           note: 'Inferred from ad slots on recent videos — a signal, not a status' },
         { k: 'showShorts', label: 'Stats panel beside Shorts',

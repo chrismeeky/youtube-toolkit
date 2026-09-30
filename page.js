@@ -67,6 +67,9 @@
          handle. Free, exact, and already in the response being read. */
       channelName: mf.ownerChannelName || vd.author || '',
       channelId: vd.channelId || mf.externalChannelId || '',
+      /* The tags the uploader typed into Studio. Never rendered on the page, but they are in
+         the player response verbatim. An empty array when the video has none. */
+      tags: Array.isArray(vd.keywords) ? vd.keywords.map(String) : [],
       // Real Shorts report isShortsEligible true (checked against 36s and 74s Shorts, and
       // against long videos which report false). The URL is definitive when it is present.
       shortsEligible: mf.isShortsEligible === true,

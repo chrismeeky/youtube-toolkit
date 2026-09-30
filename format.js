@@ -31,6 +31,7 @@
     showRemake: true,             // "Remake: Strong/Good/Fair/Weak/Avoid" verdict on a watch page
     showMoney: true,              // monetization badge (inferred from ad placements)
     showStats: true,              // views/hour, engagement and an earnings estimate
+    showTags: true,               // the video's own tags, in a card under the watch-page figures
     showSimilar: true,            // "Similar channels" button on channel pages
     /* Shorts have no sidebar and no description, so the figures every other page shows have
        nowhere to go. This puts them in the empty gutter beside the player. */
