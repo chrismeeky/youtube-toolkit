@@ -6507,7 +6507,12 @@
       done(null);
     }, MONEY_TIMEOUT);
     try {
-      sendMessage({ type: 'ytc-monetization', key }, (res) => {
+      /* On the channel's own page, send the count the header is showing. It is fresher than
+         the service worker's cache, and it is what clears a "Not eligible" left over from
+         before the channel crossed 1,000. */
+      const subs = channelKeyFromLocation() === key
+        ? (channelOwnStats() || {}).subscribers : null;
+      sendMessage({ type: 'ytc-monetization', key, subs }, (res) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);

@@ -386,6 +386,16 @@ const MON_SAMPLE = 3;              // videos to try before concluding "no ads fo
 const MON_BYTES = 1400000;         // ceiling per probe; the stop marker normally hits first
 const TTL_MON = 7 * 24 * 60 * 60 * 1000;
 const TTL_MON_UNKNOWN = 6 * 60 * 60 * 1000;   // a failed sample is worth retrying sooner
+/* "Not eligible" is a statement about a subscriber count, and small channels are exactly the
+   ones whose count moves: a channel at 990 crosses 1,000 within days. Held for a week like a
+   real verdict, it outlived the fact it was built on, and the channel kept reading "Not
+   eligible" at 1,490 subscribers with no way to clear it short of waiting. So it is kept for
+   a day at most, and re-checked against the current count every time it is read. */
+const TTL_MON_INELIGIBLE = 24 * 60 * 60 * 1000;
+
+function subsNumber(entry) {
+  return entry && entry.text ? F.viewsToNumber(entry.text) : null;
+}
 
 async function recentVideoIds(key, limit) {
   const url = 'https://www.youtube.com/' + channelPath(key) + '/videos?hl=en';
@@ -453,22 +463,33 @@ async function adSignalFor(videoId) {
   });
 }
 
-async function getMonetization(key, force) {
+/* subsHint is the count the page itself is showing, when the caller is on the channel's own
+   page. It is fresher than any cache — the subscriber cache holds a small channel's count for
+   hours — so where it says the channel is over the bar, that wins. */
+async function getMonetization(key, force, subsHint) {
   const id = 'mon:' + key;
+  const hint = typeof subsHint === 'number' && subsHint > 0 ? subsHint : null;
   if (!force) {
     const store = await chrome.storage.local.get(id);
     const hit = store[id];
     if (hit && hit.v === CACHE_VERSION) {
-      const ttl = hit.state === 'unknown' ? TTL_MON_UNKNOWN : TTL_MON;
-      if (Date.now() - hit.t <= ttl) return hit;
+      const ttl = hit.state === 'unknown' ? TTL_MON_UNKNOWN
+        : hit.state === 'not-eligible' ? TTL_MON_INELIGIBLE : TTL_MON;
+      if (Date.now() - hit.t <= ttl) {
+        if (hit.state !== 'not-eligible') return hit;
+        // Still under the bar (or no count to say otherwise): the verdict stands.
+        const now = hint != null ? hint : subsNumber(await getSubscribers(key));
+        if (now === null || now < YPP_MIN_SUBS) return hit;
+        // Crossed it since: fall through and sample the videos like any eligible channel.
+      }
     }
   }
 
   /* Eligibility gate. getSubscribers is cached, so this is usually free, and when it rules
      the channel out it saves three watch-page fetches as well as giving a definite answer
      instead of an estimate. */
-  const subsEntry = await getSubscribers(key);
-  const subs = subsEntry && subsEntry.text ? F.viewsToNumber(subsEntry.text) : null;
+  let subs = subsNumber(await getSubscribers(key));
+  if (hint != null && (subs === null || hint > subs)) subs = hint;
   if (subs !== null && subs < YPP_MIN_SUBS) {
     const entry = { state: 'not-eligible', checked: 0, withAds: 0, subs, t: Date.now(), v: CACHE_VERSION };
     await chrome.storage.local.set({ [id]: entry });
@@ -2113,7 +2134,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'ytc-monetization' && msg.key) {
-    getMonetization(msg.key, msg.force)
+    getMonetization(msg.key, msg.force, msg.subs)
       .then((entry) => sendResponse(entry))
       .catch((e) => sendResponse({ state: 'unknown', checked: 0, reason: String(e) }));
     return true;
