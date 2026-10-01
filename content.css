@@ -2883,13 +2883,16 @@ html[dark] .ytc-pv__thumb { background: rgba(255, 255, 255, .1); }
   display: inline-flex; align-items: center; gap: 6px;
   margin-left: 8px; padding: 0 14px; height: 36px;
   border: 1px solid var(--yt-spec-10-percent-layer, rgba(0, 0, 0, .15));
-  border-radius: 18px; background: transparent; color: inherit; cursor: pointer;
+  border-radius: 18px; background: transparent; cursor: pointer;
+  /* Not inherited: the rows this sits in pass down a dark colour even in dark mode, which
+     left the label invisible there. YouTube's own text token follows the theme. */
+  color: var(--yt-spec-text-primary, #0f0f0f);
   font: 500 14px/1 Roboto, Arial, sans-serif; white-space: nowrap;
 }
 .ytc-pkbtn:hover { background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, .05)); }
 .ytc-pkbtn--on { border-color: #065fd4; color: #065fd4; }
 .ytc-pkbtn__icon { font-size: 15px; line-height: 1; }
-html[dark] .ytc-pkbtn { border-color: rgba(255, 255, 255, .2); }
+html[dark] .ytc-pkbtn { border-color: rgba(255, 255, 255, .2); color: #f1f1f1; }
 html[dark] .ytc-pkbtn:hover { background: rgba(255, 255, 255, .1); }
 html[dark] .ytc-pkbtn--on { border-color: #3ea6ff; color: #3ea6ff; }
 /* The watch page's copy, after Subscribe in the channel row. Held at its own width, since that
@@ -3030,8 +3033,11 @@ html[dark] .ytc-pk__watchlink { background: linear-gradient(180deg,#3ea6ff,#065f
    stand out from them — it is a destination, not an advertisement. */
 .ytc-nav {
   display: flex; align-items: center; cursor: pointer;
-  font-family: Roboto, Arial, sans-serif; color: inherit;
+  /* Set, not inherited, for the same reason as the Pocket button: the guide passes down a
+     dark colour in dark mode and the entry vanished against it. */
+  font-family: Roboto, Arial, sans-serif; color: var(--yt-spec-text-primary, #0f0f0f);
 }
+html[dark] .ytc-nav { color: #f1f1f1; }
 /* Defaults only. matchGuideMetrics overwrites width, margins, padding, radius, height and
    gap from the real row above, so these are what shows for the instant before it measures —
    and what stays if the guide is collapsed and cannot be measured at all. box-sizing is the
