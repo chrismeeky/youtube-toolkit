@@ -514,6 +514,101 @@ without it the popover says so rather than blaming the channel. Each new channel
 couple of API units, cached for 30 minutes in the service worker and for the life of the page
 in the tab, so re-hovering is free. Turn it off in the popup.
 
+## Studio home-page preview
+
+On a video's **Details** page in YouTube Studio, a **Preview** button sits just before *Undo
+changes*. The upload dialog has one too, on its Details step, just before *Reuse details*. The dialog carries the YouTube Toolkit icon and is labelled *by YouTube Toolkit*, and the
+button names it in its tooltip, so neither is mistaken for a Studio feature. It covers the whole screen and shows the video as a home-page card beside other
+videos, at five website widths (Phone 390, Tablet 820, Laptop 1366, Desktop 1920 and
+1440p 2560) and on **TV**. Light and dark themes are both there, since a thumbnail that stands
+out on white can disappear on black.
+
+TV is drawn as the TV app, not the website: dark only, an icon rail, and horizontal shelves of
+large cards with no avatars. Four cards fit on screen per shelf, and the rest run off the right
+edge. It's drawn at 1920×1080, the size the TV app lays itself out at whatever the panel's
+resolution.
+
+- **What you see is the form, not the saved video.** The title is read from Studio's title box
+  and the thumbnail from the thumbnail picker, so an unsaved edit or a fresh upload shows up
+  before you hit Save. Channel name, avatar, views and age come from the video's own watch
+  page, fetched with your cookies so private and unlisted videos work too.
+- **The neighbours are your own home feed**, which the service worker fetches with your
+  cookies and holds for ten minutes. If watch history is off, YouTube's home page comes back
+  empty, so the title is searched and those results stand in. The caption under the preview
+  says which one you're looking at.
+- **Each width is drawn at real pixels and scaled down to fit**, so a title wraps and gets cut
+  off exactly where it would on that screen. *Actual size* shows it at 100% instead.
+  Columns follow YouTube's grid: 2 per row on a tablet, 3 on a laptop, 4 at 1920, 5 at 2560.
+- **During an upload** the preview reads only from the dialog, never from the details page
+  that may be open underneath it, and takes the new video's id from the dialog's *Video
+  link*. A new upload is shown as it will look the moment it goes live: *No views · 1 minute
+  ago*. Its watch page describes a private draft, whose count and date aren't what viewers
+  will see.
+- **Thumbnail, in order:** the one selected in the form; a fresh upload; Studio's default
+  frame (any image of this video in the form, found by its `/vi/<id>/` URL, since Studio doesn't
+  mark it as selected); the thumbnail the watch page serves. On the details page, the saved
+  thumbnail is also tried. A candidate that fails to load is skipped, and that includes the grey
+  120×90 placeholder i.ytimg.com returns for a thumbnail that doesn't exist. Your own
+  thumbnail is requested with Studio's referrer: Studio's links to private and processing
+  thumbnails are tied to Studio and come back broken without it. Only when nothing loads does
+  the card say *No thumbnail yet*. Studio's dialog keeps focus inside itself and closes
+  on Esc. The preview handles both first, so its inputs stay usable and Esc closes only the
+  preview.
+- **Home | Suggested** switches between the home feed and a watch page, where your video sits
+  among the suggestions beside another video. Suggestions belong to the video being watched,
+  so the home feed would be the wrong company. The title is searched instead, and the top
+  result that isn't your video stands in as the one being watched. Its real up-next list is
+  the competition, and the caption names it. If its watch page yields too little, the other
+  search results fill in; if the search fails, the home feed stands in. This is fetched the
+  first time Suggested is shown, not on open, and cached for ten minutes per title.
+  - **Desktop:** player and title left, a 402px sidebar of small cards right. The player
+    stops at 1280px (less on short screens, so the title stays above the fold), and the pair
+    is centred. Below 1000px it's one column, with suggestions under the video.
+  - **Phone:** the player at the top edge to edge, then full-width cards.
+  - **TV:** the video fills the screen, with an *Up next* shelf along the bottom.
+  - **Shuffle** keeps your video among the first five suggestions, where they get seen.
+- **Custom size**: type a width × height into the boxes beside the size picker, or drag the
+  preview's right edge, bottom edge or corner. Either one switches to *Custom*, starting from
+  whatever size was showing. Dragging works like Chrome's responsive mode: the preview stays
+  centred and grows on both sides, so the edge stays under your pointer. Below 600px wide it
+  switches to the phone layout, as YouTube itself does. Sizes run from 320×400 to 3840×2400
+  and are remembered. TV can't be resized, because the TV app is always 1920×1080.
+- **Shuffle** moves your video somewhere in the first two rows (on TV, somewhere on screen in
+  the first two shelves) and reorders the rest;
+  **Highlight mine** outlines it. The title box and **Try another thumbnail…** let you test
+  variations inside the preview. Nothing there is written back to Studio.
+
+Studio's markup isn't documented. The button finds *Undo changes* by its id (`#discard`), then
+by its label, then as whatever sits just before *Save*. The thumbnail is whichever image inside
+a thumbnail element is marked selected. If either one changes, the button disappears or the
+preview falls back to the saved thumbnail. Nothing breaks.
+
+**Turning it off:** Toolkit settings (the button in YouTube's top bar) → **Studio** →
+*Home page preview*. Studio reads the switch from sync storage and drops or restores the button
+straight away in any open Studio tab, without a reload.
+
+### Feature introductions
+
+People who update get a short slideshow with screenshots introducing a new feature, once.
+`whatsnew.js` runs on youtube.com and in Studio, so whichever opens first after the update
+shows it.
+
+- **Who sees it:** on update, the service worker compares the previous version with each
+  feature's `since` version (`WHATSNEW` in `background.js`) and queues the feature in
+  `chrome.storage.local` → `ytcWhatsNew.pending`. Fresh installs aren't shown it, since they
+  have every feature at once. People who already turned the feature off aren't shown it either.
+- **Once:** it's marked seen before it draws, so two tabs loading together can't both show it.
+  It waits 2.5 s after the page loads, and never opens over another Toolkit dialog or in a
+  background tab. In those cases the next page load tries again. The review prompt likewise
+  waits for it.
+- **Again on request:** Settings → Studio → *Show the introduction again*.
+- **Screenshots** live in `whatsnew/` as 1440×900 JPEGs. They come from the real preview
+  code, but fed with made-up videos and thumbnails, so no real creator's work ships in the
+  package.
+
+To introduce a later feature: add it to `FEATURES` in `whatsnew.js` with its slides, and to
+`WHATSNEW` in `background.js` with the version it ships in.
+
 ## Similar channels & the channel index
 
 The filter modal's sliders cover views, subscribers, views per hour, views against the
@@ -667,6 +762,8 @@ server holds the API keys and does the enrichment.
 | `content.js` | Reads video cards from the page, injects the Copy button / checkboxes / action bar |
 | `content.css` | Styling for the injected UI |
 | `popup.html` / `popup.css` / `popup.js` | Settings UI with live preview |
+| `studio.js` / `studio.css` | YouTube Studio only: the home-page Preview button and dialog |
+| `whatsnew.js` / `whatsnew.css` / `whatsnew/` | One-time feature introductions, with their screenshots |
 | `page.js` | Tiny `world: "MAIN"` script; reads live-page values the isolated world can't see |
 | `transcript-helper.py` | Local yt-dlp wrapper on `127.0.0.1:8731`; the reliable transcript path |
 | `background.js` | Keyboard shortcuts, the subscriber-count fetch queue and cache, and the index client |

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube Toolkit",
-  "version": "1.29.2",
+  "version": "1.30.0",
   "description": "Free YouTube niche research. Find similar channels, filter results by size and outlier score, and read any channel's analytics.",
   "permissions": [
     "storage",
@@ -45,10 +45,12 @@
       ],
       "js": [
         "format.js",
-        "content.js"
+        "content.js",
+        "whatsnew.js"
       ],
       "css": [
-        "content.css"
+        "content.css",
+        "whatsnew.css"
       ],
       "run_at": "document_idle"
     },
@@ -62,6 +64,20 @@
       ],
       "world": "MAIN",
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://studio.youtube.com/*"
+      ],
+      "js": [
+        "studio.js",
+        "whatsnew.js"
+      ],
+      "css": [
+        "studio.css",
+        "whatsnew.css"
+      ],
+      "run_at": "document_idle"
     },
     {
       "matches": [
@@ -94,11 +110,13 @@
     {
       "resources": [
         "icons/icon32.png",
-        "icons/icon128.png"
+        "icons/icon128.png",
+        "whatsnew/*"
       ],
       "matches": [
         "https://www.youtube.com/*",
-        "https://m.youtube.com/*"
+        "https://m.youtube.com/*",
+        "https://studio.youtube.com/*"
       ]
     }
   ]

@@ -79,6 +79,16 @@ whether the channel earns, but how. It separates advertising from sponsorship
 deals, from affiliate links, from products it sells and from viewer donations,
 and shows you the line in the description that each one was read from.
 
+PREVIEW YOUR VIDEO BEFORE YOU PUBLISH
+
+In YouTube Studio, a Preview button beside Undo changes, and in the upload
+dialog, shows your video the way viewers will meet it: on the home page
+beside the videos YouTube recommends to you, or in the suggestions beside a
+video like yours. It uses the title and thumbnail in the form, even before
+you save them. Switch between phone, tablet, laptop, desktop, 1440p and TV,
+light or dark, or drag the edges to any size, and try other titles and
+thumbnails without changing anything in Studio.
+
 MORE FEATURES
 
 Copy the details of any video as clean text. You choose which parts you want
@@ -127,9 +137,10 @@ for anything to be attached to.
 
 To produce its figures the extension reads the page you are on and requests
 YouTube pages in the background. It reads channel pages and watch pages for
-subscriber counts and advertising slots, and search results when it is looking
-for related channels. Those requests go to YouTube and nowhere else, and carry
-no account credentials.
+subscriber counts and advertising slots, search results when it is looking
+for related channels, and your home page when you preview a video in Studio.
+Those requests go to YouTube and nowhere else. Like any YouTube page you load,
+they carry your YouTube session; nothing is read from it or sent anywhere else.
 
 Finding similar channels relies on a shared index of public channel
 information. While that feature is switched on, the extension tells the index
@@ -147,7 +158,7 @@ Switching "Similar Channels" off in the popup stops all of that.
 | `storage` | Saves your settings and caches subscriber counts and monetization results so the same channel is not looked up repeatedly. |
 | `clipboardWrite` | Copying video details to the clipboard is the extension's primary function. |
 | `downloads` | Saving a thumbnail image or a transcript as a file, only when you click those buttons. |
-| `https://*.youtube.com/*` | Reads the YouTube pages you are on to find video cards and channel details, and fetches YouTube pages in the background to look up subscriber counts, ad slots, and related channels. |
+| `https://*.youtube.com/*` | Reads the YouTube pages you are on to find video cards and channel details, and fetches YouTube pages in the background to look up subscriber counts, ad slots, and related channels. Covers YouTube Studio (studio.youtube.com), where it adds the home page preview. |
 | `https://i.ytimg.com/*` | Fetches thumbnail images for the download button, walking down resolutions until one exists. |
 
 ### Host permission justification (paste into the dashboard)
@@ -157,8 +168,11 @@ Switching "Similar Channels" off in the popup stops all of that.
 > figures: channel pages for subscriber counts, lifetime view totals and the date a channel
 > was created; watch pages to check whether recent videos carry advertising slots and to read
 > their descriptions for sponsorships, affiliate links, products and donations; and search
-> results when looking for channels related to the one being viewed. i.ytimg.com is YouTube's
-> thumbnail host, requested only for the thumbnail download button.
+> results when looking for channels related to the one being viewed. In YouTube Studio it adds
+> a Preview button that shows the video being edited on the home page and among suggested
+> videos; for that it requests the user's YouTube home page, the video's watch page, and a
+> search for its title. i.ytimg.com is YouTube's thumbnail host, requested only for the
+> thumbnail download button.
 >
 > The extension also sends channel handles to its own service at
 > youtube-toolkit-ox3k.onrender.com, which finds similar channels. No host permission is

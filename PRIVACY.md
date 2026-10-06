@@ -1,6 +1,6 @@
 # YouTube Toolkit — Privacy Policy
 
-_Last updated: 30 September 2026_
+_Last updated: 6 October 2026_
 
 YouTube Toolkit shows statistics about YouTube channels and videos on the YouTube pages you
 are already viewing, and helps you copy that information as text. There is no account, no
@@ -21,6 +21,8 @@ requests it makes in the background. It is written against what the code actuall
   video's thumbnail, kept only when it differs from the last one seen, so the thumbnail
   gallery can show a change the Internet Archive never captured. Up to 300 videos; the oldest
   are dropped first. Switching off "Thumbnail card on watch pages" stops it.
+- **Studio preview preferences** — the screen size, theme and view you last used in the home
+  page preview, and which feature introductions you have already seen. Stored locally.
 
 None of this is readable by us. All of it disappears when you uninstall the extension.
 
@@ -35,6 +37,13 @@ the page you opened:
   channel's videos.
 - **Search result pages**, when looking for channels related to the one you are viewing.
 - **Thumbnail images** from `i.ytimg.com`, for the thumbnail download button.
+- **When you open the home page preview in YouTube Studio:** your YouTube home page, so your
+  video can be shown beside the videos YouTube recommends to you; the watch page of the video
+  being previewed, for its channel name, view count and length; and, if you switch to the
+  Suggested view, a search for the video's title and the watch page of the top result, for the
+  videos suggested beside it. The title and thumbnail you are editing are read from the Studio
+  page and shown in the preview only. They are not sent anywhere, and nothing is changed in
+  Studio.
 
 These go to YouTube and nowhere else. Some carry your existing YouTube session cookies,
 because they are ordinary requests from your browser to a site you are already signed in to,
@@ -54,6 +63,9 @@ extension sends the following to the index service:
   index.
 - **When you watch a video:** the handle of that video's channel, and the channels or video
   IDs YouTube recommended beside it, so the index learns which channels share an audience.
+- **When you search YouTube with the Search companion on:** the search terms, so it can chart
+  how many videos on that topic were published recently. Turning the Search companion off in
+  the extension's settings stops this.
 
 The index stores **relationships between channels**. It does not store a record of who
 looked at what: no account identifier, no device identifier, no cookie, no profile, and no

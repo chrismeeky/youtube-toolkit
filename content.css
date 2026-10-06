@@ -4616,6 +4616,12 @@ html[dark] .ytc-st__tab.on { background: rgba(255,255,255,.14); }
   color: var(--yt-spec-text-secondary, #606060);
 }
 html[dark] .ytc-st__lead { color: #aaa; }
+.ytc-st__link {
+  padding: 0; border: 0; background: none; cursor: pointer;
+  font: inherit; color: #065fd4;
+}
+.ytc-st__link:hover { text-decoration: underline; }
+html[dark] .ytc-st__link { color: #3ea6ff; }
 
 /* A row is the whole target, not just the switch — a 34px pill is a small thing to aim at
    when the label beside it is the part being read. */

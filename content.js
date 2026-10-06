@@ -12157,6 +12157,16 @@
       ]
     },
     {
+      key: 'studio',
+      title: 'Studio',
+      note: 'What the extension adds to YouTube Studio.',
+      items: [
+        { k: 'showStudioPreview', label: 'Home page preview',
+          note: 'A Preview button on a video’s details and in the upload dialog: see it in the ' +
+            'home feed on phone, desktop and TV before you publish' }
+      ]
+    },
+    {
       key: 'copy',
       title: 'Copying',
       note: 'What lands on the clipboard when you press Copy.',
@@ -12278,7 +12288,21 @@
       '</div>';
   }
 
+  /* The feature introduction can be asked for again from here: the overlay shows itself
+     once, and someone who dismissed it too fast has no other way back to it. whatsnew.js
+     listens for this event; content scripts share the window, so no message is needed. */
+  function settingsStudioTab() {
+    const g = SETTINGS_GROUPS.find((x) => x.key === 'studio');
+    return '<div class="ytc-st__sec">' +
+      '<p class="ytc-st__lead">' + escapeHtml(g.note) + '</p>' +
+      g.items.map(settingsRow).join('') +
+      '<p class="ytc-st__lead"><button type="button" class="ytc-st__link" data-whatsnew="studio-preview">' +
+        'Show the introduction again</button></p>' +
+    '</div>';
+  }
+
   function settingsBody() {
+    if (stTab === 'studio') return settingsStudioTab();
     if (stTab === 'copy') return settingsCopyTab();
     if (stTab === 'channel') return settingsChannelTab();
     const g = SETTINGS_GROUPS.find((x) => x.key === stTab) || SETTINGS_GROUPS[0];
@@ -12291,6 +12315,7 @@
   const ST_TABS = [
     { k: 'research', label: 'Research' },
     { k: 'panels', label: 'Panels' },
+    { k: 'studio', label: 'Studio' },
     { k: 'copy', label: 'Copying' },
     { k: 'channel', label: 'Your channel' }
   ];
@@ -12344,6 +12369,12 @@
       if (e.target === modal || e.target.closest('.ytc-st__x')) { closeSettingsModal(); return; }
       const tab = e.target.closest('[data-tab]');
       if (tab) { stTab = tab.dataset.tab; renderSettingsModal(); return; }
+      const intro = e.target.closest('[data-whatsnew]');
+      if (intro) {
+        closeSettingsModal();
+        window.dispatchEvent(new CustomEvent('ytc-whatsnew', { detail: intro.dataset.whatsnew }));
+        return;
+      }
       const row = e.target.closest('[data-set]');
       if (row) { setSetting({ [row.dataset.set]: !settings[row.dataset.set] }); return; }
       const chip = e.target.closest('[data-field]');
@@ -12462,7 +12493,7 @@
           if (now - st.firstSeen < REVIEW_FIRST_AFTER) return;
           if (st.lastShown && now - st.lastShown < REVIEW_EVERY) return;
           if (document.hidden) return;
-          if (document.querySelector('.ytc-st, .ytc-fm, .ytc-ai, .ytc-pk, .ytc-rv')) return;
+          if (document.querySelector('.ytc-st, .ytc-fm, .ytc-ai, .ytc-pk, .ytc-rv, .ytc-wn')) return;
           st.lastShown = now;
           st.shownCount = (st.shownCount || 0) + 1;
           chrome.storage.local.set({ [REVIEW_KEY]: st });

@@ -32,6 +32,7 @@
     showMoney: true,              // monetization badge (inferred from ad placements)
     showStats: true,              // views/hour, engagement and an earnings estimate
     showTags: true,               // the video's own tags, in a card under the watch-page figures
+    showStudioPreview: true,      // Studio: the home-page Preview button (studio.js)
     showThumbCard: true,          // the current thumbnail in the watch sidebar, with a download
     showSimilar: true,            // "Similar channels" button on channel pages
     /* Shorts have no sidebar and no description, so the figures every other page shows have
@@ -177,6 +178,152 @@
     const m = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});(?:\s*(?:var|const|let)\s|\s*<\/script>)/s);
     if (!m) return null;
     try { return JSON.parse(m[1]); } catch (e) { return null; }
+  }
+
+  /* ytInitialData, cut out by brace matching rather than a lazy regex: the home page's blob
+     is a megabyte of JSON whose strings routinely contain "};", which ends a lazy match early
+     and leaves nothing that parses. */
+  function initialDataFrom(html) {
+    if (!html) return null;
+    const at = html.search(/(?:var ytInitialData|window\["ytInitialData"\])\s*=\s*\{/);
+    if (at < 0) return null;
+    const start = html.indexOf('{', at);
+    let depth = 0;
+    let inStr = false;
+    for (let i = start; i < html.length; i++) {
+      const c = html[i];
+      if (inStr) {
+        if (c === '\\') i++;
+        else if (c === '"') inStr = false;
+      } else if (c === '"') inStr = true;
+      else if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) {
+        try { return JSON.parse(html.slice(start, i + 1)); } catch (e) { return null; }
+      }
+    }
+    return null;
+  }
+
+  /* The sidebar and the home grid abbreviate ("4.1M", "2mo ago"); the home page a viewer
+     sees spells it out. The preview should read like the home page. */
+  const AGE_UNITS = { s: 'second', sec: 'second', m: 'minute', min: 'minute', h: 'hour',
+    hr: 'hour', d: 'day', w: 'week', wk: 'week', mo: 'month', y: 'year', yr: 'year' };
+
+  function spellAge(t) {
+    const m = String(t || '').match(/^(\d+)\s*(s|sec|m|min|h|hr|d|w|wk|mo|y|yr)\s+ago$/i);
+    if (!m) return t || '';
+    const n = +m[1];
+    return n + ' ' + AGE_UNITS[m[2].toLowerCase()] + (n === 1 ? '' : 's') + ' ago';
+  }
+
+  function spellViews(t) {
+    const s = String(t || '').trim();
+    return /^[\d.,]+[KMB]?$/i.test(s) ? s + ' views' : s;
+  }
+
+  function textOf(o) {
+    if (!o) return '';
+    if (typeof o === 'string') return o;
+    if (o.content) return o.content;
+    if (o.simpleText) return o.simpleText;
+    if (Array.isArray(o.runs)) return o.runs.map((r) => r.text || '').join('');
+    return '';
+  }
+
+  function biggest(sources) {
+    const list = (sources || []).filter((s) => s && s.url);
+    if (!list.length) return '';
+    return list.reduce((a, b) => ((b.width || 0) > (a.width || 0) ? b : a)).url;
+  }
+
+  function fromLockup(v) {
+    if (v.contentType !== 'LOCKUP_CONTENT_TYPE_VIDEO' || !v.contentId) return null;
+    const img = v.contentImage && v.contentImage.thumbnailViewModel;
+    const meta = v.metadata && v.metadata.lockupMetadataViewModel;
+    if (!img || !meta) return null;
+    let duration = '';
+    for (const o of img.overlays || []) {
+      const holder = o.thumbnailBottomOverlayViewModel || o.thumbnailOverlayBadgeViewModel;
+      const badges = holder && (holder.badges || holder.thumbnailBadges);
+      for (const b of badges || []) {
+        const t = b.thumbnailBadgeViewModel && b.thumbnailBadgeViewModel.text;
+        if (t) { duration = t; break; }
+      }
+      if (duration) break;
+    }
+    const rows = (meta.metadata && meta.metadata.contentMetadataViewModel &&
+      meta.metadata.contentMetadataViewModel.metadataRows) || [];
+    const parts = rows.map((r) => (r.metadataParts || []).map((p) => textOf(p.text)).filter(Boolean));
+    const avatar = meta.image && meta.image.decoratedAvatarViewModel &&
+      meta.image.decoratedAvatarViewModel.avatar && meta.image.decoratedAvatarViewModel.avatar.avatarViewModel;
+    // A channel's own grid drops the channel row and leaves only views and age.
+    const stats = parts.length > 1 ? parts[1] : parts[0] || [];
+    return {
+      id: v.contentId,
+      title: textOf(meta.title),
+      thumb: biggest(img.image && img.image.sources),
+      duration,
+      channel: parts.length > 1 ? parts[0][0] || '' : '',
+      avatar: biggest(avatar && avatar.image && avatar.image.sources),
+      views: spellViews(stats[0]),
+      age: spellAge(stats[1])
+    };
+  }
+
+  function fromVideoRenderer(v) {
+    if (!v.videoId) return null;
+    const avatar = v.channelThumbnailSupportedRenderers &&
+      v.channelThumbnailSupportedRenderers.channelThumbnailWithLinkRenderer;
+    return {
+      id: v.videoId,
+      title: textOf(v.title),
+      thumb: biggest(v.thumbnail && v.thumbnail.thumbnails),
+      duration: textOf(v.lengthText),
+      channel: textOf(v.ownerText || v.longBylineText),
+      avatar: biggest(avatar && avatar.thumbnail && avatar.thumbnail.thumbnails),
+      views: spellViews(textOf(v.shortViewCountText) || textOf(v.viewCountText)),
+      age: spellAge(textOf(v.publishedTimeText))
+    };
+  }
+
+  /* Long-form videos from a home, search or watch page, in page order. Shorts shelves,
+     playlists, mixes and ads are left out: none of them sit in the grid slot a new upload
+     competes for. */
+  function feedVideosFrom(html, limit) {
+    const data = initialDataFrom(html);
+    const out = [];
+    const seen = new Set();
+    const cap = limit || 60;
+    (function walk(o) {
+      if (!o || typeof o !== 'object' || out.length >= cap) return;
+      if (Array.isArray(o)) { for (const x of o) walk(x); return; }
+      const hit = o.lockupViewModel ? fromLockup(o.lockupViewModel)
+        : o.videoRenderer ? fromVideoRenderer(o.videoRenderer) : null;
+      if (hit) {
+        if (hit.title && hit.thumb && !seen.has(hit.id)) { seen.add(hit.id); out.push(hit); }
+        return;
+      }
+      for (const k in o) walk(o[k]);
+    })(data);
+    return out;
+  }
+
+  /* The figures a home-page card shows for a video, from its own watch page. */
+  function watchCardFrom(html) {
+    const player = playerResponseFrom(html);
+    const d = (player && player.videoDetails) || {};
+    const micro = (player && player.microformat && player.microformat.playerMicroformatRenderer) || {};
+    const av = html.match(/"videoOwnerRenderer":\{"thumbnail":\{"thumbnails":\[\{"url":"([^"]+)"/);
+    return {
+      title: d.title || '',
+      channel: d.author || micro.ownerChannelName || '',
+      avatar: av ? av[1] : '',
+      viewCount: d.viewCount != null ? +d.viewCount : null,
+      lengthSeconds: d.lengthSeconds != null ? +d.lengthSeconds : null,
+      published: micro.publishDate || micro.uploadDate || '',
+      // The thumbnail YouTube itself serves for the video: the custom one, or the default frame.
+      thumb: biggest(d.thumbnail && d.thumbnail.thumbnails)
+    };
   }
 
   function captionTracksFrom(html) {
@@ -1613,6 +1760,6 @@
     topicQueries, channelsFromSearch, rankSimilar,
     safeFilename, formatTranscript, stampMs, decodeEntities, parseJson3, parseTimedTextXml,
     innertubeConfig, captionTracksFrom, pickCaptionTrack, transcriptSegmentsFrom, loadTranscript,
-    playerResponseFrom
+    playerResponseFrom, initialDataFrom, feedVideosFrom, watchCardFrom
   };
 })(typeof window !== 'undefined' ? window : globalThis);

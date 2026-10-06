@@ -1,0 +1,148 @@
+/* YouTube Toolkit — feature introductions (whatsnew.js). Loaded on youtube.com and Studio,
+   both of which mark dark mode with html[dark]. */
+
+.ytc-wn {
+  --wn-bg: #fff;
+  --wn-text: #0f0f0f;
+  --wn-muted: #606060;
+  --wn-line: #e5e5e5;
+  --wn-pill: rgba(0, 0, 0, .06);
+  --wn-pill-hover: rgba(0, 0, 0, .1);
+  --wn-shot: #f2f2f2;
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, .55);
+  font: 400 14px/1.45 Roboto, Arial, sans-serif;
+  animation: ytc-wn-in .18s ease-out;
+}
+html[dark] .ytc-wn {
+  --wn-bg: #212121;
+  --wn-text: #f1f1f1;
+  --wn-muted: #aaa;
+  --wn-line: #3f3f3f;
+  --wn-pill: rgba(255, 255, 255, .1);
+  --wn-pill-hover: rgba(255, 255, 255, .18);
+  --wn-shot: #181818;
+}
+.ytc-wn *, .ytc-wn *::before, .ytc-wn *::after { box-sizing: border-box; }
+@keyframes ytc-wn-in { from { opacity: 0; } to { opacity: 1; } }
+
+.ytc-wn__card {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--wn-bg);
+  color: var(--wn-text);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .4);
+}
+
+.ytc-wn__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 16px 14px 20px;
+}
+.ytc-wn__logo { width: 32px; height: 32px; border-radius: 7px; }
+.ytc-wn__title { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.ytc-wn__title span {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: #cc0000;
+}
+html[dark] .ytc-wn__title span { color: #ff4e45; }
+.ytc-wn__title b { font-size: 18px; font-weight: 500; line-height: 24px; }
+.ytc-wn__x {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  font: 300 26px/36px Roboto, Arial, sans-serif;
+  color: var(--wn-text);
+  background: transparent;
+  cursor: pointer;
+}
+.ytc-wn__x:hover { background: var(--wn-pill); }
+
+/* The slider: a track of full-width slides, moved by transform. */
+.ytc-wn__viewport {
+  overflow: hidden;
+  touch-action: pan-y;                     /* vertical scroll stays the page's */
+  cursor: grab;
+}
+.ytc-wn__track {
+  display: flex;
+  transition: transform .38s cubic-bezier(.22, .8, .25, 1);
+  will-change: transform;
+}
+.ytc-wn__track--drag { transition: none; cursor: grabbing; }
+.ytc-wn__slide { flex: 0 0 100%; min-width: 0; user-select: none; }
+@media (prefers-reduced-motion: reduce) {
+  .ytc-wn__track { transition: none; }
+}
+
+/* Screenshots are 16:10, the shape they were taken in, so nothing is cropped. */
+.ytc-wn__shot {
+  margin: 0 20px;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border: 1px solid var(--wn-line);
+  border-radius: 10px;
+  background: var(--wn-shot);
+}
+.ytc-wn__shot img { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+.ytc-wn__text { padding: 16px 20px 4px; }
+.ytc-wn__text h3 { margin: 0 0 4px; font-size: 16px; font-weight: 500; line-height: 22px; }
+.ytc-wn__text p { margin: 0; color: var(--wn-muted); max-width: 64ch; }
+
+.ytc-wn__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 20px 18px;
+}
+.ytc-wn__dots { display: flex; gap: 6px; margin-right: 6px; }
+.ytc-wn__dot {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: var(--wn-line);
+  cursor: pointer;
+  transition: width .15s ease, background .15s ease;
+}
+.ytc-wn__dot.on { width: 20px; background: var(--wn-text); }
+.ytc-wn__note { flex: 1; font-size: 12px; color: var(--wn-muted); }
+.ytc-wn__btn {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 18px;
+  font: 500 14px/36px Roboto, Arial, sans-serif;
+  color: var(--wn-text);
+  background: var(--wn-pill);
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ytc-wn__btn:hover { background: var(--wn-pill-hover); }
+.ytc-wn__btn--primary { color: var(--wn-bg); background: var(--wn-text); }
+.ytc-wn__btn--primary:hover { background: var(--wn-text); opacity: .85; }
+
+@media (max-width: 560px) {
+  .ytc-wn__note { display: none; }
+  .ytc-wn__dots { flex: 1; }
+}

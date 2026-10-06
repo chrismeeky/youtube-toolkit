@@ -6,7 +6,14 @@
 
 /* config.js is gitignored and may be absent in a fresh clone; the index is optional, so a
    missing file must degrade to live search rather than killing the service worker. */
-try { importScripts('config.js'); } catch (e) { self.YTCopyConfig = { INDEX_API: '' }; }
+/* Chrome runs this as a service worker and loads the other two files here. Firefox has no
+   extension service workers: it runs this as a background script, with config.js and
+   format.js listed ahead of it in its manifest, and importScripts does not exist there. */
+const AS_WORKER = typeof importScripts === 'function';
+if (AS_WORKER) {
+  try { importScripts('config.js'); } catch (e) { self.YTCopyConfig = { INDEX_API: '' }; }
+}
+if (!self.YTCopyConfig) self.YTCopyConfig = { INDEX_API: '' };
 
 /* Said once, at startup, in the service worker console. Whether the index is reachable is
    the single most common thing to be wrong, and until now the only way to find out was to
@@ -16,7 +23,7 @@ try { importScripts('config.js'); } catch (e) { self.YTCopyConfig = { INDEX_API:
   console.log('[YouTube Toolkit] index endpoint: ' +
     (cfg ? cfg.split('/k/')[0] + '/k/…' : 'NOT SET — falling back to YouTube search'));
 }
-importScripts('format.js');
+if (AS_WORKER) importScripts('format.js');
 const F = self.YTCopyFormat;
 
 /* ------------------------------------------------------------------- commands */
@@ -1365,6 +1372,33 @@ chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === WATCH_ALARM) runPocketWatch('alarm').catch(() => {});
 });
 chrome.runtime.onInstalled.addListener(() => { armPocketWatch(); paintWatchBadge(); });
+
+/* Feature introductions (whatsnew.js), queued for people updating from a version without the
+   feature. The previous version is compared rather than just "this was an update", so a
+   later bug-fix release doesn't introduce a feature to someone who installed alongside it. */
+const WHATSNEW = [{ id: 'studio-preview', since: '1.30.0' }];
+
+function olderThan(a, b) {
+  const x = String(a || '0').split('.').map(Number);
+  const y = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0);
+  }
+  return false;
+}
+
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason !== 'update') return;
+  const due = WHATSNEW.filter((f) => olderThan(details.previousVersion, f.since)).map((f) => f.id);
+  if (!due.length) return;
+  chrome.storage.local.get('ytcWhatsNew', (got) => {
+    const st = Object.assign({ pending: [], seen: [] }, got && got.ytcWhatsNew);
+    for (const id of due) {
+      if (st.pending.indexOf(id) < 0 && st.seen.indexOf(id) < 0) st.pending.push(id);
+    }
+    chrome.storage.local.set({ ytcWhatsNew: st });
+  });
+});
 chrome.runtime.onStartup.addListener(() => { armPocketWatch(); paintWatchBadge(); });
 
 /* ------------------------------------------------------- audience overlap */
@@ -2118,6 +2152,83 @@ async function captionMatches(ids, words) {
   return { ok: true, checked: wanted.length, withCaptions, hits };
 }
 
+/* Studio preview: the viewer's own home feed, and the card figures for the video being edited.
+
+   Both pages are fetched with cookies. The home feed is the point — the videos a new upload
+   will actually sit beside are the ones YouTube recommends to this account, not a generic
+   list — and the video itself may still be private or unlisted, which only its owner can
+   open. A home page with watch history off comes back empty, so the title becomes a search
+   and its results stand in. The feed is held for ten minutes so flipping between screen
+   sizes or reopening the preview doesn't refetch it. */
+const PREVIEW_FEED_TTL = 10 * 60 * 1000;
+let previewFeed = null; // { at, videos }
+
+async function pageText(url) {
+  try {
+    const res = await fetch(url, { credentials: 'include', headers: { 'Accept-Language': 'en' } });
+    return res.ok ? await res.text() : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function studioPreview(id, query) {
+  const ownP = id ? pageText('https://www.youtube.com/watch?v=' + encodeURIComponent(id) + '&hl=en') : null;
+  let videos = previewFeed && Date.now() - previewFeed.at < PREVIEW_FEED_TTL ? previewFeed.videos : null;
+  let source = 'home';
+  if (!videos) {
+    videos = F.feedVideosFrom(await pageText('https://www.youtube.com/?hl=en'), 60);
+    if (videos.length >= 12) previewFeed = { at: Date.now(), videos };
+  }
+  if (videos.length < 12 && query) {
+    const found = F.feedVideosFrom(await searchPage(query), 40);
+    const have = new Set(videos.map((v) => v.id));
+    videos = videos.concat(found.filter((v) => !have.has(v.id)));
+    source = 'search';
+  }
+  const ownHtml = ownP ? await ownP : null;
+  return {
+    ok: true,
+    source,
+    videos: videos.filter((v) => v.id !== id),
+    own: ownHtml ? F.watchCardFrom(ownHtml) : null
+  };
+}
+
+/* Suggested videos for the preview's watch-page view.
+
+   Suggestions belong to the video being watched, so the home feed is the wrong neighbourhood.
+   The title is searched; the top result stands in as the video someone is watching, and its
+   own up-next list is the sidebar this upload would compete in. Both pages are read in full:
+   the streaming readers stop partway into ytInitialData, which leaves JSON that won't parse.
+   Falls back to the rest of the search results when the watch page yields too little. */
+const relatedCache = new Map(); // query -> { at, host, related }
+
+async function studioRelated(id, query) {
+  const q = String(query || '').trim();
+  if (!q) return { ok: false, host: null, related: [] };
+  const hit = relatedCache.get(q);
+  if (hit && Date.now() - hit.at < PREVIEW_FEED_TTL) {
+    return { ok: true, host: hit.host, related: hit.related.filter((v) => v.id !== id) };
+  }
+  const results = F.feedVideosFrom(
+    await pageText('https://www.youtube.com/results?hl=en&search_query=' + encodeURIComponent(q)), 20)
+    .filter((v) => v.id !== id);
+  const host = results[0] || null;
+  let related = [];
+  if (host) {
+    related = F.feedVideosFrom(
+      await pageText('https://www.youtube.com/watch?v=' + host.id + '&hl=en'), 40)
+      .filter((v) => v.id !== id && v.id !== host.id);
+  }
+  if (related.length < 8) {
+    const have = new Set(related.map((v) => v.id));
+    related = related.concat(results.slice(1).filter((v) => !have.has(v.id)));
+  }
+  if (host && related.length) relatedCache.set(q, { at: Date.now(), host, related });
+  return { ok: !!host, host, related };
+}
+
 async function transcriptFor(id) {
   const out = await F.loadTranscript(id, fetch);
   return out;
@@ -2356,6 +2467,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     transcriptFor(msg.id)
       .then(sendResponse)
       .catch((e) => sendResponse({ ok: false, reason: e.message }));
+    return true;
+  }
+  if (msg.type === 'ytc-studio-preview') {
+    studioPreview(msg.id, msg.query)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String(e), videos: [], own: null }));
+    return true;
+  }
+  if (msg.type === 'ytc-studio-related') {
+    studioRelated(msg.id, msg.query)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String(e), host: null, related: [] }));
     return true;
   }
   if (msg.type === 'ytc-save-text') {
