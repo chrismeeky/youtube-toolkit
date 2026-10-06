@@ -149,7 +149,7 @@ beside a video you watched, so it can learn which channels resemble one
 another. No account identifier and no viewing history is sent, and the index
 holds relationships between channels rather than anything about people.
 
-Switching "Similar Channels" off in the popup stops all of that.
+Switching "Similar Channels" off in the extension's settings stops all of that.
 
 ## Permission justifications
 
