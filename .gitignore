@@ -6,3 +6,6 @@ cookies.txt
 
 # Holds the index endpoint incl. its access token. Never commit — this repo is public.
 config.js
+
+# Store packages, built by build.sh
+dist/
