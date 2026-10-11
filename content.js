@@ -1219,7 +1219,8 @@
         });
       });
     }
-    if (box.previousElementSibling !== statsCard) {
+    // Attached when missing; where it sits in the stack is arrangeStack's call.
+    if (box.parentElement !== statsCard.parentElement) {
       statsCard.parentElement.insertBefore(box, statsCard.nextSibling);
     }
     const html = videoTagsHtml(waiting);
@@ -1234,8 +1235,9 @@
     }
   }
 
-  /* The cards we stack at the top of the watch sidebar, in their one order: stats, tags,
-     thumbnail, interest, then the Shorts card. Each places itself after whatever of the ones above it
+  /* The cards we stack at the top of the watch sidebar. Each attaches itself when missing,
+     by default in this order: stats, tags, thumbnail, interest, then the Shorts card; the
+     reader's own order is then applied by arrangeStack. Each places itself after whatever of the ones above it
      is present — asking this rather than naming a neighbour, because two cards that each
      insist on sitting directly under the stats card swap places on every scan, and every
      swap is a mutation that triggers the next scan. */
@@ -1251,13 +1253,22 @@
   /* ---- sections bar ---- */
 
   /* One row of chips at the top of the watch sidebar, one per card, each with an eye that
-     hides or shows it. The sidebar has grown to five cards, and which of them earn their
-     space differs by reader.
+     hides or shows it. Dragging a chip (or Shift+arrow on a focused one) reorders the cards.
+     The sidebar has grown to five cards, and which earn their space, and in what order,
+     differs by reader.
 
      Folded away until the pointer enters the sidebar, then it opens slowly, easing the cards
      down, and folds back five seconds after the pointer leaves. Not floating over the stack,
      which would cover the card the reader was reaching for, and not a reserved row, which
-     read as a stray gap. Hidden cards stay hidden across videos, tabs and reloads. */
+     read as a stray gap. Hidden cards and the order stay across videos, tabs and reloads.
+
+     The cards themselves can be dragged too, by a grip that appears at the top edge of the
+     card under the pointer.
+
+     One function owns the order: arrangeStack, run at the end of every scan. The cards only
+     attach themselves when missing; if they also kept placing themselves relative to each
+     other, they and this would trade places on every scan, each move a mutation that
+     triggers the next. arrangeStack moves an element only when it is out of place. */
   const SECTIONS = [
     { key: 'stats', sel: '.ytc-cs', label: 'Stats' },
     { key: 'tags', sel: '.ytc-vt', label: 'Tags' },
@@ -1266,9 +1277,15 @@
     { key: 'shorts', sel: '.ytc-ps', label: 'Shorts' }
   ];
   const SECTIONS_STORE = 'ytcHiddenSections';
+  const ORDER_STORE = 'ytcSectionOrder';
   const SECTIONS_LINGER = 5000;          // how long the bar stays after the pointer leaves
   let sectionsHidden = new Set();
+  let sectionsOrder = SECTIONS.map((x) => x.key);
   let sectionsTimer = 0;
+  let sectionsDrag = '';
+  /* False until the saved choices have arrived. Storage answers a moment after the first
+     scan, and a card hidden on every watch page must not start its work in that moment. */
+  let sectionsLoaded = false;
   const sectionsHosts = new WeakSet();
 
   function openSections(open) {
@@ -1279,16 +1296,53 @@
     else sectionsTimer = setTimeout(() => bar.classList.remove('ytc-sb--open'), SECTIONS_LINGER);
   }
 
+  /* The saved order, with any card it doesn't name (one added in a later version) appended
+     where the default order would put it. */
+  function orderedSections() {
+    const known = SECTIONS.map((x) => x.key);
+    const keys = sectionsOrder.filter((k) => known.includes(k));
+    known.forEach((k, i) => {
+      if (keys.includes(k)) return;
+      const before = known.slice(0, i).reverse().find((p) => keys.includes(p));
+      keys.splice(before ? keys.indexOf(before) + 1 : 0, 0, k);
+    });
+    return keys.map((k) => SECTIONS.find((x) => x.key === k));
+  }
+
+  function saveSections() {
+    try {
+      chrome.storage.local.set({ [SECTIONS_STORE]: [...sectionsHidden],
+                                 [ORDER_STORE]: orderedSections().map((x) => x.key) },
+        () => { void chrome.runtime.lastError; });
+    } catch (e) { /* still applies to this page */ }
+  }
+
+  /* Puts `key` just before or after `target` in the full order, absent cards included. */
+  function moveSection(key, target, after) {
+    if (!key || key === target) return;
+    const keys = orderedSections().map((x) => x.key).filter((k) => k !== key);
+    const at = keys.indexOf(target);
+    if (at < 0) return;
+    keys.splice(after ? at + 1 : at, 0, key);
+    sectionsOrder = keys;
+    saveSections();
+    ensureSectionsBar();
+  }
+
   try {
-    chrome.storage.local.get([SECTIONS_STORE], (got) => {
+    chrome.storage.local.get([SECTIONS_STORE, ORDER_STORE], (got) => {
       void chrome.runtime.lastError;
       sectionsHidden = new Set((got && got[SECTIONS_STORE]) || []);
+      if (got && Array.isArray(got[ORDER_STORE])) sectionsOrder = got[ORDER_STORE];
+      sectionsLoaded = true;
       ensureSectionsBar();
+      try { ensureInterestCard(); } catch (e) { /* see scan() */ }
     });
-    // Hidden in another tab: this one follows.
+    // Changed in another tab: this one follows.
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local' || !changes[SECTIONS_STORE]) return;
-      sectionsHidden = new Set(changes[SECTIONS_STORE].newValue || []);
+      if (area !== 'local' || !(changes[SECTIONS_STORE] || changes[ORDER_STORE])) return;
+      if (changes[SECTIONS_STORE]) sectionsHidden = new Set(changes[SECTIONS_STORE].newValue || []);
+      if (changes[ORDER_STORE]) sectionsOrder = changes[ORDER_STORE].newValue || sectionsOrder;
       ensureSectionsBar();
       try { ensureInterestCard(); } catch (e) { /* the bar is what matters here */ }
     });
@@ -1300,53 +1354,254 @@
       (open ? '<circle cx="12" cy="12" r="3"/>' : '<path d="M4 4l16 16"/>') + '</svg>';
   }
 
+  function clearDropMarks(bar) {
+    bar.querySelectorAll('.ytc-sb__chip--before, .ytc-sb__chip--after, .ytc-sb__chip--drag')
+      .forEach((c) => c.classList.remove('ytc-sb__chip--before', 'ytc-sb__chip--after', 'ytc-sb__chip--drag'));
+  }
+
+  // Which side of the chip under the pointer a drop would land on.
+  function dropSpot(e) {
+    const chip = e.target.closest && e.target.closest('[data-sb]');
+    if (!chip) return null;
+    const r = chip.getBoundingClientRect();
+    return { chip, key: chip.dataset.sb, after: e.clientX > r.left + r.width / 2 };
+  }
+
+  function makeSectionsBar() {
+    const bar = document.createElement('div');
+    bar.className = 'ytc-sb';
+    bar.addEventListener('click', (e) => {
+      const b = e.target.closest && e.target.closest('[data-sb]');
+      if (!b) return;
+      const k = b.dataset.sb;
+      if (sectionsHidden.has(k)) sectionsHidden.delete(k); else sectionsHidden.add(k);
+      saveSections();
+      ensureSectionsBar();
+      if (k === 'interest') { try { ensureInterestCard(); } catch (err) { /* see scan() */ } }
+    });
+    bar.addEventListener('dragstart', (e) => {
+      const chip = e.target.closest && e.target.closest('[data-sb]');
+      if (!chip) return;
+      sectionsDrag = chip.dataset.sb;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', sectionsDrag);
+      chip.classList.add('ytc-sb__chip--drag');
+    });
+    bar.addEventListener('dragover', (e) => {
+      const spot = sectionsDrag && dropSpot(e);
+      if (!spot) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      bar.querySelectorAll('.ytc-sb__chip--before, .ytc-sb__chip--after')
+        .forEach((c) => c.classList.remove('ytc-sb__chip--before', 'ytc-sb__chip--after'));
+      if (spot.key !== sectionsDrag) spot.chip.classList.add(spot.after ? 'ytc-sb__chip--after' : 'ytc-sb__chip--before');
+    });
+    bar.addEventListener('drop', (e) => {
+      const spot = sectionsDrag && dropSpot(e);
+      if (!spot) return;
+      e.preventDefault();
+      const key = sectionsDrag;
+      sectionsDrag = '';
+      clearDropMarks(bar);
+      moveSection(key, spot.key, spot.after);
+    });
+    bar.addEventListener('dragend', () => { sectionsDrag = ''; clearDropMarks(bar); });
+    // The keyboard way: Shift+Left / Shift+Right on a focused chip moves it one place.
+    bar.addEventListener('keydown', (e) => {
+      if (!e.shiftKey || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+      const chip = e.target.closest && e.target.closest('[data-sb]');
+      if (!chip) return;
+      const chips = [...bar.querySelectorAll('[data-sb]')];
+      const next = chips[chips.indexOf(chip) + (e.key === 'ArrowLeft' ? -1 : 1)];
+      if (!next) return;
+      e.preventDefault();
+      const key = chip.dataset.sb;
+      moveSection(key, next.dataset.sb, e.key === 'ArrowRight');
+      const again = bar.querySelector('[data-sb="' + key + '"]');
+      if (again) again.focus();
+    });
+    return bar;
+  }
+
   function ensureSectionsBar() {
     let bar = document.querySelector('.ytc-sb');
     const host = sidebarHost();
-    const present = host ? SECTIONS.filter((x) => host.querySelector(':scope > ' + x.sel)) : [];
+    const order = orderedSections();
+    const present = host ? order.filter((x) => host.querySelector(':scope > ' + x.sel)) : [];
     if (!present.length) {
       if (bar) bar.remove();
       return;
     }
-    if (!bar) {
-      bar = document.createElement('div');
-      bar.className = 'ytc-sb';
-      bar.addEventListener('click', (e) => {
-        const b = e.target.closest && e.target.closest('[data-sb]');
-        if (!b) return;
-        const k = b.dataset.sb;
-        if (sectionsHidden.has(k)) sectionsHidden.delete(k); else sectionsHidden.add(k);
-        try {
-          chrome.storage.local.set({ [SECTIONS_STORE]: [...sectionsHidden] },
-            () => { void chrome.runtime.lastError; });
-        } catch (err) { /* still applies to this page */ }
-        ensureSectionsBar();
-        if (k === 'interest') { try { ensureInterestCard(); } catch (err) { /* see scan() */ } }
-      });
-    }
+    if (!bar) bar = makeSectionsBar();
     if (host.firstElementChild !== bar) host.insertBefore(bar, host.firstChild);
     // Once per sidebar element: YouTube reuses it across videos, and so do the listeners.
     if (!sectionsHosts.has(host)) {
       sectionsHosts.add(host);
       host.addEventListener('mouseenter', () => openSections(true));
-      host.addEventListener('mouseleave', () => openSections(false));
+      host.addEventListener('mouseleave', (e) => {
+        openSections(false);
+        if (!(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.ytc-grip'))) showGrip(null);
+      });
+      host.addEventListener('mousemove', (e) => {
+        if (gripDrag) return;
+        showGrip(stackCardAt(host, e.target));
+      });
     }
-    for (const x of SECTIONS) {
+    order.forEach((x) => {
       host.querySelectorAll(':scope > ' + x.sel).forEach((el) =>
         el.classList.toggle('ytc-sb-off', sectionsHidden.has(x.key)));
-    }
+    });
+    arrangeStack(host, bar, order);
     const html = '<span class="ytc-sb__label">Sections</span>' +
       present.map((x) => {
         const on = !sectionsHidden.has(x.key);
-        return '<button type="button" class="ytc-sb__chip' + (on ? '' : ' ytc-sb__chip--off') +
-          '" data-sb="' + x.key + '" aria-pressed="' + on + '" title="' +
-          (on ? 'Hide ' : 'Show ') + x.label + '">' + eyeIcon(on) +
-          '<span>' + x.label + '</span></button>';
+        return '<button type="button" draggable="true" class="ytc-sb__chip' +
+          (on ? '' : ' ytc-sb__chip--off') + '" data-sb="' + x.key + '" aria-pressed="' + on +
+          '" title="' + (on ? 'Hide ' : 'Show ') + x.label + ' · drag to reorder">' +
+          eyeIcon(on) + '<span>' + x.label + '</span></button>';
       }).join('');
     if (bar.dataset.sig !== html) {
       bar.dataset.sig = html;
       bar.innerHTML = html;
     }
+  }
+
+  /* The bar first, then every card in the reader's order. Moves only what is out of place,
+     so a stack already in order costs nothing and triggers no further scan. */
+  function arrangeStack(host, bar, order) {
+    let prev = bar;
+    for (const x of order) {
+      for (const el of host.querySelectorAll(':scope > ' + x.sel)) {
+        if (prev.nextElementSibling !== el) prev.after(el);
+        prev = el;
+      }
+    }
+  }
+
+  function sectionOf(el) {
+    return SECTIONS.find((x) => el.matches(x.sel)) || null;
+  }
+
+  // The stack card (a direct child of the sidebar) that `target` is inside, if any.
+  function stackCardAt(host, target) {
+    let el = target;
+    while (el && el.parentElement !== host) el = el.parentElement;
+    return el && sectionOf(el) ? el : null;
+  }
+
+  /* ---- dragging the cards themselves ----
+
+     A grip at the top edge of the card under the pointer, centred, where every card has
+     only padding. It lives on <body>, positioned over the card, rather than inside it: the
+     cards rebuild their own contents and would wipe it, and an extra child in the sidebar
+     would be one more thing for the stack to order. */
+  let gripEl = null, gripCard = null, gripDrag = null, gripLine = null;
+
+  function gripNode() {
+    if (gripEl && gripEl.isConnected) return gripEl;
+    gripEl = document.createElement('div');
+    gripEl.className = 'ytc-grip';
+    gripEl.setAttribute('role', 'button');
+    gripEl.setAttribute('aria-label', 'Drag to move this section');
+    gripEl.title = 'Drag to move this section';
+    gripEl.innerHTML = '<span></span>';
+    gripEl.addEventListener('mouseleave', (e) => {
+      if (gripDrag) return;
+      const host = sidebarHost();
+      if (!(host && e.relatedTarget && host.contains(e.relatedTarget))) showGrip(null);
+    });
+    gripEl.addEventListener('pointerdown', startCardDrag);
+    document.body.appendChild(gripEl);
+    return gripEl;
+  }
+
+  function placeGrip() {
+    if (!gripEl || !gripCard) return;
+    const r = gripCard.getBoundingClientRect();
+    gripEl.style.left = (r.left + r.width / 2) + 'px';
+    gripEl.style.top = (r.top + 1) + 'px';
+  }
+
+  function showGrip(card) {
+    if (card === gripCard && gripEl && gripEl.isConnected) { placeGrip(); return; }
+    gripCard = card;
+    if (!card) { if (gripEl) gripEl.classList.remove('ytc-grip--on'); return; }
+    gripNode().classList.add('ytc-grip--on');
+    placeGrip();
+  }
+
+  window.addEventListener('scroll', () => { if (gripDrag) return; showGrip(null); }, { passive: true });
+
+  // The visible stack cards other than the one being dragged, top to bottom.
+  function dropTargets(host, dragged) {
+    return [...host.children].filter((el) => el !== dragged && sectionOf(el) &&
+      !el.classList.contains('ytc-sb-off') && el.offsetHeight > 0);
+  }
+
+  function startCardDrag(e) {
+    if (e.button !== 0 || !gripCard) return;
+    const host = sidebarHost();
+    const sec = sectionOf(gripCard);
+    if (!host || !sec) return;
+    e.preventDefault();
+    gripEl.setPointerCapture(e.pointerId);
+    gripDrag = { el: gripCard, key: sec.key, host, target: null, after: false };
+    gripCard.classList.add('ytc-card-dragging');
+    document.documentElement.classList.add('ytc-dragging-section');
+    gripLine = document.createElement('div');
+    gripLine.className = 'ytc-grip-line';
+    document.body.appendChild(gripLine);
+    gripEl.addEventListener('pointermove', moveCardDrag);
+    gripEl.addEventListener('pointerup', endCardDrag);
+    gripEl.addEventListener('pointercancel', endCardDrag);
+    document.addEventListener('keydown', escCardDrag, true);
+  }
+
+  function moveCardDrag(e) {
+    const d = gripDrag;
+    if (!d) return;
+    gripEl.style.left = e.clientX + 'px';
+    gripEl.style.top = (e.clientY - 7) + 'px';
+    // Near the window's edge the page scrolls, so a card can travel past what's on screen.
+    if (e.clientY < 70) window.scrollBy(0, -14);
+    else if (e.clientY > window.innerHeight - 70) window.scrollBy(0, 14);
+    const list = dropTargets(d.host, d.el);
+    if (!list.length) return;
+    let target = list[list.length - 1], after = true;
+    for (const el of list) {
+      const r = el.getBoundingClientRect();
+      if (e.clientY < r.top + r.height / 2) { target = el; after = false; break; }
+    }
+    d.target = target;
+    d.after = after;
+    const r = target.getBoundingClientRect();
+    const y = after ? r.bottom + 7 : r.top - 9;
+    gripLine.style.left = r.left + 'px';
+    gripLine.style.width = r.width + 'px';
+    gripLine.style.top = y + 'px';
+  }
+
+  function endCardDrag(e, cancel) {
+    const d = gripDrag;
+    if (!d) return;
+    gripDrag = null;
+    gripEl.removeEventListener('pointermove', moveCardDrag);
+    gripEl.removeEventListener('pointerup', endCardDrag);
+    gripEl.removeEventListener('pointercancel', endCardDrag);
+    document.removeEventListener('keydown', escCardDrag, true);
+    d.el.classList.remove('ytc-card-dragging');
+    document.documentElement.classList.remove('ytc-dragging-section');
+    if (gripLine) { gripLine.remove(); gripLine = null; }
+    const to = d.target && sectionOf(d.target);
+    if (!cancel && e && e.type === 'pointerup' && to) moveSection(d.key, to.key, d.after);
+    showGrip(null);
+  }
+
+  function escCardDrag(e) {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    endCardDrag(null, true);
   }
 
   /* ---- thumbnail card and gallery ---- */
@@ -1396,12 +1651,12 @@
         if (e.target.closest('.ytc-th__dl, .ytc-th__pic')) openThumbGallery();
       });
     }
+    // Attached when missing; where it sits in the stack is arrangeStack's call.
     const stats = document.querySelector('.ytc-cs');
-    if (stats && stats.parentElement) {
-      const above = sidebarStackTail(stats, '.ytc-th');
-      if (box.previousElementSibling !== above) above.after(box);
-    } else if (host && sidebarFirst(host) !== box) {
-      host.insertBefore(box, sidebarFirst(host));
+    const home = stats && stats.parentElement ? stats.parentElement : host;
+    if (home && box.parentElement !== home) {
+      if (stats && stats.parentElement) sidebarStackTail(stats, '.ytc-th').after(box);
+      else home.insertBefore(box, sidebarFirst(home));
     }
     const html =
       '<div class="ytc-th__head">' +
@@ -1513,13 +1768,12 @@
       box.addEventListener('mousemove', interestHover);
       box.addEventListener('mouseleave', () => interestHover(null));
     }
-    // Under the thumbnail when there is one, and always above the Shorts card.
+    // Attached when missing; where it sits in the stack is arrangeStack's call.
     const top = document.querySelector('.ytc-cs') || document.querySelector('.ytc-th');
-    if (top && top !== box && top.parentElement) {
-      const above = sidebarStackTail(top, '.ytc-ci');
-      if (box.previousElementSibling !== above) above.after(box);
-    } else if (host && sidebarFirst(host) !== box) {
-      host.insertBefore(box, sidebarFirst(host));
+    const home = top && top !== box && top.parentElement ? top.parentElement : host;
+    if (home && box.parentElement !== home) {
+      if (top && top !== box && top.parentElement) sidebarStackTail(top, '.ytc-ci').after(box);
+      else home.insertBefore(box, sidebarFirst(home));
     }
     /* Checked on arriving at a video, not on every scan: a curve the reader is looking at
        shouldn't fall back to a skeleton under them when its fifteen minutes run out. */
@@ -1544,7 +1798,7 @@
        reached the upload already is the lifetime curve, and the Archive's copies are a
        megabyte each. */
     // Hidden from the sections bar: drawn for its place in the stack, but nothing is read.
-    const off = sectionsHidden.has('interest');
+    const off = !sectionsLoaded || sectionsHidden.has('interest');
     if (!off && st.phase === 'done' && !st.hist && interestSeries(st).zoomed) loadHistory(st);
     paintInterest(box);
     if (!off && st.phase === 'idle') readInterest(st);
@@ -7928,9 +8182,10 @@
         askPromo(false, b.dataset.ps === 'refresh');
       });
     }
-    // Last of the stack, so the order holds: stats, tags, thumbnail, interest, Shorts.
-    const above = sidebarStackTail(card);
-    if (box.previousElementSibling !== above) card.parentElement.insertBefore(box, above.nextSibling);
+    // Attached when missing, at the end of the stack; the order is arrangeStack's call.
+    if (box.parentElement !== card.parentElement) {
+      card.parentElement.insertBefore(box, sidebarStackTail(card).nextSibling);
+    }
     if (!promoState.peeked) {
       promoState.peeked = true;
       askPromo(true, false);

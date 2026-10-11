@@ -5042,13 +5042,19 @@ html[dark] .ytc-ci__tab[aria-selected="true"] { background: rgba(255,255,255,.16
   height: 30px; margin: 0 0 10px; opacity: 1; pointer-events: auto;
 }
 .ytc-sb::-webkit-scrollbar { display: none; }
+.ytc-sb__chip:active { cursor: grabbing; }
+.ytc-sb__chip--drag { opacity: .45; }
+.ytc-sb__chip--before { box-shadow: -3px 0 0 #065fd4; }
+.ytc-sb__chip--after { box-shadow: 3px 0 0 #065fd4; }
+html[dark] .ytc-sb__chip--before { box-shadow: -3px 0 0 #3ea6ff; }
+html[dark] .ytc-sb__chip--after { box-shadow: 3px 0 0 #3ea6ff; }
 .ytc-sb__label {
   flex: 0 0 auto; margin-right: 2px;
   font: 500 12px/1 Roboto, Arial, sans-serif; color: var(--yt-spec-text-secondary, #606060);
 }
 .ytc-sb__chip {
   flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px;
-  padding: 3px 9px 3px 7px; border-radius: 999px; cursor: pointer;
+  padding: 3px 9px 3px 7px; border-radius: 999px; cursor: grab;
   border: 1px solid var(--yt-spec-10-percent-layer, rgba(0,0,0,.1));
   background: var(--yt-spec-badge-chip-background, rgba(0,0,0,.04));
   color: var(--yt-spec-text-primary, #0f0f0f);
@@ -5071,3 +5077,28 @@ html[dark] .ytc-sb__chip--off { color: #aaa; background: none; }
 html[dark] .ytc-sb__chip:focus-visible { outline-color: #3ea6ff; }
 @media (hover: none) { .ytc-sb { height: 30px; margin: 0 0 10px; opacity: 1; pointer-events: auto; } }
 @media (prefers-reduced-motion: reduce) { .ytc-sb, .ytc-sb__chip { transition: none; } }
+
+/* ---- dragging a section: the grip over the hovered card's top edge, and the drop line ---- */
+.ytc-grip {
+  position: fixed; z-index: 2300; width: 44px; height: 14px; margin-left: -22px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: grab; touch-action: none;
+  opacity: 0; pointer-events: none; transition: opacity .15s ease;
+}
+.ytc-grip--on { opacity: 1; pointer-events: auto; }
+.ytc-grip span {
+  width: 30px; height: 4px; border-radius: 4px;
+  background: var(--yt-spec-text-secondary, #606060); opacity: .45;
+  transition: opacity .12s ease, width .12s ease;
+}
+.ytc-grip:hover span { opacity: .85; width: 36px; }
+html.ytc-dragging-section, html.ytc-dragging-section * { cursor: grabbing !important; user-select: none !important; }
+.ytc-card-dragging { opacity: .45; outline: 2px dashed rgba(6,95,212,.5); outline-offset: -2px; }
+.ytc-grip-line {
+  position: fixed; z-index: 2299; height: 3px; border-radius: 3px; pointer-events: none;
+  background: #065fd4; box-shadow: 0 0 0 2px rgba(6,95,212,.18);
+}
+html[dark] .ytc-grip span { background: #aaa; }
+html[dark] .ytc-card-dragging { outline-color: rgba(62,166,255,.55); }
+html[dark] .ytc-grip-line { background: #3ea6ff; box-shadow: 0 0 0 2px rgba(62,166,255,.2); }
+@media (prefers-reduced-motion: reduce) { .ytc-grip, .ytc-grip span { transition: none; } }
