@@ -137,6 +137,55 @@
        fires on a half-built composer is unrecoverable, where an unsent prompt costs one key. */
   }
 
+  /* An image handed over with the prompt ("Why did this work?" sends its thumbnails), attached
+     the ways a person would: pasted into the composer, then the page's own file input, then
+     dropped on the composer. Each is tried only if the one before wasn't taken: a site that
+     handles a paste cancels the event, which is how its acceptance is read. */
+  function dataUrlToFile(url, name) {
+    const comma = url.indexOf(',');
+    const type = (url.slice(0, comma).match(/data:([^;]+)/) || [])[1] || 'image/png';
+    const bin = atob(url.slice(comma + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new File([bytes], name || 'image', { type: type });
+  }
+
+  function attachImage(el, url, name) {
+    let file;
+    try { file = dataUrlToFile(url, name); } catch (e) { return false; }
+    const transfer = () => { const dt = new DataTransfer(); dt.items.add(file); return dt; };
+
+    try {
+      const ev = new ClipboardEvent('paste', { clipboardData: transfer(), bubbles: true, cancelable: true });
+      if (ev.clipboardData && ev.clipboardData.files.length) {
+        el.focus();
+        el.dispatchEvent(ev);
+        if (ev.defaultPrevented) return true;
+      }
+    } catch (e) { /* no constructible ClipboardEvent here */ }
+
+    const input = Array.from(document.querySelectorAll('input[type="file"]'))
+      .find((i) => !i.disabled && (!i.accept || /image|\*/.test(i.accept)));
+    if (input) {
+      try {
+        input.files = transfer().files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      } catch (e) { /* read-only files in this browser */ }
+    }
+
+    try {
+      const opts = () => ({ dataTransfer: transfer(), bubbles: true, cancelable: true });
+      el.dispatchEvent(new DragEvent('dragenter', opts()));
+      el.dispatchEvent(new DragEvent('dragover', opts()));
+      const drop = new DragEvent('drop', opts());
+      el.dispatchEvent(drop);
+      return drop.defaultPrevented;
+    } catch (e) {
+      return false;
+    }
+  }
+
   function run() {
     let store;
     try { store = chrome.storage && chrome.storage.local; } catch (e) { return; }
@@ -154,7 +203,10 @@
          there to be dropped into the next one opened. */
       store.remove(KEY);
       waitForComposer().then((el) => {
-        if (el) fill(el, pending.text);
+        if (!el) return;
+        fill(el, pending.text);
+        // A moment for the editor to settle on the new text before the attachment arrives.
+        if (pending.image) setTimeout(() => attachImage(el, pending.image, pending.imageName), 400);
       });
     });
   }

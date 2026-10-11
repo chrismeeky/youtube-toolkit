@@ -431,6 +431,86 @@
     };
   }
 
+  /* One page of a video's comments (Top comments, 20 at a time), through the same InnerTube
+     endpoint YouTube's own comment section uses. The first call asks for the watch-next data
+     by video id and digs out the comments' continuation token; each later call passes the
+     token from the page before. Comments now arrive as commentEntityPayload mutations. */
+  /* `hl` forces the interface language of the answer. The interest curve passes 'en' so
+     "3 weeks ago" can be parsed whatever language the reader browses in; the comments
+     themselves are never translated. The page's context is copied, not edited, because it
+     is the same object YouTube's own requests use. */
+  function commentsStep(videoId, token, hl) {
+    const cfg = window.ytcfg && typeof window.ytcfg.get === 'function' ? window.ytcfg : null;
+    const key = cfg && cfg.get('INNERTUBE_API_KEY');
+    const ver = (cfg && cfg.get('INNERTUBE_CLIENT_VERSION')) || '2.20251001.00.00';
+    const ctx = (cfg && cfg.get('INNERTUBE_CONTEXT')) || {
+      client: { clientName: 'WEB', clientVersion: ver,
+        hl: (cfg && cfg.get('HL')) || 'en', gl: (cfg && cfg.get('GL')) || 'US' }
+    };
+    const body = { context: hl ? JSON.parse(JSON.stringify(ctx)) : ctx };
+    if (hl && body.context.client) body.context.client.hl = hl;
+    if (token) body.continuation = token; else body.videoId = videoId;
+    const walk = (o, fn, depth) => {
+      if (!o || typeof o !== 'object' || depth > 60) return;
+      fn(o);
+      for (const k in o) walk(o[k], fn, depth + 1);
+    };
+    return fetch('/youtubei/v1/next?prettyPrint=false' + (key ? '&key=' + encodeURIComponent(key) : ''), {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-Youtube-Client-Name': '1', 'X-Youtube-Client-Version': ver },
+      body: JSON.stringify(body)
+    }).then((res) => (res.ok ? res.json() : Promise.reject(new Error('HTTP ' + res.status)))).then((json) => {
+      if (!token) {
+        // First call: no comments yet, just the token that opens the comment section.
+        let first = '';
+        walk(json, (o) => {
+          if (first || !o.itemSectionRenderer || o.itemSectionRenderer.sectionIdentifier !== 'comment-item-section') return;
+          walk(o.itemSectionRenderer, (p) => {
+            if (!first && p.continuationCommand && p.continuationCommand.token) first = p.continuationCommand.token;
+          }, 0);
+        }, 0);
+        return { ok: !!first, comments: [], next: first, reason: first ? '' : 'comments are off or unavailable' };
+      }
+      const comments = [];
+      let next = '';
+      /* The sort menu ("Top comments" / "Newest first") and the header's count arrive with
+         the first page. Each sort is its own continuation token. */
+      const sorts = [];
+      let total = '';
+      walk(json, (o) => {
+        const h = o.commentsHeaderRenderer;
+        if (h && !total && h.countText) {
+          total = h.countText.simpleText || (h.countText.runs || []).map((r) => r.text).join('');
+        }
+        const m = o.sortFilterSubMenuRenderer;
+        if (m && !sorts.length) {
+          (m.subMenuItems || []).forEach((it) => {
+            const t = it.serviceEndpoint && it.serviceEndpoint.continuationCommand;
+            if (t && t.token) sorts.push({ title: it.title || '', token: t.token });
+          });
+        }
+        const p = o.commentEntityPayload;
+        if (p) {
+          const props = p.properties || {};
+          comments.push({
+            text: (props.content && props.content.content) || '',
+            likes: (p.toolbar && p.toolbar.likeCountNotliked) || '',
+            replies: (p.toolbar && p.toolbar.replyCount) || '',
+            author: (p.author && p.author.displayName) || '',
+            when: props.publishedTime || ''
+          });
+        }
+        const c = o.continuationItemRenderer;
+        // The "Show more replies" buttons are continuations too; only the page one has no button.
+        if (c && !c.button && c.continuationEndpoint && c.continuationEndpoint.continuationCommand) {
+          next = c.continuationEndpoint.continuationCommand.token;
+        }
+      }, 0);
+      return { ok: true, comments, next, sorts, total };
+    }).catch((e) => ({ ok: false, comments: [], next: '', reason: String((e && e.message) || e) }));
+  }
+
   window.addEventListener('message', (event) => {
     // Reject a mismatched source (an iframe), but tolerate environments that leave it unset.
     if (event.source && event.source !== window) return;
@@ -440,6 +520,12 @@
       let payload = null;
       try { payload = collect(); } catch (e) { payload = null; }
       window.postMessage({ type: 'YTC_PAGE_DATA', id: data.id, payload }, '*');
+      return;
+    }
+    if (data.type === 'YTC_COMMENTS_REQUEST') {
+      commentsStep(String(data.videoId || ''), String(data.token || ''), String(data.hl || '')).then((payload) => {
+        window.postMessage({ type: 'YTC_COMMENTS_DATA', id: data.id, payload }, '*');
+      });
       return;
     }
     if (data.type === 'YTC_DEEP_REQUEST') {

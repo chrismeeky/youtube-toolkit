@@ -89,6 +89,22 @@ you save them. Switch between phone, tablet, laptop, desktop, 1440p and TV,
 light or dark, or drag the edges to any size, and try other titles and
 thumbnails without changing anything in Studio.
 
+TURN COMMENTS INTO VIDEO IDEAS
+
+On any video, Ideas from comments reads the top comments and groups them by
+what they're about: the questions viewers keep asking, the follow-ups they
+want, the points most of them make. Each theme shows how many comments and
+likes are behind it. Send the themes to ChatGPT, Claude or Gemini and get
+video ideas back, both follow-ups and fresh ones.
+
+The Feedback tab shows how satisfied viewers are with the video itself, what
+they praise, what they complain about and what they suggest. It keeps that
+apart from how they feel about the video's story, so viewers furious at
+someone in a video they loved don't count as unhappy viewers.
+
+Both run on small models you download once (23 MB and 126 MB) that work on
+your computer: no comment leaves your browser to be analysed.
+
 MORE FEATURES
 
 Copy the details of any video as clean text. You choose which parts you want
@@ -159,6 +175,7 @@ Switching "Similar Channels" off in the extension's settings stops all of that.
 | `clipboardWrite` | Copying video details to the clipboard is the extension's primary function. |
 | `downloads` | Saving a thumbnail image or a transcript as a file, only when you click those buttons. |
 | `https://*.youtube.com/*` | Reads the YouTube pages you are on to find video cards and channel details, and fetches YouTube pages in the background to look up subscriber counts, ad slots, and related channels. Covers YouTube Studio (studio.youtube.com), where it adds the home page preview. |
+| `offscreen` | Chrome only. Hosts a Web Worker that runs the on-device comment models for "Ideas from comments". The service worker can't load the WebAssembly runtime itself. The document is closed after two idle minutes. |
 | `https://i.ytimg.com/*` | Fetches thumbnail images for the download button, walking down resolutions until one exists. |
 
 ### Host permission justification (paste into the dashboard)
@@ -173,6 +190,11 @@ Switching "Similar Channels" off in the extension's settings stops all of that.
 > videos; for that it requests the user's YouTube home page, the video's watch page, and a
 > search for its title. i.ytimg.com is YouTube's thumbnail host, requested only for the
 > thumbnail download button.
+>
+> For "Ideas from comments", the user can download two small language models from
+> huggingface.co (one pinned version each, checked against SHA-256 hashes before use). No host permission is
+> requested for that: Hugging Face allows cross-origin downloads. The model is data; the
+> WebAssembly runtime that runs it (ONNX Runtime Web, MIT) ships in the package under ml/.
 >
 > The extension also sends channel handles to its own service at
 > youtube-toolkit-ox3k.onrender.com, which finds similar channels. No host permission is

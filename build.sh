@@ -19,7 +19,7 @@ GECKO_MIN="140.0"
 
 FILES=(manifest.json background.js config.js content.js content.css format.js page.js
        paste.js studio.js studio.css whatsnew.js whatsnew.css whatsnew popup.html
-       popup.js popup.css icons)
+       popup.js popup.css icons ml)
 
 [ -f config.js ] || { echo "config.js is missing — copy config.example.js and fill it in." >&2; exit 1; }
 # A dev config pointing at the local index must never ship.
@@ -39,7 +39,9 @@ GECKO_ID="$GECKO_ID" GECKO_MIN="$GECKO_MIN" node - <<'JS'
 const fs = require('fs');
 const path = 'dist/firefox/manifest.json';
 const m = JSON.parse(fs.readFileSync(path, 'utf8'));
-m.background = { scripts: ['config.js', 'format.js', 'background.js'] };
+m.background = { scripts: ['config.js', 'format.js', 'ml/model.js', 'background.js'] };
+// Firefox has no offscreen documents; its background page runs the model worker itself.
+m.permissions = m.permissions.filter((p) => p !== 'offscreen');
 m.browser_specific_settings = {
   gecko: {
     id: process.env.GECKO_ID,

@@ -23,7 +23,7 @@ if (!self.YTCopyConfig) self.YTCopyConfig = { INDEX_API: '' };
   console.log('[YouTube Toolkit] index endpoint: ' +
     (cfg ? cfg.split('/k/')[0] + '/k/…' : 'NOT SET — falling back to YouTube search'));
 }
-if (AS_WORKER) importScripts('format.js');
+if (AS_WORKER) importScripts('format.js', 'ml/model.js');
 const F = self.YTCopyFormat;
 
 /* ------------------------------------------------------------------- commands */
@@ -2072,6 +2072,148 @@ async function noteThumbSeen(id) {
   if (drop.length) await chrome.storage.local.remove(drop.map((k) => TH_SEEN_PREFIX + k));
 }
 
+/* ------------------------------------------------------------- view history
+
+   A video's lifetime trend, for the Interest card when its comments are too many to read back
+   to the upload. YouTube publishes no per-video history, but the Internet Archive has saved
+   copies of busy watch pages, and every copy carries the exact view count on the day it was
+   taken (measured: 431,597 on launch day, 127,382,408 a week later, 970,064,246 five years
+   on, all from one MrBeast video's captures). The comment count is in some copies too, but
+   only rounded ("611K"), which makes month-to-month differences mostly rounding, so views it
+   is.
+
+   Each copy is a 0.5–1.8 MB page. The count sits in the player response 230–830 KB in, and
+   the Archive answers a Range request with a redirect rather than the bytes, so the page is
+   streamed and the download dropped the moment the count has gone past.
+
+   Past captures never change, so a history is kept a week and then only topped up with
+   captures newer than the last one it holds. Alongside sits the reader's own record: the
+   view count each time they open the video, at most once an hour, which fills in exactly the
+   stretch a brand-new video has no captures for. */
+const VH_TTL = 7 * 24 * 60 * 60 * 1000;
+const VH_SAMPLE = 12;                // captures downloaded for a first history
+const VH_TOPUP = 4;                  // and for each weekly top-up
+const VH_CONCURRENCY = 3;
+const VH_PREFIX = 'vh:';             // { at, points: [[t, views]], lastTs }
+const VH_LOG_PREFIX = 'vl:';         // [[t, views]] seen by this reader
+const VH_INDEX = 'vhIdx';            // { videoId: lastUsed } for eviction
+const VH_MAX = 300;
+const VH_LOG_GAP = 60 * 60 * 1000;
+const vhInflight = new Map();
+
+/* Which captures to download. Views pile up in the first days, so a spread that is even in
+   time would spend eleven of twelve downloads on the flat tail and draw the launch as one
+   straight line. Half the picks are spaced geometrically from the first day (1d, 3d, 9d …)
+   and half evenly, each taking the nearest capture not already taken. */
+function vhSample(caps, start, end, n) {
+  if (caps.length <= n) return caps.slice();
+  const age = Math.max(864e5, end - start);
+  const targets = [];
+  const half = Math.ceil(n / 2);
+  for (let k = 0; k < half; k++) targets.push(start + 864e5 * Math.pow(age / 864e5, k / (half - 1 || 1)));
+  for (let k = 0; k < n - half; k++) targets.push(start + age * ((k + 0.5) / (n - half)));
+  const taken = new Set([caps.length - 1]);        // the newest always: it sets "now"
+  for (const t of targets) {
+    let best = -1;
+    for (let i = 0; i < caps.length; i++) {
+      if (taken.has(i)) continue;
+      if (best < 0 || Math.abs(caps[i].t - t) < Math.abs(caps[best].t - t)) best = i;
+    }
+    if (best >= 0) taken.add(best);
+    if (taken.size >= n) break;
+  }
+  return [...taken].sort((a, b) => a - b).map((i) => caps[i]);
+}
+
+/* One capture's view count, reading only as far as it. The video id is checked as well:
+   the Archive sometimes serves a consent page or a different video under the same URL. */
+async function vhViews(cap, id) {
+  const res = await thFetch('https://web.archive.org/web/' + cap.ts + 'id_/' + cap.url, 30000);
+  if (!res.ok || !res.body) return null;
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let text = '';
+  let seenId = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      // A short overlap so a match split across two chunks is still found.
+      text = text.slice(-64) + dec.decode(value, { stream: true });
+      if (!seenId && text.indexOf('"videoId":"' + id + '"') >= 0) seenId = true;
+      const m = /"viewCount":"(\d+)"/.exec(text);
+      if (m) return seenId ? { t: cap.t, views: parseInt(m[1], 10) } : null;
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  return null;
+}
+
+async function vhCaptures(id, fromTs) {
+  const q = 'https://web.archive.org/cdx/search/cdx?url=' +
+    encodeURIComponent('youtube.com/watch?v=' + id) +
+    '&output=json&fl=timestamp,original&filter=statuscode:200&collapse=timestamp:8&limit=5000' +
+    (fromTs ? '&from=' + fromTs : '');
+  const res = await thFetch(q, 30000);
+  if (!res.ok) throw new Error('Internet Archive answered ' + res.status);
+  const rows = await res.json();
+  return (Array.isArray(rows) ? rows.slice(1) : [])
+    .map((r) => ({ ts: r[0], t: thDate(r[0]), url: r[1] }))
+    .filter((c) => c.t && c.url && (!fromTs || c.ts > fromTs));
+}
+
+async function vhTouch(id, extra) {
+  const got = await chrome.storage.local.get(VH_INDEX);
+  const idx = got[VH_INDEX] || {};
+  idx[id] = Date.now();
+  const drop = Object.keys(idx).sort((a, b) => idx[a] - idx[b])
+    .slice(0, Math.max(0, Object.keys(idx).length - VH_MAX));
+  drop.forEach((k) => { delete idx[k]; });
+  await chrome.storage.local.set(Object.assign({ [VH_INDEX]: idx }, extra || {}));
+  if (drop.length) {
+    await chrome.storage.local.remove([].concat(...drop.map((k) => [VH_PREFIX + k, VH_LOG_PREFIX + k])));
+  }
+}
+
+/* The reader's own sighting of a video's view count. */
+async function noteVideoViews(id, views) {
+  if (!id || !(views > 0)) return;
+  const key = VH_LOG_PREFIX + id;
+  const got = await chrome.storage.local.get(key);
+  const log = got[key] || [];
+  const last = log[log.length - 1];
+  if (last && Date.now() - last[0] < VH_LOG_GAP) return;
+  log.push([Date.now(), views]);
+  await vhTouch(id, { [key]: log.slice(-200) });
+}
+
+async function viewHistory(id, publishedAt, force) {
+  if (vhInflight.has(id)) return vhInflight.get(id);
+  const run = (async () => {
+    const key = VH_PREFIX + id, logKey = VH_LOG_PREFIX + id;
+    const got = await chrome.storage.local.get([key, logKey]);
+    let entry = got[key] || null;
+    const local = got[logKey] || [];
+    if (entry && !force && Date.now() - entry.at < VH_TTL) {
+      return { ok: true, archive: entry.points, local, cached: true };
+    }
+    const fresh = force || !entry;
+    const caps = await vhCaptures(id, fresh ? '' : entry.lastTs);
+    const start = publishedAt || (caps[0] && caps[0].t) || Date.now();
+    const pick = vhSample(caps.filter((c) => c.t >= start - 864e5), start, Date.now(),
+      fresh ? VH_SAMPLE : VH_TOPUP);
+    const found = (await thPool(pick, VH_CONCURRENCY, (c) => vhViews(c, id))).filter(Boolean);
+    const points = (fresh ? [] : entry.points).concat(found.map((p) => [p.t, p.views]))
+      .sort((a, b) => a[0] - b[0]);
+    entry = { at: Date.now(), points, lastTs: caps.length ? caps[caps.length - 1].ts : (entry && entry.lastTs) || '' };
+    await vhTouch(id, { [key]: entry });
+    return { ok: true, archive: points, local, captures: caps.length };
+  })().finally(() => vhInflight.delete(id));
+  vhInflight.set(id, run);
+  return run;
+}
+
 /* A past version, saved under the video's title and the date it was captured. */
 async function downloadThumbVersion(msg) {
   const stamp = new Date(msg.when || Date.now()).toISOString().slice(0, 10);
@@ -2228,6 +2370,187 @@ async function studioRelated(id, query) {
   if (host && related.length) relatedCache.set(q, { at: Date.now(), host, related });
   return { ok: !!host, host, related };
 }
+
+/* "Why did this work?": what an outlier is measured against.
+
+   The channel's Videos tab is its recent long-form uploads, which is the "normal" a hit
+   beats; the video's own watch page adds its description, tags and exact length. Both read
+   in full, for the same reason as the Studio preview: the streaming readers stop inside
+   ytInitialData. Thumbnails come separately, once the page has picked which ones to show. */
+async function whyContext(key, id) {
+  const [chan, watch] = await Promise.all([
+    key ? pageText('https://www.youtube.com/' + channelPath(key) + '/videos?hl=en') : null,
+    id ? pageText('https://www.youtube.com/watch?v=' + encodeURIComponent(id) + '&hl=en') : null
+  ]);
+  const uploads = F.feedVideosFrom(chan, 40);
+  const video = watch ? F.watchCardFrom(watch) : null;
+  return { ok: uploads.length > 0 || !!(video && video.title), uploads, video };
+}
+
+/* Thumbnails as data: URLs, so the page can draw them onto a canvas and copy the result.
+   An image straight from i.ytimg.com would taint the canvas and block the copy. mqdefault is
+   16:9 and exists for every video, unlike the larger sizes. */
+async function thumbsAsData(ids) {
+  const out = {};
+  await Promise.all((ids || []).slice(0, 12).map(async (id) => {
+    if (!/^[\w-]{11}$/.test(id)) return;
+    try {
+      const res = await fetch('https://i.ytimg.com/vi/' + id + '/mqdefault.jpg', { credentials: 'omit' });
+      if (!res.ok) return;
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      }
+      out[id] = 'data:image/jpeg;base64,' + btoa(bin);
+    } catch (e) { /* that one is drawn as a blank tile */ }
+  }));
+  return { ok: true, images: out };
+}
+
+/* ------------------------------------------------------------- comment model
+
+   The model behind "Ideas from comments" (ml/). The runtime ships in the package; the model
+   itself (23 MB) is downloaded only when the reader asks, from one pinned Hugging Face commit,
+   and every file is checked against its SHA-256 before it is stored. A file that doesn't
+   match is thrown away, never run. It lives in the extension's Cache Storage after that.
+
+   Download happens here rather than in the page so it survives the tab closing, and so every
+   tab sees the same progress. The page polls ytc-ml-status while it runs, which also keeps
+   this service worker awake for the length of the download. */
+const MLM = self.YTCModels;
+const ML = {};                              // model key -> { state, loaded, total, reason }
+Object.keys(MLM).forEach((k) => { ML[k] = { state: 'unknown', loaded: 0, total: 0, reason: '' }; });
+
+function mlTotal(key) {
+  return MLM[key].FILES.reduce((s, f) => s + f.size, 0);
+}
+
+async function mlPresent(key) {
+  try {
+    const cache = await caches.open(MLM[key].CACHE);
+    for (const f of MLM[key].FILES) if (!(await cache.match(f.url))) return false;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function mlStatus(key) {
+  const st = ML[key];
+  if (!st) return { state: 'unknown' };
+  st.total = mlTotal(key);
+  if (st.state !== 'downloading') st.state = (await mlPresent(key)) ? 'ready' : (st.state === 'error' ? 'error' : 'absent');
+  return Object.assign({ key }, st);
+}
+
+function hex(buf) {
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function mlDownload(key) {
+  const st = ML[key];
+  if (!st || st.state === 'downloading') return;
+  st.state = 'downloading';
+  st.reason = '';
+  st.total = mlTotal(key);
+  st.loaded = 0;
+  try {
+    const cache = await caches.open(MLM[key].CACHE);
+    for (const f of MLM[key].FILES) {
+      if (await cache.match(f.url)) { st.loaded += f.size; continue; }
+      const res = await fetch(f.url, { credentials: 'omit', cache: 'no-store' });
+      if (!res.ok || !res.body) throw new Error('download failed (HTTP ' + res.status + ')');
+      const reader = res.body.getReader();
+      const chunks = [];
+      let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        got += value.length;
+        st.loaded += value.length;
+      }
+      const blob = new Blob(chunks);
+      const digest = hex(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()));
+      if (digest !== f.sha256 || got !== f.size) {
+        throw new Error('the downloaded file didn\u2019t match the expected one, so it was discarded');
+      }
+      await cache.put(f.url, new Response(blob));
+    }
+    st.state = 'ready';
+  } catch (e) {
+    st.state = 'error';
+    st.reason = String((e && e.message) || e);
+  }
+}
+
+async function mlDelete(key) {
+  if (!MLM[key]) return;
+  await caches.delete(MLM[key].CACHE);
+  ML[key].state = 'absent';
+  ML[key].loaded = 0;
+  await mlClose();
+}
+
+/* Where the models run. Chrome: a worker inside an offscreen document, since this service
+   worker can't load the runtime. Firefox: a worker owned by this background page directly.
+   task: 'embed' (comment model) or 'tone' (tone model). */
+const ML_IDLE_MIN = 2;
+let mlHostMaking = null;
+let ffWorker = null;
+let ffTimer = 0;
+const ffPending = new Map();
+
+async function mlEnsureHost() {
+  if (await chrome.offscreen.hasDocument()) return;
+  if (!mlHostMaking) {
+    mlHostMaking = chrome.offscreen.createDocument({
+      url: 'ml/host.html',
+      reasons: ['WORKERS'],
+      justification: 'Runs the on-device comment models in a Web Worker.'
+    }).finally(() => { mlHostMaking = null; });
+  }
+  await mlHostMaking;
+}
+
+async function mlClose() {
+  if (AS_WORKER) {
+    try { if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument(); } catch (e) { /* gone */ }
+  } else if (ffWorker) {
+    ffWorker.terminate();
+    ffWorker = null;
+  }
+}
+
+async function mlRun(task, texts) {
+  if (!MLM[task]) return { ok: false, reason: 'unknown model' };
+  if (!(await mlPresent(task))) return { ok: false, reason: MLM[task].label + ' not downloaded' };
+  if (AS_WORKER) {
+    await mlEnsureHost();
+    // Closed after a couple of idle minutes: the loaded models hold a few hundred MB.
+    chrome.alarms.create('ytc-ml-close', { delayInMinutes: ML_IDLE_MIN });
+    return chrome.runtime.sendMessage({ target: 'ytc-ml-host', task, texts });
+  }
+  if (!ffWorker) {
+    ffWorker = new Worker('ml/worker.mjs', { type: 'module' });
+    ffWorker.onmessage = (e) => {
+      const done = ffPending.get(e.data && e.data.id);
+      if (!done) return;
+      ffPending.delete(e.data.id);
+      done(e.data.ok ? { ok: true, dims: e.data.dims, vecs: Array.from(e.data.flat) } : { ok: false, reason: e.data.reason });
+    };
+  }
+  clearTimeout(ffTimer);
+  ffTimer = setTimeout(mlClose, ML_IDLE_MIN * 60000);
+  return new Promise((resolve) => {
+    const id = Math.random().toString(36).slice(2);
+    ffPending.set(id, resolve);
+    ffWorker.postMessage({ id, task, texts });
+  });
+}
+
+chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'ytc-ml-close') mlClose(); });
 
 async function transcriptFor(id) {
   const out = await F.loadTranscript(id, fetch);
@@ -2441,6 +2764,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       .catch((e) => sendResponse({ ok: false, reason: String((e && e.message) || e) }));
     return true;
   }
+  if (msg.type === 'ytc-view-history' && msg.id) {
+    viewHistory(String(msg.id), Number(msg.publishedAt) || 0, !!msg.force)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String((e && e.message) || e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-view-note' && msg.id) {
+    noteVideoViews(String(msg.id), Number(msg.views) || 0).catch(() => {});
+    return false;
+  }
   if (msg.type === 'ytc-thumb-seen' && msg.id) {
     noteThumbSeen(String(msg.id)).catch(() => {});
     return false;
@@ -2473,6 +2806,46 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     studioPreview(msg.id, msg.query)
       .then(sendResponse)
       .catch((e) => sendResponse({ ok: false, reason: String(e), videos: [], own: null }));
+    return true;
+  }
+  // Meant for the offscreen model host, not for this worker.
+  if (msg.target === 'ytc-ml-host') return;
+  // msg.model: 'embed' (comment model, the default) or 'tone'.
+  if (msg.type === 'ytc-ml-status') {
+    mlStatus(msg.model || 'embed').then(sendResponse);
+    return true;
+  }
+  if (msg.type === 'ytc-ml-download') {
+    mlDownload(msg.model || 'embed');      // runs on; the page polls ytc-ml-status
+    sendResponse({ ok: true });
+    return;
+  }
+  if (msg.type === 'ytc-ml-delete') {
+    mlDelete(msg.model || 'embed').then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  // The video-or-story classifier's weights (ml/target.json): 10 KB of numbers, no code.
+  if (msg.type === 'ytc-ml-target') {
+    fetch(chrome.runtime.getURL('ml/target.json')).then((r) => r.json())
+      .then(sendResponse).catch((e) => sendResponse({ error: String(e) }));
+    return true;
+  }
+  if ((msg.type === 'ytc-ml-embed' || msg.type === 'ytc-ml-tone') && Array.isArray(msg.texts)) {
+    mlRun(msg.type === 'ytc-ml-tone' ? 'tone' : 'embed', msg.texts)
+      .then((res) => sendResponse(res || { ok: false, reason: 'no answer from the model' }))
+      .catch((e) => sendResponse({ ok: false, reason: String((e && e.message) || e) }));
+    return true;
+  }
+  if (msg.type === 'ytc-why') {
+    whyContext(msg.key, msg.id)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String(e), uploads: [], video: null }));
+    return true;
+  }
+  if (msg.type === 'ytc-why-thumbs') {
+    thumbsAsData(msg.ids)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, reason: String(e), images: {} }));
     return true;
   }
   if (msg.type === 'ytc-studio-related') {

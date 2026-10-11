@@ -25,6 +25,8 @@
        and panels the rest of the extension is built on. Opt in, per reader. */
     showCommentSubs: true,       // subscriber count beside each commenter's handle
     showRatio: true,              // views ÷ channel average pill
+    showCommentIdeas: true,       // ✦ Ideas from comments in a watch page's comment header
+    showWhy: true,                // ✦ pill beside the outlier: ask AI why the video did that
     /* Reads the engagement figure and the outlier the watch page already computes, so it
        costs nothing and is on by default. It needs both of those, which means it draws
        nothing when showSubs or showStats is off. */
@@ -34,6 +36,7 @@
     showTags: true,               // the video's own tags, in a card under the watch-page figures
     showStudioPreview: true,      // Studio: the home-page Preview button (studio.js)
     showThumbCard: true,          // the current thumbnail in the watch sidebar, with a download
+    showInterest: true,           // comments-over-time curve in the watch sidebar, read on each video
     showSimilar: true,            // "Similar channels" button on channel pages
     /* Shorts have no sidebar and no description, so the figures every other page shows have
        nowhere to go. This puts them in the empty gutter beside the player. */
@@ -322,8 +325,127 @@
       lengthSeconds: d.lengthSeconds != null ? +d.lengthSeconds : null,
       published: micro.publishDate || micro.uploadDate || '',
       // The thumbnail YouTube itself serves for the video: the custom one, or the default frame.
-      thumb: biggest(d.thumbnail && d.thumbnail.thumbnails)
+      thumb: biggest(d.thumbnail && d.thumbnail.thumbnails),
+      description: d.shortDescription || '',
+      keywords: Array.isArray(d.keywords) ? d.keywords : []
     };
+  }
+
+  /* ---------------------------------------------------------- comment themes */
+
+  /* Grouping a video's comments by what they're about, so a theme many viewers share (often
+     a question, sometimes an outright request) surfaces as one row instead of being lost
+     among hundreds of comments.
+
+     With sentence vectors (the downloadable model), similarity is the dot product of unit
+     vectors, so rephrasings meet. Without them, it falls back to overlap of content words,
+     which only catches comments that share vocabulary. Same algorithm either way: comments in
+     order of likes join the nearest group if it's close enough, else start one; then groups
+     whose centres ended up close are merged. */
+  const STOP = new Set(('the a an and or but if then than that this those these there their they them ' +
+    'he she it its his her him you your yours we our us i me my mine is are was were be been being am ' +
+    'do does did doing done have has had having not no nor so too very just only also even still ' +
+    'of in on at to for from by with about into over under again out up down off as like can could ' +
+    'will would should shall may might must what which who whom whose when where why how all any ' +
+    'both each few more most other some such own same one two get got gets make made let lets ' +
+    'im dont doesnt didnt cant wont isnt arent wasnt werent thats theres hes shes theyre youre ive ' +
+    'ill id its yeah yes lol omg oh wow really much many lot lots thing things way well know think ' +
+    'see said say says going go gonna want people guy guys man video videos watch watching')
+    .split(' '));
+
+  function contentWords(text) {
+    return String(text || '').toLowerCase().replace(/[’']/g, '').match(/[a-z][a-z0-9]{2,}/g)
+      ?.filter((w) => !STOP.has(w)) || [];
+  }
+
+  const QUESTION = /\?|^\s*(who|what|when|where|why|how|is|are|was|were|do|does|did|can|could|will|would|should|has|have)\b/i;
+  const MORE = /\bpart\s*(2|two|ii|3)\b|follow.?up|\bupdate\b|what happened (to|with|after|next)|still (employed|working|on the force|a cop|in jail|alive|together)|\bwish (we|you|they) (had|could|would)|\bhope (we|you|they) (see|get|find)|(i('d| would)|we('d| would)) love to see|\bfull (video|footage|version)\b|\bnext (video|episode)\b|\b(please|pls|plz) (do|make|cover|post|upload|show)\b|\b(make|do) a video\b|\bdo one on\b|\bmore (videos )?(like this|of these|of this)\b/i;
+
+  function likesOf(v) {
+    if (typeof v === 'number') return v;
+    return viewsToNumber(v) || 0;
+  }
+
+  function groupComments(comments, opts) {
+    const o = opts || {};
+    const items = comments.map((c, i) => ({
+      i, text: String(c.text || ''), likes: likesOf(c.likes), vec: c.vec || null,
+      words: new Set(contentWords(c.text)),
+      question: QUESTION.test(c.text || ''), more: MORE.test(c.text || '')
+    })).filter((x) => x.text.trim().length >= 12 && (x.vec || x.words.size >= 2));
+    const useVec = items.length && items.every((x) => x.vec);
+    /* Tuned on 600 real comments from two videos. Lower, and comments chain one by one into a
+       single "people are angry" blob that swallows the real themes; higher, and one theme
+       ("refusing a sobriety test isn't probable cause") splinters into several. */
+    const JOIN = o.join || (useVec ? 0.6 : 0.28);
+    const MERGE = o.merge || (useVec ? 0.72 : 0.4);
+
+    const dot = (a, b) => { let s = 0; for (let k = 0; k < a.length; k++) s += a[k] * b[k]; return s; };
+    const unit = (v) => { let n = 0; for (let k = 0; k < v.length; k++) n += v[k] * v[k]; n = Math.sqrt(n) || 1; return v.map((x) => x / n); };
+    const jaccard = (a, b) => { let n = 0; for (const w of a) if (b.has(w)) n++; return n / ((a.size + b.size - n) || 1); };
+
+    const groups = [];
+    const centre = (g) => (useVec ? g.centre : g.words);
+    const sim = (x, g) => (useVec ? dot(x.vec, g.centre) : jaccard(x.words, g.words));
+    items.slice().sort((a, b) => b.likes - a.likes).forEach((x) => {
+      let best = null, bestSim = JOIN;
+      for (const g of groups) { const s = sim(x, g); if (s >= bestSim) { best = g; bestSim = s; } }
+      if (!best) {
+        groups.push({ members: [x], sum: useVec ? Float32Array.from(x.vec) : null,
+          centre: useVec ? x.vec : null, words: new Set(x.words) });
+        return;
+      }
+      best.members.push(x);
+      if (useVec) { for (let k = 0; k < x.vec.length; k++) best.sum[k] += x.vec[k]; best.centre = unit(best.sum); }
+      // A word set grows only by words already seen twice in the group, so one long comment
+      // doesn't widen the theme to everything it happened to mention.
+      else for (const w of x.words) if (best.members.filter((m) => m.words.has(w)).length >= 2) best.words.add(w);
+    });
+
+    // Merge groups whose centres drifted together.
+    for (let changed = true; changed;) {
+      changed = false;
+      outer: for (let a = 0; a < groups.length; a++) {
+        for (let b = a + 1; b < groups.length; b++) {
+          const s = useVec ? dot(groups[a].centre, groups[b].centre) : jaccard(groups[a].words, groups[b].words);
+          if (s < MERGE) continue;
+          const g = groups[a], h = groups.splice(b, 1)[0];
+          g.members = g.members.concat(h.members);
+          if (useVec) { for (let k = 0; k < g.sum.length; k++) g.sum[k] += h.sum[k]; g.centre = unit(g.sum); }
+          else h.words.forEach((w) => g.words.add(w));
+          changed = true;
+          break outer;
+        }
+      }
+    }
+
+    // Distinctive words: frequent in the theme, rare across the comments overall.
+    const df = new Map();
+    items.forEach((x) => x.words.forEach((w) => df.set(w, (df.get(w) || 0) + 1)));
+    const N = items.length || 1;
+    return groups.filter((g) => g.members.length >= (o.minSize || 2)).map((g) => {
+      const tf = new Map();
+      g.members.forEach((m) => m.words.forEach((w) => tf.set(w, (tf.get(w) || 0) + 1)));
+      const keywords = [...tf.entries()].filter(([, n]) => n >= 2)
+        .map(([w, n]) => [w, n * Math.log(N / df.get(w))]).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([w]) => w);
+      const members = g.members.slice().sort((a, b) => b.likes - a.likes);
+      const likes = members.reduce((s, m) => s + m.likes, 0);
+      /* The headline is the comment most typical of the theme (closest to its centre), not the
+         most liked. On a big channel the most-liked member is often a joke riding the topic:
+         "I told my dog you said hi and he responded with 'Xiaomi keeps leaking Apple
+         designs'" topped a 39-comment theme about Xiaomi copying Apple. */
+      const typicality = (m) => (useVec ? dot(m.vec, g.centre) : jaccard(m.words, g.words));
+      const rep = members.reduce((best, m) => (typicality(m) > typicality(best) ? m : best), members[0]);
+      return {
+        size: members.length, likes, keywords,
+        rep: { i: rep.i, text: rep.text, likes: rep.likes },
+        questions: members.filter((m) => m.question).length,
+        more: members.filter((m) => m.more).length,
+        comments: members.map((m) => ({ i: m.i, text: m.text, likes: m.likes })),
+        // Breadth first, then agreement: ten people saying it beats one comment with likes.
+        score: members.length * 2 + Math.log10(1 + likes) * 3 + members.filter((m) => m.more).length * 2
+      };
+    }).sort((a, b) => b.score - a.score);
   }
 
   function captionTracksFrom(html) {
@@ -1760,6 +1882,6 @@
     topicQueries, channelsFromSearch, rankSimilar,
     safeFilename, formatTranscript, stampMs, decodeEntities, parseJson3, parseTimedTextXml,
     innertubeConfig, captionTracksFrom, pickCaptionTrack, transcriptSegmentsFrom, loadTranscript,
-    playerResponseFrom, initialDataFrom, feedVideosFrom, watchCardFrom
+    playerResponseFrom, initialDataFrom, feedVideosFrom, watchCardFrom, groupComments, contentWords
   };
 })(typeof window !== 'undefined' ? window : globalThis);

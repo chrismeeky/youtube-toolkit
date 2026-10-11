@@ -50,6 +50,37 @@ because they are ordinary requests from your browser to a site you are already s
 exactly as loading a YouTube page does. No credentials are read, stored or transmitted
 anywhere else.
 
+## The comment models (Hugging Face)
+
+**Ideas from comments** can group a video's comments by meaning, using a small language model
+(all-MiniLM-L6-v2, about 23 MB). Its **Feedback** tab can also read each comment's tone, using a
+second model (twitter-roberta-base-sentiment-latest, about 126 MB). Neither is bundled. Each
+is downloaded from Hugging Face (`huggingface.co`) only when you press its download button,
+once, from one fixed version, and each file is checked against a fingerprint before it is
+kept. Hugging Face sees an ordinary
+download request, with no account, cookie or identifier of yours. After that the model runs
+entirely on your computer: the comments it groups or scores are never sent anywhere to be
+grouped or scored. The comment model can be removed from the same dialog.
+
+The comments themselves are read from YouTube, the same way YouTube's own comment section
+loads them.
+
+## What goes to ChatGPT, Claude or Gemini
+
+Four features build a prompt for an AI chat: **Generate titles** in the Filter, **Why did
+this work?** beside an outlier score, **Ideas from comments** on a watch page, and **Ask AI** in
+the Studio preview's Check panel. Nothing is sent by the extension itself. When you press the
+button, it opens the chat site you chose, in a new tab, and types the prompt into the message
+box for you to read and send. The prompt holds only public information about YouTube videos:
+titles, view counts, dates, lengths, a video's description and tags, and (for Ideas from
+comments) a sample of its public comments, plus anything you
+typed into the dialog. The Studio one also includes your own video's title and the description
+from the Studio form, which may not be public yet, and attaches your thumbnail beside its
+neighbours'. For *Why did this work?* it also attaches one image to the message:
+the public thumbnails it compares, with a copy on your clipboard. You can switch that off in the
+dialog. The message is not sent until you send it, and what happens after that is between you
+and that service, under its own terms and privacy policy.
+
 ## What is sent to the channel index
 
 The **Similar Channels** feature uses a shared index of channels so that it can find small

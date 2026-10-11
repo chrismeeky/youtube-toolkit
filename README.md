@@ -44,6 +44,32 @@ Timestamps are off by default, since the usual reason to grab a transcript is to
 words somewhere else; both that and *save as .txt* are popup settings. Saved files go to
 `Downloads/yt-transcripts/`.
 
+**Interest curve**: on a watch page, the **Interest over time** card in the sidebar charts
+engagement (top-level comments) per period. It loads by itself and shows a skeleton until the
+read finishes. A read covers up to 2,000 engagements, newest first, and stops if you move to
+another video; **Read 2,000 more** goes further back.
+
+When the read reaches the upload, the curve spans the video's whole life, with **Peak** and
+**Now** (% of peak) underneath. When it can't, as on a MrBeast video where 2,000 comments may be
+the last few hours, the chart zooms to the stretch it read. The tiles then compare the recent
+pace with the **lifetime average**, taken from the comment count in the comments header. That
+count includes replies, so they are taken off in the proportion this read saw. The time axis
+fits the stretch shown: years, months, dates, hours or minutes. Buckets are never finer than
+YouTube's own dating ("3 hours ago"). YouTube dates older comments only to the month or year,
+so each one is spread across that window, and those years show up as plateaus. Replies aren't
+counted.
+
+**Lifetime** tab: when the comments can't reach the upload, the card also draws the video's
+whole life in views per day. The counts come from saved copies of the watch page on the
+Internet Archive (12 downloads, streamed only as far as the view count, cached a week and then
+topped up with newer copies), plus the view count each time you open the video. Each point is
+the average over the stretch between two counts, and the tooltip names that stretch. A video too
+new for the Archive gets its history from your visits as they accumulate. The two tabs are
+separate charts, not one line, because views and comments count different things.
+
+A read is cached for 15 minutes, across tabs and reloads; **Read again** skips the
+cache.
+
 **Everything on screen** — popup → **Copy all on page**. Only currently-rendered videos are
 included, so scroll first to load more.
 
@@ -514,6 +540,112 @@ without it the popover says so rather than blaming the channel. Each new channel
 couple of API units, cached for 30 minutes in the service worker and for the life of the page
 in the tab, so re-hovering is free. Turn it off in the popup.
 
+## Ideas from comments
+
+A **✦ Ideas from comments** button sits in a watch page's comment header. It reads the top
+300 comments, groups them by theme, and lists the themes most viewers share, each with its
+comment count, likes, questions and follow-up requests. *Ask* sends the top ten themes, with
+sample comments, to ChatGPT, Claude or Gemini for video ideas.
+
+- **Reading the comments.** `page.js` calls InnerTube's `next` endpoint from the page, as
+  YouTube's own comment section does: once by video id for the comments' continuation token,
+  then 20 comments per call (`commentEntityPayload` mutations), paced at a scroll's speed.
+- **Why themes, not keyword matching.** On 600 real comments, explicit requests ("make a
+  part 2") were 2 of 600, one a false match. The ideas were phrased as curiosity instead: "is
+  that cop still employed?", "what are their options in custody?". So comments are grouped
+  by what they're about, and the counts show which themes are questions or ask for more.
+- **Grouping** (`F.groupComments`): comments in order of likes join the nearest group, else
+  start one; groups whose centres meet are merged; themes rank by breadth, then likes, then
+  follow-up requests. Thresholds (join 0.60, merge 0.72) are tuned on that set: lower chains
+  everything into one "people are angry" blob, higher splinters real themes.
+- **The model** (`ml/`): all-MiniLM-L6-v2 sentence vectors on ONNX Runtime Web's WebAssembly
+  build (14 MB, bundled; MIT), with a hand-written uncased WordPiece tokenizer in place of
+  Transformers.js. The model (23 MB) is downloaded on request, by the service worker, from
+  one pinned Hugging Face commit. Each file is checked against its SHA-256 before it's
+  stored in Cache Storage; a mismatch is discarded. It runs in a module Worker: Chrome hosts
+  that in an offscreen document (`ml/host.html`), since the service worker can't
+  dynamic-import; Firefox's background page hosts it directly. It's closed after two idle
+  minutes. Measured: 0.23 s to load, 2.3 s for 300 comments, one thread (no
+  SharedArrayBuffer in extension pages). On those 300 comments it covered 189 in 20 themes;
+  shared-word grouping, the fallback, covered 27 in 12.
+- Needs `'wasm-unsafe-eval'` in the extension-page CSP, and the `offscreen` permission
+  (Chrome only; build.sh drops it for Firefox). Neither shows users a permission warning.
+
+**Reopening is instant.** Reads are kept per video for the life of the tab (the last six).
+Closing the dialog keeps the read, including the open tab and lists, and a read still in
+progress carries on behind the closed dialog. **↻ Read again** throws it away and starts over.
+
+### Feedback tab
+
+The comments dialog's second tab reports how satisfied viewers are with the video, and lists
+the praise, complaints, possible suggestions and questions behind that, apart from how they
+react to the story.
+
+- **The hard part is the target, not the tone.** Under a bodycam video, 84% of story
+  comments were negative (anger at the officer), from viewers who plainly liked the video. A
+  sentiment score over all comments calls that a failure. So each comment is first sorted into
+  *about the video or creator* / *about the story or subject* / *other*, and only the first
+  group counts toward satisfaction.
+- **Sorting** (`ml/target.json`): softmax regression over the comment model's vectors,
+  trained on 528 comments (written examples across niches, plus 280 hand-labelled real ones
+  from eight videos). A comment counts as about the video at p ≥ 0.6. Held out from training:
+  precision 0.72 / recall 0.61 on tech, story and bodycam videos; 0.98 / 0.52 on cooking,
+  gaming, tutorial and travel. A zero-shot NLI model (mobilebert-mnli) was tried first and
+  rejected: precision 0.33 on the same task, and it read slang praise as complaints.
+- **Two audiences, side by side.** *Reactions to the video itself* (with the satisfaction
+  verdict) and *Reactions to what happens in it*, each with a positive / neutral / negative
+  bar. Clicking a bar segment or its count opens every comment in that bucket, most liked
+  first, in a scrolling list; clicking again closes it. Every comment in both groups is scored
+  (up to 300), so a bucket is complete rather than a sample.
+- **Tone** (`ml/sentiment.mjs`): twitter-roberta-base-sentiment-latest (Cardiff NLP, CC BY
+  4.0), a second optional download (126 MB). Chosen because comments are written like
+  tweets: it reads "Video B was insane" and "Tim killed it" as praise. Praise vs complaint
+  direction: 30/30 on the labelled set. It needs GPT-2 byte-level BPE, implemented in that
+  file. About 140 ms a comment, batched by length, so scoring all of them takes up to
+  45 s once the models are cached.
+- **Suggestions** need a request with an object ("please make", "you should cover", "part 2")
+  *and* p(about the video) ≥ 0.45. A bare "please" or "you should be" matched jokes.
+- **Honesty rules in the UI:** no satisfaction figure under 10 rated comments ("Not enough to
+  judge", the bodycam result); every number lists the comments behind it, most liked first;
+  the panel says sorting is right about three times in four.
+- **Ask** sends the sorted lists and asks for what to keep, real problems ranked, which
+  suggestions to act on, and three changes for the next video, and tells the model to
+  disregard misfiled comments.
+
+## Why did this work?
+
+Beside every outlier pill (the filled `13×`) sits a ✦ pill: icon only on cards, **✦ Why?**
+on a watch page. Click it, or focus it and press Enter, and a dialog asks an AI why that
+video did so differently from its channel's normal. Under 1× it asks why the video fell short
+instead. It's a pill of its own rather than a click on the outlier figure, because nobody
+expects a number to be a button. Shorts are left out: a channel's Shorts aren't on the Videos
+tab its uploads are compared from. Settings → Research → *Why did this work? button* turns
+it off.
+
+- **The comparison.** The service worker reads the channel's Videos tab (its ~30 most recent
+  uploads) and the video's watch page (description, tags, exact publish date and length).
+  "Typical" is the **median** of those uploads, not the mean, because one viral video drags a
+  mean up. Uploads at 2× typical or more are listed as the channel's other hits, to show
+  whether the pattern repeats.
+- **Age is stated, not adjusted.** Raw views across different ages aren't comparable: 133M
+  after 3 days and 140M after 7 months are different achievements. When the video is young,
+  the dialog, the image and the prompt all say how old it is against the typical upload.
+  Any growth curve applied here would be invented.
+- **Thumbnails.** AI chats can't open YouTube links, so they never see a thumbnail unless
+  handed one. The dialog draws one image: this video, up to 3 other hits (H1–H3), and the 6
+  uploads closest to typical (T1–T6), labelled to match the lists in the prompt. The image
+  travels with the prompt through storage, and `paste.js` attaches it in the chat tab: first
+  as a paste into the composer, then through the page's file input, then as a drop. Each is
+  tried only if the one before wasn't taken. A copy also goes on the clipboard as a backup,
+  where the browser allows image copies. The thumbnails go through the service worker as
+  data: URLs, because an image drawn straight from i.ytimg.com would taint the canvas and
+  block the export.
+- **The prompt** goes through the same hand-off as Generate titles (`ytcPendingPrompt`,
+  typed in by `paste.js`). It asks for ranked reasons with evidence, what came from the video
+  versus from outside it, what does *not* explain the result, and a reusable pattern (or, for
+  a video that fell short, fixes). Description links are replaced with `[link]`, since
+  affiliate URLs run to hundreds of characters and say nothing about why a video worked.
+
 ## Studio home-page preview
 
 On a video's **Details** page in YouTube Studio, a **Preview** button sits just before *Undo
@@ -567,6 +699,29 @@ resolution.
   - **Phone:** the player at the top edge to edge, then full-width cards.
   - **TV:** the video fills the screen, with an *Up next* shelf along the bottom.
   - **Shuffle** keeps your video among the first five suggestions, where they get seen.
+- **✦ Check** opens a side panel that judges the thumbnail and title against the videos
+  actually around them in the current view (Home or Suggested):
+  - **Thumbnail**, measured rather than judged by a model: brightness, contrast,
+    colourfulness (Hasler–Süsstrunk), main colour, how busy it is (edge density), and a
+    difference hash for look-alikes. Each is ranked against the up-to-12 neighbours, with
+    a strip showing where yours sits. The headline only counts the rows where yours is in
+    the top or bottom quarter (main colour: shared by a fifth or fewer), so it can't
+    disagree with them. A model such as CLIP was considered and left out. It would add
+    several MB to the package and a 100 MB+ download per user, and it can't explain *why*
+    a thumbnail blends in. Every ytimg host sends `Access-Control-Allow-Origin: *`, so
+    pixels are read in the page with `crossOrigin = 'anonymous'`, drafts on i9.ytimg.com
+    included.
+  - **Title**, measured where it renders. Every device and both surfaces are laid out
+    off-screen with the real preview markup (images swapped for same-class boxes, so
+    nothing loads and widths stay true). The table reports where the title is cut and how
+    many characters show, and clicking a cell jumps the preview there. Below it are length
+    and style notes against the neighbours (numbers, capitals, question marks, splits,
+    emoji), shown only where yours is the odd one out.
+  - **Ask AI** builds a prompt from the title, the Studio description, the fit table, the
+    neighbours and the measurements. It attaches an image of your thumbnail above the
+    neighbours (N1–N9), and asks for a thumbnail review, ten titles that fit what a phone
+    shows, and the single change that matters most. The hand-off is the same
+    `ytcPendingPrompt` + `paste.js` route the YouTube-side prompts use.
 - **Custom size**: type a width × height into the boxes beside the size picker, or drag the
   preview's right edge, bottom edge or corner. Either one switches to *Custom*, starting from
   whatever size was showing. Dragging works like Chrome's responsive mode: the preview stays
@@ -764,6 +919,7 @@ server holds the API keys and does the enrichment.
 | `popup.html` / `popup.css` / `popup.js` | Settings UI with live preview |
 | `studio.js` / `studio.css` | YouTube Studio only: the home-page Preview button and dialog |
 | `whatsnew.js` / `whatsnew.css` / `whatsnew/` | One-time feature introductions, with their screenshots |
+| `ml/` | The comment models: ONNX Runtime Web (bundled), WordPiece and BPE tokenizers, the video/story classifier weights, worker, Chrome offscreen host. See `ml/THIRD-PARTY.md` |
 | `page.js` | Tiny `world: "MAIN"` script; reads live-page values the isolated world can't see |
 | `transcript-helper.py` | Local yt-dlp wrapper on `127.0.0.1:8731`; the reliable transcript path |
 | `background.js` | Keyboard shortcuts, the subscriber-count fetch queue and cache, and the index client |

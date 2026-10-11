@@ -582,3 +582,143 @@ html[dark] .ytcs-overlay {
 .ytcs-tvwatch-bottom .ytcs-player-bar { position: relative; left: 0; right: auto; bottom: auto; width: calc(100% - 96px); height: 6px; margin-bottom: 36px; }
 .ytcs-tvwatch-bottom h3 { margin: 0 0 16px; font-size: 28px; font-weight: 500; color: #fff; }
 .ytcs-tvwatch-bottom .ytcs-shelf-row { overflow: hidden; }
+
+/* ------------------------------------------------------------ ✦ Check panel */
+
+.ytcs-main { flex: 1; min-height: 0; display: flex; }
+.ytcs-main .ytcs-stage { flex: 1; min-width: 0; }
+.ytcs-checkbtn { align-items: center; }
+.ytcs-checkbtn svg { fill: currentColor; margin-right: 2px; }
+
+.ytcs-check {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: 340px;
+  border-left: 1px solid var(--c-line);
+  background: var(--c-bg);
+}
+.ytcs-check[hidden] { display: none; }
+.ytcs-check__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 8px 8px 16px;
+  border-bottom: 1px solid var(--c-line);
+}
+.ytcs-check__head b { display: inline-flex; align-items: center; gap: 6px; font-size: 15px; font-weight: 500; }
+.ytcs-check__head svg, .ytcs-ask svg { fill: currentColor; }
+.ytcs-check__head b svg { fill: #7c3aed; }
+.ytcs-check__body { flex: 1; overflow-y: auto; padding: 4px 16px 20px; }
+.ytcs-check h4 {
+  margin: 18px 0 10px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--c-muted);
+}
+.ytcs-check__fine { margin: 8px 0 0; font-size: 12px; line-height: 1.45; color: var(--c-muted); }
+
+.ytcs-check__score { display: flex; flex-direction: column; gap: 4px; }
+.ytcs-check__score b { font-size: 20px; font-weight: 500; }
+.ytcs-check__score span { font-size: 13px; color: var(--c-muted); }
+.ytcs-meter { display: block; height: 6px; margin-top: 6px; border-radius: 3px; background: var(--c-pill); overflow: hidden; }
+.ytcs-meter i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, #7c3aed, #065fd4); }
+
+.ytcs-check__list { list-style: none; margin: 14px 0 0; padding: 0; }
+.ytcs-check__list li {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 2px 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--c-line);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.ytcs-check__k { display: inline-flex; align-items: flex-start; gap: 6px; font-weight: 500; }
+.ytcs-check__warn .ytcs-check__k { color: #c5221f; }
+/* The measures counted in the headline. */
+.ytcs-check__out .ytcs-check__k { color: #065fd4; }
+html[dark] .ytcs-check__out .ytcs-check__k { color: #3ea6ff; }
+html[dark] .ytcs-check__warn .ytcs-check__k { color: #e8453c; }
+.ytcs-swatch { display: inline-block; width: 10px; height: 10px; margin-top: 4px; border-radius: 50%; }
+/* Where yours sits among the neighbours on that measure: grey dots for them, blue for yours. */
+.ytcs-strip {
+  grid-column: 2;
+  position: relative;
+  display: block;
+  height: 12px;
+  margin-top: 4px;
+}
+.ytcs-strip::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: 5px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--c-pill);
+}
+.ytcs-strip i, .ytcs-strip b {
+  position: absolute;
+  top: 2px;
+  width: 8px; height: 8px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background: var(--c-muted);
+  opacity: .45;
+}
+.ytcs-strip b { top: 0; width: 12px; height: 12px; margin-left: -6px; background: #065fd4; opacity: 1; box-shadow: 0 0 0 2px var(--c-bg); }
+
+.ytcs-fit-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ytcs-fit-table th { padding: 4px 0; font-weight: 500; text-align: left; color: var(--c-muted); }
+.ytcs-fit-table thead th { font-size: 11px; }
+.ytcs-fit-table td { padding: 2px 0 2px 6px; }
+.ytcs-fit {
+  width: 100%;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  font: 500 12px Roboto, Arial, sans-serif;
+  color: #0f7b3f;
+  background: rgba(15, 157, 88, .1);
+  cursor: pointer;
+}
+.ytcs-fit--cut { color: #b45309; background: rgba(217, 119, 6, .12); }
+/* The panel is drawn in Studio's theme (html[dark]), not the preview's Light/Dark. */
+html[dark] .ytcs-fit { color: #6ee7a0; }
+html[dark] .ytcs-fit--cut { color: #fbbf24; }
+.ytcs-fit:hover { filter: brightness(.95); }
+.ytcs-check__shown { margin: 12px 0 0; font-size: 13px; line-height: 1.45; color: var(--c-muted); }
+.ytcs-check__shown q { color: var(--c-text); quotes: "\201C" "\201D"; }
+.ytcs-check__notes { margin: 12px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.45; }
+.ytcs-check__notes li + li { margin-top: 6px; }
+
+.ytcs-seg--ai { display: flex; }
+.ytcs-seg--ai button { flex: 1; justify-content: center; }
+.ytcs-ask {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 40px;
+  margin-top: 10px;
+  border: 0;
+  border-radius: 20px;
+  font: 500 14px Roboto, Arial, sans-serif;
+  color: #fff;
+  background: linear-gradient(100deg, #7c3aed, #065fd4 55%, #0f9d58);
+  cursor: pointer;
+}
+.ytcs-ask:disabled { opacity: .45; cursor: default; }
+
+/* Off-screen copy of the preview, laid out at each device's width to measure the title. */
+.ytcs-measure {
+  position: fixed;
+  left: -40000px;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
