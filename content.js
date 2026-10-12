@@ -7784,6 +7784,8 @@
               'data-ytc-tip="' + escapeHtml(vphTitle(vph, exact != null)) + '">' +
               F.formatVph(vph) + ' VPH</span>');
           }
+          const category = isWatchCard(card) ? watchCategory(card) : '';
+          if (category) parts.push(categoryPill(category));
         } catch (e) {
           /* keep the rest of the badge */
         }
@@ -8349,6 +8351,21 @@
     return id && cardState.videoId === id ? m.vph : null;
   }
 
+  /* The category the uploader picked in Studio. Only the player response carries it, so only
+     the watch page can show it; cards elsewhere have nothing to read it from. */
+  function watchCategory(card) {
+    const m = cardState.metrics;
+    if (!m || !m.category) return '';
+    const id = findUrl(card).id;
+    return id && cardState.videoId === id ? m.category : '';
+  }
+
+  function categoryPill(category) {
+    return '<span class="ytc-cat" data-ytc-tip-title="Category" data-ytc-tip="' +
+      escapeHtml('The category the uploader chose for this video in YouTube Studio') + '">' +
+      escapeHtml(category) + '</span>';
+  }
+
   function vphTitle(vph, exact) {
     return Math.round(vph).toLocaleString() + ' views per hour on average since it was posted. ' +
       (exact ? 'From the exact publish time'
@@ -8360,11 +8377,24 @@
      unrelated re-render happens to fix it. */
   function syncWatchVph() {
     const watch = watchCard();
+    syncWatchCategory(watch);
     const pill = watch && watch.querySelector('.ytc-vph');
     const vph = watch ? watchExactVph(watch) : null;
     if (!pill || vph == null || vph < 1) return;
     pill.textContent = F.formatVph(vph) + ' VPH';
     setTip(pill, { title: 'Views per hour', body: vphTitle(vph, true) });
+  }
+
+  /* Same reason as the VPH: the badge is often drawn before the player data lands. */
+  function syncWatchCategory(watch) {
+    const badge = watch && settings.showStats && watch.querySelector('.ytc-subs');
+    if (!badge) return;
+    const category = watchCategory(watch);
+    const pill = badge.querySelector('.ytc-cat');
+    if (!category) { if (pill) pill.remove(); return; }
+    if (pill && pill.textContent === category) return;
+    if (pill) pill.remove();
+    badge.insertAdjacentHTML('beforeend', categoryPill(category));
   }
 
   /* Views per hour from an exact timestamp, for cards that carry no relative date. */
@@ -11714,7 +11744,7 @@
     w.up = r == null || r >= 1;
   }
 
-  function ageLabel(d) {
+  function ageWords(d) {
     if (d == null) return '';
     if (d < 1) return Math.max(1, Math.round(d * 24)) + ' hours';
     if (d < 14) return Math.round(d) + (Math.round(d) === 1 ? ' day' : ' days');
@@ -11816,7 +11846,7 @@
         ty += 34;
         c.font = font(22, 400);
         c.fillStyle = '#404040';
-        c.fillText('in ' + ageLabel(w.ageDays) + '; a typical upload is ' + ageLabel(w.medianAgeDays) + ' old', tx, ty);
+        c.fillText('in ' + ageWords(w.ageDays) + '; a typical upload is ' + ageWords(w.medianAgeDays) + ' old', tx, ty);
       }
       if (w.ratio && w.relMedian) {
         ty += 34;
@@ -11900,8 +11930,8 @@
     if (w.subs) vs.push(xLabel(w.views / w.subs) + ' its subscriber count (' + F.compact(w.subs) + ')');
     if (vs.length) L.push('That is ' + vs.join('; ') + '.');
     if (w.young) {
-      L.push('Age matters here: this video is ' + ageLabel(w.ageDays) + ' old, while the typical upload in ' +
-        'the list below is about ' + ageLabel(w.medianAgeDays) + ' old. Compare its pace, not just its ' +
+      L.push('Age matters here: this video is ' + ageWords(w.ageDays) + ' old, while the typical upload in ' +
+        'the list below is about ' + ageWords(w.medianAgeDays) + ' old. Compare its pace, not just its ' +
         'total: reaching the typical total this early is itself the outlier.');
     }
     if (video.keywords && video.keywords.length) L.push('Tags: ' + video.keywords.slice(0, 25).join(', '));
@@ -12017,8 +12047,8 @@
     } else {
       compare = '<p class="ytc-why__status">' + w.uploads.length + ' recent uploads. The middle one (the median) gets <b>' +
         F.compact(w.median) + ' views</b>' + (w.relMedian ? '; this one got <b>' + xLabel(w.relMedian) +
-        '</b> that' + (w.young ? ' in only <b>' + ageLabel(w.ageDays) + '</b>, against a typical age of ' +
-        ageLabel(w.medianAgeDays) : '') : '') + '.' + (w.hits.length ? ' ' + w.hits.length + ' other ' +
+        '</b> that' + (w.young ? ' in only <b>' + ageWords(w.ageDays) + '</b>, against a typical age of ' +
+        ageWords(w.medianAgeDays) : '') : '') + '.' + (w.hits.length ? ' ' + w.hits.length + ' other ' +
         (w.hits.length === 1 ? 'upload' : 'uploads') + ' also broke out.' : '') + '</p>';
     }
 

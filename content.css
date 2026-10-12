@@ -1072,6 +1072,23 @@ html.ytc-grabbing-transcript [target-id*="transcript"] {
 }
 html:not([dark]) .ytc-vph { color: #1668b8; background: rgba(0, 0, 0, .07); }
 
+/* The video's category on the watch page. Neutral: it is a label, not a measurement. */
+.ytc-cat {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  margin-left: 4px;
+  border-radius: 9px;
+  font: 500 11px/1 Roboto, Arial, sans-serif;
+  color: #ddd;
+  background: rgba(128, 128, 128, .22);
+  cursor: default;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+html:not([dark]) .ytc-cat { color: #333; background: rgba(0, 0, 0, .07); }
+
 /* The tab sits with YouTube's own. It borrows their metrics rather than inventing a look,
    because a tab that does not match the row beside it reads as a rendering fault. */
 .ytc-tab {
