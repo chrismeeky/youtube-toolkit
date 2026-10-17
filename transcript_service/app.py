@@ -1254,7 +1254,7 @@ USAGE_HTML = DASHBOARD_HTML.split('<div class="wrap">')[0].replace(
 
   $('days').addEventListener('change', load);
   load();
-  setInterval(load, 60000);
+  setInterval(load, 5000);
 </script>
 """
 

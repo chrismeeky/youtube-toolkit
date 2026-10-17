@@ -1434,6 +1434,7 @@ async function countUse(feature) {
   st.days[day] = st.days[day] || {};
   st.days[day][feature] = (st.days[day][feature] || 0) + 1;
   await chrome.storage.local.set({ [USAGE_KEY]: st });
+  sendUsageSoon();
 }
 
 async function sendUsage() {
@@ -1457,26 +1458,30 @@ async function sendUsage() {
     })
   });
   if (!res.ok) return;
-  // Today's totals stay, so the next send overwrites them; earlier days are done.
-  const keep = {};
-  keep[usageDay()] = st.days[usageDay()];
-  if (!keep[usageDay()]) delete keep[usageDay()];
-  st.days = keep;
-  await chrome.storage.local.set({ [USAGE_KEY]: st });
+  /* Today's totals stay, so the next send overwrites them; earlier days are done. Re-read
+     first: a feature opened while the request was in flight must not be wiped. */
+  const now = await usageState();
+  const today = usageDay();
+  now.days = now.days[today] ? { [today]: now.days[today] } : {};
+  await chrome.storage.local.set({ [USAGE_KEY]: now });
+}
+
+/* Real time: a send a couple of seconds after any change, so a burst of clicks or toggles
+   becomes one request. The 12-hour alarm stays as the fallback for a worker that was shut
+   down before its timer fired. */
+let usageTimer = null;
+function sendUsageSoon() {
+  clearTimeout(usageTimer);
+  usageTimer = setTimeout(() => sendUsage().catch(() => {}), 2000);
 }
 
 function armUsage() {
   try { chrome.alarms.create(USAGE_ALARM, { periodInMinutes: 720, delayInMinutes: 5 }); }
   catch (e) { /* no alarms; the next browser start still sends */ }
 }
-chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === USAGE_ALARM || a.name === USAGE_ALARM + '-soon') sendUsage().catch(() => {});
-});
-/* A switch flipped should reach the dashboard in minutes, not at the next 12-hour send. One
-   alarm, recreated on each change, so a run of toggles becomes a single send. */
+chrome.alarms.onAlarm.addListener((a) => { if (a.name === USAGE_ALARM) sendUsage().catch(() => {}); });
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'sync' || !Object.keys(changes).some((k) => /^show[A-Z]/.test(k))) return;
-  try { chrome.alarms.create(USAGE_ALARM + '-soon', { delayInMinutes: 1 }); } catch (e) { /* next regular send */ }
+  if (area === 'sync' && Object.keys(changes).some((k) => /^show[A-Z]/.test(k))) sendUsageSoon();
 });
 chrome.runtime.onInstalled.addListener(armUsage);
 chrome.runtime.onStartup.addListener(armUsage);
