@@ -1469,7 +1469,15 @@ function armUsage() {
   try { chrome.alarms.create(USAGE_ALARM, { periodInMinutes: 720, delayInMinutes: 5 }); }
   catch (e) { /* no alarms; the next browser start still sends */ }
 }
-chrome.alarms.onAlarm.addListener((a) => { if (a.name === USAGE_ALARM) sendUsage().catch(() => {}); });
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name === USAGE_ALARM || a.name === USAGE_ALARM + '-soon') sendUsage().catch(() => {});
+});
+/* A switch flipped should reach the dashboard in minutes, not at the next 12-hour send. One
+   alarm, recreated on each change, so a run of toggles becomes a single send. */
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'sync' || !Object.keys(changes).some((k) => /^show[A-Z]/.test(k))) return;
+  try { chrome.alarms.create(USAGE_ALARM + '-soon', { delayInMinutes: 1 }); } catch (e) { /* next regular send */ }
+});
 chrome.runtime.onInstalled.addListener(armUsage);
 chrome.runtime.onStartup.addListener(armUsage);
 
