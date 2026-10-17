@@ -146,10 +146,11 @@ strong one.
 
 WHAT LEAVES YOUR BROWSER
 
-There are no accounts and no sign-in. Nothing is tracked and no analytics are
-collected. Nothing is ever sold or shared. Your settings stay in your browser,
-and free does not mean you are the product here, because there is no account
-for anything to be attached to.
+There are no accounts and no sign-in. Anonymous usage statistics (which features
+are switched on and how often each is opened, under a random install ID) are sent to
+our own service and can be switched off in Settings > Privacy. They never include
+what you watch, search or copy. Nothing is ever sold or shared. Your settings stay
+in your browser.
 
 To produce its figures the extension reads the page you are on and requests
 YouTube pages in the background. It reads channel pages and watch pages for
@@ -243,6 +244,14 @@ the data.
 
 **Turning the setting off stops all of it** — no channel is reported, no recommendations are
 read, and no background pages are fetched for it.
+
+### User activity — yes (anonymous usage statistics)
+
+The extension sends, about twice a day, a random install ID, its version, which feature
+switches are on, and per-day counts of how often each feature was opened. No page, video,
+channel, search or copied text. Used only to decide what to maintain; not sold, shared or
+used for advertising. It can be switched off in Settings > Privacy. Tick **User activity**
+in the Chrome Web Store form (and the data-collection declaration for Firefox).
 
 ### Everything else — no
 

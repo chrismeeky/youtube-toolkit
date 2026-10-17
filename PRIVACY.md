@@ -4,7 +4,8 @@ _Last updated: 6 October 2026_
 
 YouTube Toolkit shows statistics about YouTube channels and videos on the YouTube pages you
 are already viewing, and helps you copy that information as text. There is no account, no
-sign-in and no payment, so there is nothing for us to attach data to.
+sign-in and no payment. It does send anonymous usage statistics, described below, which you can
+turn off. (Sign-in is planned for 1 January 2027; this policy will be updated before it starts.)
 
 This policy describes everything the extension stores and everything it sends, including the
 requests it makes in the background. It is written against what the code actually does.
@@ -99,13 +100,32 @@ extension sends the following to the index service:
   the extension's settings stops this.
 
 The index stores **relationships between channels**. It does not store a record of who
-looked at what: no account identifier, no device identifier, no cookie, no profile, and no
+looked at what: no account identifier, no device identifier (the usage-statistics install ID
+above is never sent with these requests), no cookie, no profile, and no
 viewing history is sent or kept. As with any web request, the service receives your IP
 address in transit; it is not recorded against the data.
 
 **Turning "Similar Channels" off in the extension's popup stops all of this completely** —
 no channel is reported, no recommendations are read, and no background pages are fetched for
 it. The rest of the extension continues to work.
+
+## Anonymous usage statistics
+
+So that we know which features are worth maintaining, the extension reports, about twice a day:
+
+- **A random install ID** the extension generates for itself. It is not derived from you, your
+  browser profile or any YouTube or Google account.
+- **The extension version.**
+- **Which feature switches are on or off** (for example, whether "Similar Channels" is on).
+- **How many times each feature was opened per day** (for example, the copy button, the
+  thumbnail gallery, Pockets). Only a feature name and a number are recorded.
+
+It never includes what you watch, search for, copy or save, any channel or video, or any text
+you type. As with any web request, the service receives your IP address in transit; it is not
+stored with these statistics.
+
+**To stop it:** Toolkit settings → Privacy → "Share anonymous usage statistics". Nothing is
+sent after you switch it off. Uninstalling removes the install ID from your device.
 
 ## What is sent to the Internet Archive
 
@@ -118,9 +138,9 @@ days. The Internet Archive's own privacy policy covers what it logs.
 
 ## What is never collected
 
-No names, email addresses, passwords or payment details. No location. No health, financial
-or personal-communication data. No browsing history outside YouTube. No advertising or
-analytics libraries are included, and the extension contains no remotely loaded code.
+No names, email addresses, passwords or payment details. No location. No advertising identifiers. No health, financial
+or personal-communication data. No browsing history outside YouTube. No third-party advertising or
+analytics libraries are included (the usage statistics above go only to our own service), and the extension contains no remotely loaded code.
 
 Nothing is sold, rented or shared with third parties (the Internet Archive request above
 names only a public video ID), and nothing is used for advertising or

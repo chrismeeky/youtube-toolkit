@@ -1075,6 +1075,15 @@ DASHBOARD_HTML = """<!doctype html>
     <span class="note" id="runnote"></span>
   </div>
 
+  <h2>Feature usage <span class="note" id="usagenote"></span></h2>
+  <div class="grid" id="usagecards"></div>
+  <table id="uses"><thead><tr>
+    <th>Switch</th><th>Installs with it on</th><th>Share</th>
+  </tr></thead><tbody></tbody></table>
+  <table id="opens" style="margin-top:18px"><thead><tr>
+    <th>Feature opened</th><th>Times</th><th>Installs</th>
+  </tr></thead><tbody></tbody></table>
+
   <h2>Recent runs</h2>
   <table id="runs"><thead><tr>
     <th>Started</th><th>Mode</th><th>In</th><th>Stored</th><th>Edges</th><th>Quota</th><th>Result</th>
@@ -1160,6 +1169,23 @@ DASHBOARD_HTML = """<!doctype html>
       'roughly one unit per new channel against 10,000 a day.';
   }
 
+  async function loadUsage() {
+    let u;
+    try { u = await (await fetch(API + '/usage-stats?days=30', { cache: 'no-store' })).json(); }
+    catch (e) { return; }
+    if (!u.ok) { $('usagenote').textContent = u.reason || ''; return; }
+    $('usagenote').textContent = 'last ' + u.days + ' days, anonymous installs';
+    $('usagecards').innerHTML = card(num(u.installs), 'active installs');
+    const pct = (a, b) => b ? Math.round(100 * a / b) + '%' : '—';
+    $('uses').querySelector('tbody').innerHTML = u.switches.map((s) =>
+      '<tr><td>' + s.name.replace(/^show/, '') + '</td><td>' + num(s.on) + ' of ' + num(s.total) +
+      '</td><td>' + pct(s.on, s.total) + '</td></tr>').join('') ||
+      '<tr><td colspan="3" class="wide">Nothing reported yet.</td></tr>';
+    $('opens').querySelector('tbody').innerHTML = u.uses.map((f) =>
+      '<tr><td>' + f.feature + '</td><td>' + num(f.opens) + '</td><td>' + num(f.installs) +
+      '</td></tr>').join('') || '<tr><td colspan="3" class="wide">Nothing reported yet.</td></tr>';
+  }
+
   $('go').addEventListener('click', async () => {
     $('go').disabled = true;
     $('runnote').textContent = 'Starting…';
@@ -1176,7 +1202,9 @@ DASHBOARD_HTML = """<!doctype html>
   });
 
   load();
+  loadUsage();
   setInterval(load, 15000);
+  setInterval(loadUsage, 60000);
 </script>
 """
 
@@ -1714,6 +1742,78 @@ def _sb_patch(path, payload, timeout=30):
                  "Content-Type": "application/json", "Prefer": "return=minimal"})
     with urllib.request.urlopen(req, timeout=timeout) as res:
         res.read()
+
+
+USAGE_FEATURE_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+USAGE_SETTING_RE = re.compile(r"^show[A-Z][A-Za-z0-9]{0,40}$")
+USAGE_ID_RE = re.compile(r"^[0-9a-f-]{36}$")
+
+
+def record_usage(body):
+    """Store one install's switches and per-day feature counts.
+
+    Everything is validated against a fixed shape and nothing else is kept, so a client cannot
+    use this endpoint to park arbitrary text in the database."""
+    install_id = str(body.get("installId") or "")
+    if not USAGE_ID_RE.match(install_id):
+        return {"ok": False, "reason": "bad id"}
+    flags = {}
+    for k, v in (body.get("settings") or {}).items():
+        if USAGE_SETTING_RE.match(str(k)) and isinstance(v, bool) and len(flags) < 60:
+            flags[str(k)] = v
+    now = datetime.now(timezone.utc)
+    _supabase("/rest/v1/usage_installs?on_conflict=install_id", [{
+        "install_id": install_id,
+        "last_seen": now.isoformat(),
+        "version": str(body.get("version") or "")[:20],
+        "settings": flags,
+    }], timeout=20, prefer="resolution=merge-duplicates,return=minimal")
+    rows = []
+    for day, feats in (body.get("days") or {}).items():
+        try:
+            d = datetime.strptime(str(day), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if abs((now.date() - d).days) > 7 or not isinstance(feats, dict):
+            continue
+        for feat, n in feats.items():
+            if USAGE_FEATURE_RE.match(str(feat)) and isinstance(n, int) and 0 < n < 100000 \
+                    and len(rows) < 200:
+                rows.append({"install_id": install_id, "day": str(d), "feature": str(feat), "n": n})
+    if rows:
+        _supabase("/rest/v1/usage_daily?on_conflict=install_id,day,feature", rows, timeout=20,
+                  prefer="resolution=merge-duplicates,return=minimal")
+    return {"ok": True}
+
+
+def usage_stats(days=30):
+    """For the dashboard: how many installs have each switch on, and how often each feature is
+    used. Aggregated here because PostgREST has no GROUP BY; the tables are small."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    installs = _sb_get("/rest/v1/usage_installs?select=install_id,settings,version,last_seen"
+                       "&last_seen=gte." + since + "&limit=20000")
+    daily = _sb_get("/rest/v1/usage_daily?select=install_id,feature,n&day=gte." + since +
+                    "&limit=100000")
+    if installs is None or daily is None:
+        return {"ok": False, "reason": "usage tables unavailable (run usage_schema.sql?)"}
+    switches = defaultdict(lambda: [0, 0])          # name -> [on, total]
+    for r in installs:
+        for k, v in (r.get("settings") or {}).items():
+            switches[k][1] += 1
+            if v:
+                switches[k][0] += 1
+    uses = defaultdict(lambda: {"opens": 0, "installs": set()})
+    for r in daily:
+        u = uses[r["feature"]]
+        u["opens"] += int(r.get("n") or 0)
+        u["installs"].add(r["install_id"])
+    return {
+        "ok": True, "days": days, "installs": len(installs),
+        "switches": sorted(({"name": k, "on": v[0], "total": v[1]} for k, v in switches.items()),
+                           key=lambda x: -x["on"]),
+        "uses": sorted(({"feature": k, "opens": v["opens"], "installs": len(v["installs"])}
+                        for k, v in uses.items()), key=lambda x: -x["opens"]),
+    }
 
 
 def track_keyword(keyword, video_ids):
@@ -2849,6 +2949,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, out)
             return
 
+        if path == "/usage":
+            if not INDEX_READY:
+                self._send(200, {"ok": False, "reason": "not configured"})
+                return
+            try:
+                self._send(200, record_usage(body))
+            except Exception as e:
+                print("  usage write failed: %s: %s" % (type(e).__name__, e), flush=True)
+                self._send(200, {"ok": False})
+            return
+
         if path == "/keyword-seen":
             if not INDEX_READY:
                 self._send(200, {"ok": False, "reason": "channel index not configured"})
@@ -2976,6 +3087,11 @@ class Handler(BaseHTTPRequestHandler):
             out["crawl_running"] = CRAWL_STATE["running"]
             out["crawl_last"] = CRAWL_STATE["last"]
             self._send(200, out)
+            return
+
+        if path == "/usage-stats":
+            self._send(200, usage_stats(_clamp(query, "days", 30, 1, 365)) if INDEX_READY
+                       else {"ok": False, "reason": "channel index not configured"})
             return
 
         if path == "/dashboard":

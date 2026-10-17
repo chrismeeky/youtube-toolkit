@@ -10,6 +10,9 @@
     csvHeader: true,
     numericViews: false,          // 271K -> 271000
     absoluteDate: false,          // "23 hours ago" -> 2026-08-22
+    /* Anonymous feature-usage statistics (which switches are on, how often each feature is
+       used). On by default, off in Settings → Privacy. See PRIVACY.md. */
+    shareUsage: true,
     showButtons: true,
     quoteTitle: false,
     toast: true,

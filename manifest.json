@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube Toolkit",
-  "version": "1.33.1",
+  "version": "1.34.0",
   "description": "Free YouTube niche research. Find similar channels, filter results by size and outlier score, and read any channel's analytics.",
   "permissions": [
     "storage",
@@ -112,7 +112,8 @@
       "resources": [
         "icons/icon32.png",
         "icons/icon128.png",
-        "whatsnew/*"
+        "whatsnew/*",
+        "notice.html"
       ],
       "matches": [
         "https://www.youtube.com/*",

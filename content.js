@@ -308,7 +308,16 @@
     toastTimer = setTimeout(() => el.classList.remove('ytc-toast--show'), 1800);
   }
 
+  /* One word per feature, counted per day in the service worker. Nothing about the page, the
+     video or the channel travels with it, and the worker drops it when sharing is off. */
+  function track(feature) {
+    if (!settings.shareUsage) return;
+    try { chrome.runtime.sendMessage({ type: 'ytc-use', feature }, () => void chrome.runtime.lastError); }
+    catch (e) { /* the context was reloaded; a count is never worth an exception */ }
+  }
+
   async function copyVideos(videos, label) {
+    track('copy');
     const out = F.formatList(videos, settings);
     if (!out) { toast('Nothing to copy', true); return; }
     const ok = await copyText(out);
@@ -340,6 +349,7 @@
   }
 
   async function saveThumbs(videos, label) {
+    track('thumb-download');
     if (!videos.length) { toast('Nothing to download', true); return; }
     sendMessage({ type: 'ytc-thumbs', videos }, (res) => {
       if (chrome.runtime.lastError || !res) { toast('Download failed', true); return; }
@@ -2339,6 +2349,7 @@
     return a === z ? a : a + ' – ' + z;
   }
   function openThumbGallery() {
+    track('thumb-gallery');
     const v = thumbVideo();
     if (!v) return;
     closeThumbGallery();
@@ -4959,6 +4970,7 @@
   }
 
   function openAnalyticsView() {
+    track('analytics');
     closeSimilarView();
     analyticsOpen = true;
     panelChannel = channelKeyFromLocation().toLowerCase();
@@ -6743,6 +6755,7 @@
   }
 
   function openSimilarView() {
+    track('similar');
     closeAnalyticsView();
     simFilter.open = true;
     panelChannel = channelKeyFromLocation().toLowerCase();
@@ -9113,6 +9126,7 @@
   }
 
   function openPocketsModal() {
+    track('pockets');
     if (pocketsModalOpen()) { closePocketsModal(); return; }
     const veil = document.createElement('div');
     veil.className = 'ytc-pkm__veil';
@@ -11564,6 +11578,7 @@
   }
 
   function openAiDialog() {
+    track('ai');
     if (AI.open) return;
     const rows = pickedRows();
     if (!rows.length) return;
@@ -12176,6 +12191,7 @@
   }
 
   function openWhy(card) {
+    track('why');
     if (WHY) return;
     /* On a watch page the pill can sit in #above-the-fold, inside the ytd-watch-metadata the
        badge was drawn for; the figures the badge stamped live on the outer one. */
@@ -12992,6 +13008,7 @@
   }
 
   function openIdeas(fresh) {
+    track('ideas');
     if (IDEAS) return;
     const videoId = new URL(location.href).searchParams.get('v');
     if (!videoId) return;
@@ -14287,6 +14304,7 @@
   }
 
   function openFilterModal() {
+    track('filter');
     closeFilterModal();
     // Transient chrome, not state: a menu or a half-typed name must not survive a reopen.
     pmForm = null;
@@ -14684,6 +14702,16 @@
       ]
     },
     {
+      key: 'privacy',
+      title: 'Privacy',
+      note: 'Anonymous usage statistics help us decide what to build. They never include ' +
+        'what you watch, search or copy. Details in the privacy policy.',
+      items: [
+        { k: 'shareUsage', label: 'Share anonymous usage statistics',
+          note: 'Which features are switched on, and how often each is used' }
+      ]
+    },
+    {
       key: 'transcript',
       title: 'Transcripts',
       items: [
@@ -14819,7 +14847,8 @@
     { k: 'panels', label: 'Panels' },
     { k: 'studio', label: 'Studio' },
     { k: 'copy', label: 'Copying' },
-    { k: 'channel', label: 'Your channel' }
+    { k: 'channel', label: 'Your channel' },
+    { k: 'privacy', label: 'Privacy' }
   ];
 
   // The same address the store listing's privacy text gives, so there is one way to reach us.
@@ -14917,6 +14946,7 @@
   }
 
   function openSettingsModal() {
+    track('settings');
     if (document.querySelector('.ytc-st')) return;
     const el = document.createElement('div');
     el.className = 'ytc-st';

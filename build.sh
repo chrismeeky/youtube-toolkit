@@ -18,7 +18,7 @@ GECKO_ID="youtube-toolkit@chrismeeky"
 GECKO_MIN="140.0"
 
 FILES=(manifest.json background.js config.js content.js content.css format.js page.js
-       paste.js studio.js studio.css whatsnew.js whatsnew.css whatsnew popup.html
+       paste.js studio.js studio.css whatsnew.js whatsnew.css whatsnew notice.html popup.html
        popup.js popup.css icons ml)
 
 [ -f config.js ] || { echo "config.js is missing — copy config.example.js and fill it in." >&2; exit 1; }
@@ -50,9 +50,10 @@ m.browser_specific_settings = {
          browsingActivity — channels and videos opened, sent to the channel index, and a
                             video id sent to the Internet Archive for thumbnail history
          websiteContent   — a channel's public title, description and video titles
-         searchTerms      — YouTube searches, for the search companion's keyword chart */
+         searchTerms      — YouTube searches, for the search companion's keyword chart
+         technicalAndInteraction — anonymous feature-usage counts (Settings → Privacy) */
     data_collection_permissions: {
-      required: ['browsingActivity', 'websiteContent', 'searchTerms']
+      required: ['browsingActivity', 'websiteContent', 'searchTerms', 'technicalAndInteraction']
     }
   }
 };

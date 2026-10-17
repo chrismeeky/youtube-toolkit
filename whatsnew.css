@@ -146,3 +146,6 @@ html[dark] .ytc-wn__title span { color: #ff4e45; }
   .ytc-wn__note { display: none; }
   .ytc-wn__dots { flex: 1; }
 }
+
+.ytc-wn__card--notice { width: min(480px, 100%); }
+.ytc-wn__card--notice .ytc-wn__text { padding-top: 0; }

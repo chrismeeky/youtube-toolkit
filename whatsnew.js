@@ -47,6 +47,19 @@
     }
   };
 
+  /* A one-card notice rather than a slideshow: shown to everyone (new installs included, since
+     it concerns what the extension will require) until it is dismissed or the date passes. */
+  const NOTICE = {
+    id: 'login-2027',
+    kicker: 'Heads up',
+    name: 'Sign-in is coming on 1 January',
+    body: 'From 1 January 2027, YouTube Toolkit will ask you to sign in. An account lets us ' +
+      'save your preferences and keep them with you, and gives us usage analytics so we can ' +
+      'serve you better. Until then nothing changes.',
+    page: 'notice.html',
+    until: Date.UTC(2027, 0, 1)
+  };
+
   const ON_STUDIO = location.hostname === 'studio.youtube.com';
   let el = null;
   let feature = null;
@@ -83,6 +96,36 @@
       '</div>';
   }
 
+  function buildNotice() {
+    const n = NOTICE;
+    el.innerHTML =
+      '<div class="ytc-wn__card ytc-wn__card--notice" role="dialog" aria-modal="true" aria-label="' + esc(n.name) + '">' +
+        '<div class="ytc-wn__head">' +
+          '<img class="ytc-wn__logo" src="' + esc(url('icons/icon32.png')) + '" alt="">' +
+          '<div class="ytc-wn__title"><span>' + esc(n.kicker) + '</span><b>' + esc(n.name) + '</b></div>' +
+          '<button type="button" class="ytc-wn__x" data-act="done" aria-label="Close">×</button>' +
+        '</div>' +
+        '<div class="ytc-wn__text"><p>' + esc(n.body) + '</p></div>' +
+        '<div class="ytc-wn__foot">' +
+          '<span class="ytc-wn__note"></span>' +
+          '<a class="ytc-wn__btn" href="' + esc(url(n.page)) + '" target="_blank" rel="noopener" data-act="done">Read more</a>' +
+        '</div>' +
+      '</div>';
+  }
+
+  function showNotice() {
+    if (el) return;
+    feature = null;
+    el = document.createElement('div');
+    el.className = 'ytc-wn';
+    document.body.appendChild(el);
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-act]')) close();
+    });
+    window.addEventListener('keydown', onKey, true);
+    buildNotice();
+  }
+
   function render() {
     const f = feature;
     const last = at === f.slides.length - 1;
@@ -96,7 +139,7 @@
     const cta = last
       ? (ON_STUDIO ? '' : '<a class="ytc-wn__btn" href="https://studio.youtube.com/" target="_blank" ' +
           'rel="noopener" data-act="done">Open Studio</a>') +
-        '<button type="button" class="ytc-wn__btn ytc-wn__btn--primary" data-act="done">Got it</button>'
+        ''
       : '<button type="button" class="ytc-wn__btn ytc-wn__btn--primary" data-act="next">Next</button>';
     el.querySelector('.ytc-wn__foot').innerHTML =
       '<div class="ytc-wn__dots">' + f.slides.map((_, i) =>
@@ -123,7 +166,7 @@
 
   function onKey(e) {
     if (!el) return;
-    if (e.key === 'Escape') { e.stopPropagation(); close(); }
+    if (!feature) return;
     else if (e.key === 'ArrowRight') go(at + 1);
     else if (e.key === 'ArrowLeft') go(at - 1);
   }
@@ -170,7 +213,6 @@
     el.className = 'ytc-wn';
     document.body.appendChild(el);
     el.addEventListener('click', (e) => {
-      if (e.target === el) { close(); return; }
       const dot = e.target.closest('[data-go]');
       if (dot) { go(+dot.dataset.go); return; }
       const act = e.target.closest('[data-act]');
@@ -197,7 +239,14 @@
           if (chrome.runtime.lastError) return;
           const st = Object.assign({ pending: [], seen: [] }, got && got[KEY]);
           const id = st.pending.find((p) => FEATURES[p] && st.seen.indexOf(p) < 0);
-          if (!id || document.hidden || busy()) return;
+          if (document.hidden || busy()) return;
+          if (!id) {
+            if (Date.now() >= NOTICE.until || st.seen.indexOf(NOTICE.id) >= 0) return;
+            st.seen.push(NOTICE.id);
+            chrome.storage.local.set({ [KEY]: st });
+            showNotice();
+            return;
+          }
           chrome.storage.sync.get(FEATURES[id].setting, (s) => {
             // Someone who has already switched the feature off doesn't need it introduced.
             if (s && s[FEATURES[id].setting] === false) return;

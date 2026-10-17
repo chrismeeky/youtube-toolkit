@@ -1292,6 +1292,7 @@
 
   function open(ctx) {
     if (!ctx || overlay) return;
+    try { chrome.storage.sync.get('shareUsage', (g) => { if (!g || g.shareUsage !== false) chrome.runtime.sendMessage({ type: 'ytc-use', feature: 'studio-preview' }, () => void chrome.runtime.lastError); }); } catch (e) { /* not worth an exception */ }
     const id = ctx.id;
     state = { ctx, own: null, videos: [], order: [], ownAt: 1, loading: true, source: 'home',
       titleOverride: null, thumbOverride: null, badThumbs: new Set(),

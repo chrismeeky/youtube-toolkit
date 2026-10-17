@@ -1401,6 +1401,78 @@ chrome.runtime.onInstalled.addListener((details) => {
 });
 chrome.runtime.onStartup.addListener(() => { armPocketWatch(); paintWatchBadge(); });
 
+/* ---------------------------------------------------------- usage statistics */
+
+/* Anonymous, and off with Settings → Privacy. What leaves the browser is a random install id,
+   the extension version, which show* switches are on, and per-day counts of how often each
+   feature was opened. No page, video, channel, search or copied text is ever included.
+   Counts are kept per day and sent as running totals, so a repeated send overwrites rather
+   than double counts, and a failed send simply tries again at the next alarm. */
+const USAGE_KEY = 'ytcUsage';             // chrome.storage.local: { id, days: {YYYY-MM-DD: {feature: n}} }
+const USAGE_ALARM = 'ytc-usage';
+const USAGE_FEATURES = ['copy', 'thumb-download', 'similar', 'analytics', 'thumb-gallery', 'pockets',
+  'ai', 'why', 'ideas', 'filter', 'settings', 'studio-preview'];
+
+function usageDay(d) { return (d || new Date()).toISOString().slice(0, 10); }
+
+async function usageState() {
+  const got = await chrome.storage.local.get(USAGE_KEY);
+  const st = Object.assign({ id: '', days: {} }, got[USAGE_KEY]);
+  if (!st.id) st.id = crypto.randomUUID();
+  return st;
+}
+
+async function usageEnabled() {
+  const s = await chrome.storage.sync.get('shareUsage');
+  return s.shareUsage !== false;
+}
+
+async function countUse(feature) {
+  if (USAGE_FEATURES.indexOf(feature) < 0 || !(await usageEnabled())) return;
+  const st = await usageState();
+  const day = usageDay();
+  st.days[day] = st.days[day] || {};
+  st.days[day][feature] = (st.days[day][feature] || 0) + 1;
+  await chrome.storage.local.set({ [USAGE_KEY]: st });
+}
+
+async function sendUsage() {
+  const base = ((self.YTCopyConfig && self.YTCopyConfig.INDEX_API) || '').trim();
+  if (!base || !(await usageEnabled())) return;
+  const st = await usageState();
+  const saved = await chrome.storage.sync.get(null);
+  const settings = F.merge(saved);
+  const flags = {};
+  for (const k of Object.keys(settings)) {
+    if (/^show[A-Z]/.test(k) && typeof settings[k] === 'boolean') flags[k] = settings[k];
+  }
+  const res = await fetch(base.replace(/\/$/, '') + '/usage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      installId: st.id,
+      version: chrome.runtime.getManifest().version,
+      settings: flags,
+      days: st.days
+    })
+  });
+  if (!res.ok) return;
+  // Today's totals stay, so the next send overwrites them; earlier days are done.
+  const keep = {};
+  keep[usageDay()] = st.days[usageDay()];
+  if (!keep[usageDay()]) delete keep[usageDay()];
+  st.days = keep;
+  await chrome.storage.local.set({ [USAGE_KEY]: st });
+}
+
+function armUsage() {
+  try { chrome.alarms.create(USAGE_ALARM, { periodInMinutes: 720, delayInMinutes: 5 }); }
+  catch (e) { /* no alarms; the next browser start still sends */ }
+}
+chrome.alarms.onAlarm.addListener((a) => { if (a.name === USAGE_ALARM) sendUsage().catch(() => {}); });
+chrome.runtime.onInstalled.addListener(armUsage);
+chrome.runtime.onStartup.addListener(armUsage);
+
 /* ------------------------------------------------------- audience overlap */
 
 /* Who a channel's viewers also watch, from YouTube's own recommendations as the crawler
@@ -2559,6 +2631,11 @@ async function transcriptFor(id) {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg) return;
+  if (msg.type === 'ytc-use' && typeof msg.feature === 'string') {
+    countUse(msg.feature).catch(() => {});
+    sendResponse({ ok: true });
+    return true;
+  }
   if (msg.type === 'ytc-subs' && msg.key) {
     getSubscribers(msg.key, msg.force, msg.light)
       .then((entry) => sendResponse({
