@@ -14860,6 +14860,13 @@
     // Only the first draw animates in; see renderAiDialog for why.
     if (modal.dataset.drawn) modal.classList.add('ytc-modal--settled');
     modal.dataset.drawn = '1';
+    /* Every toggle redraws the card, which put the list back at the top under the reader's
+       pointer. Same tab: keep the scroll and the focused switch where they were. */
+    const prevMain = modal.querySelector('.ytc-st__main');
+    const keepScroll = prevMain && modal.dataset.tab === stTab ? prevMain.scrollTop : 0;
+    const focused = document.activeElement && modal.contains(document.activeElement)
+      ? document.activeElement.getAttribute('data-set') : null;
+    modal.dataset.tab = stTab;
     modal.innerHTML =
       '<div class="ytc-st__card" role="dialog" aria-modal="true" aria-label="Toolkit settings">' +
         '<div class="ytc-st__head">' +
@@ -14888,6 +14895,11 @@
           '<div class="ytc-st__main">' + settingsBody() + '</div>' +
         '</div>' +
       '</div>';
+    if (keepScroll) modal.querySelector('.ytc-st__main').scrollTop = keepScroll;
+    if (focused) {
+      const again = modal.querySelector('[data-set="' + CSS.escape(focused) + '"]');
+      if (again) again.focus({ preventScroll: true });
+    }
     wireSettingsModal(modal);
   }
 
