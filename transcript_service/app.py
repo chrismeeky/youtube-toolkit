@@ -1196,6 +1196,7 @@ USAGE_HTML = DASHBOARD_HTML.split('<div class="wrap">')[0].replace(
   <p class="sub" id="updated">Loading…</p>
   <div class="bar">
     <select id="days">
+      <option value="1">Today (UTC)</option>
       <option value="7">Last 7 days</option>
       <option value="30" selected>Last 30 days</option>
       <option value="90">Last 90 days</option>
@@ -1236,6 +1237,7 @@ USAGE_HTML = DASHBOARD_HTML.split('<div class="wrap">')[0].replace(
     }
     if (!u.ok) { $('updated').innerHTML = '<span class="err">' + esc(u.reason || 'unavailable') + '</span>'; return; }
     $('updated').textContent = 'Updated ' + new Date().toLocaleTimeString() + '.';
+    try { localStorage.setItem('ytcUsageDays', $('days').value); } catch (e) { /* fine */ }
     const opens = u.uses.reduce((a, f) => a + f.opens, 0);
     const top = u.uses[0];
     $('cards').innerHTML = card(num(u.installs), 'active installs') + card(num(opens), 'features opened') +
@@ -1252,6 +1254,7 @@ USAGE_HTML = DASHBOARD_HTML.split('<div class="wrap">')[0].replace(
       '<tr><td colspan="4" class="wide">Nothing reported yet.</td></tr>';
   }
 
+  try { const d = localStorage.getItem('ytcUsageDays'); if (d) $('days').value = d; } catch (e) { /* fine */ }
   $('days').addEventListener('change', load);
   load();
   setInterval(load, 5000);
@@ -1840,7 +1843,8 @@ def record_usage(body):
 def usage_stats(days=30):
     """For the dashboard: how many installs have each switch on, and how often each feature is
     used. Aggregated here because PostgREST has no GROUP BY; the tables are small."""
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    # days=1 is today alone (UTC), days=7 is today and the six before it.
+    since = (datetime.now(timezone.utc) - timedelta(days=days - 1)).date().isoformat()
     installs = _sb_get("/rest/v1/usage_installs?select=install_id,settings,version,last_seen"
                        "&last_seen=gte." + since + "&limit=20000")
     daily = _sb_get("/rest/v1/usage_daily?select=install_id,feature,n&day=gte." + since +
