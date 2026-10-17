@@ -1,6 +1,6 @@
 # YouTube Toolkit — Privacy Policy
 
-_Last updated: 6 October 2026_
+_Last updated: 17 October 2026_
 
 YouTube Toolkit shows statistics about YouTube channels and videos on the YouTube pages you
 are already viewing, and helps you copy that information as text. There is no account, no
