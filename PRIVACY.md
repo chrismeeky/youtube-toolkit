@@ -111,7 +111,8 @@ it. The rest of the extension continues to work.
 
 ## Anonymous usage statistics
 
-So that we know which features are worth maintaining, the extension reports, about twice a day:
+So that we know which features are worth maintaining, the extension reports the following as you use it (a few seconds after
+you open a feature or change a switch):
 
 - **A random install ID** the extension generates for itself. It is not derived from you, your
   browser profile or any YouTube or Google account.

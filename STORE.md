@@ -247,7 +247,7 @@ read, and no background pages are fetched for it.
 
 ### User activity — yes (anonymous usage statistics)
 
-The extension sends, about twice a day, a random install ID, its version, which feature
+The extension sends, a few seconds after a feature is opened or a switch changes, a random install ID, its version, which feature
 switches are on, and per-day counts of how often each feature was opened. No page, video,
 channel, search or copied text. Used only to decide what to maintain; not sold, shared or
 used for advertising. It can be switched off in Settings > Privacy. Tick **User activity**
