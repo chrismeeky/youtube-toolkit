@@ -14863,10 +14863,10 @@
     /* Every toggle redraws the card, which put the list back at the top under the reader's
        pointer. Same tab: keep the scroll and the focused switch where they were. */
     const prevMain = modal.querySelector('.ytc-st__main');
-    const keepScroll = prevMain && modal.dataset.tab === stTab ? prevMain.scrollTop : 0;
+    const keepScroll = prevMain && modal.dataset.drawnTab === stTab ? prevMain.scrollTop : 0;
     const focused = document.activeElement && modal.contains(document.activeElement)
       ? document.activeElement.getAttribute('data-set') : null;
-    modal.dataset.tab = stTab;
+    modal.dataset.drawnTab = stTab;           // not data-tab: that marks the tab buttons
     modal.innerHTML =
       '<div class="ytc-st__card" role="dialog" aria-modal="true" aria-label="Toolkit settings">' +
         '<div class="ytc-st__head">' +
