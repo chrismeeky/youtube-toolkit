@@ -1062,6 +1062,7 @@ DASHBOARD_HTML = """<!doctype html>
 <div class="wrap">
   <h1>Channel index</h1>
   <p class="sub" id="updated">Loading…</p>
+  <p class="note"><a href="usage" style="color:inherit">Feature usage →</a></p>
 
   <div class="grid" id="cards"></div>
 
@@ -1074,15 +1075,6 @@ DASHBOARD_HTML = """<!doctype html>
     </select>
     <span class="note" id="runnote"></span>
   </div>
-
-  <h2>Feature usage <span class="note" id="usagenote"></span></h2>
-  <div class="grid" id="usagecards"></div>
-  <table id="uses"><thead><tr>
-    <th>Switch</th><th>Installs with it on</th><th>Share</th>
-  </tr></thead><tbody></tbody></table>
-  <table id="opens" style="margin-top:18px"><thead><tr>
-    <th>Feature opened</th><th>Times</th><th>Installs</th>
-  </tr></thead><tbody></tbody></table>
 
   <h2>Recent runs</h2>
   <table id="runs"><thead><tr>
@@ -1169,23 +1161,6 @@ DASHBOARD_HTML = """<!doctype html>
       'roughly one unit per new channel against 10,000 a day.';
   }
 
-  async function loadUsage() {
-    let u;
-    try { u = await (await fetch(API + '/usage-stats?days=30', { cache: 'no-store' })).json(); }
-    catch (e) { return; }
-    if (!u.ok) { $('usagenote').textContent = u.reason || ''; return; }
-    $('usagenote').textContent = 'last ' + u.days + ' days, anonymous installs';
-    $('usagecards').innerHTML = card(num(u.installs), 'active installs');
-    const pct = (a, b) => b ? Math.round(100 * a / b) + '%' : '—';
-    $('uses').querySelector('tbody').innerHTML = u.switches.map((s) =>
-      '<tr><td>' + s.name.replace(/^show/, '') + '</td><td>' + num(s.on) + ' of ' + num(s.total) +
-      '</td><td>' + pct(s.on, s.total) + '</td></tr>').join('') ||
-      '<tr><td colspan="3" class="wide">Nothing reported yet.</td></tr>';
-    $('opens').querySelector('tbody').innerHTML = u.uses.map((f) =>
-      '<tr><td>' + f.feature + '</td><td>' + num(f.opens) + '</td><td>' + num(f.installs) +
-      '</td></tr>').join('') || '<tr><td colspan="3" class="wide">Nothing reported yet.</td></tr>';
-  }
-
   $('go').addEventListener('click', async () => {
     $('go').disabled = true;
     $('runnote').textContent = 'Starting…';
@@ -1202,11 +1177,87 @@ DASHBOARD_HTML = """<!doctype html>
   });
 
   load();
-  loadUsage();
   setInterval(load, 15000);
-  setInterval(loadUsage, 60000);
 </script>
 """
+
+# Feature usage gets its own page: it is about people using the extension, not about the
+# index, and the two are read for different reasons. It borrows the dashboard's styles.
+USAGE_HTML = DASHBOARD_HTML.split('<div class="wrap">')[0].replace(
+    "<title>Channel index</title>", "<title>Feature usage</title>") + """<style>
+  .barcell { width: 40%; }
+  .meter { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+  .meter i { display: block; height: 100%; background: var(--fg); }
+  select { font: inherit; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line);
+           background: var(--card); color: var(--fg); }
+</style>
+<div class="wrap">
+  <h1>Feature usage</h1>
+  <p class="sub" id="updated">Loading…</p>
+  <div class="bar">
+    <select id="days">
+      <option value="7">Last 7 days</option>
+      <option value="30" selected>Last 30 days</option>
+      <option value="90">Last 90 days</option>
+    </select>
+    <a class="note" href="dashboard" style="color:inherit">← Channel index</a>
+  </div>
+
+  <div class="grid" id="cards" style="margin-top:18px"></div>
+
+  <h2>Switches turned on</h2>
+  <table id="uses"><thead><tr>
+    <th>Switch</th><th>Installs with it on</th><th>Share</th><th class="barcell"></th>
+  </tr></thead><tbody></tbody></table>
+
+  <h2>Features opened</h2>
+  <table id="opens"><thead><tr>
+    <th>Feature</th><th>Times</th><th>Installs</th><th class="barcell"></th>
+  </tr></thead><tbody></tbody></table>
+  <p class="note">Anonymous: a random id per install, so one person on two computers counts twice.
+    Installs that switched sharing off send nothing and are not counted.</p>
+</div>
+<script>
+  const API = location.pathname.replace(/\\/usage$/, '');
+  const $ = (id) => document.getElementById(id);
+  const num = (n) => n == null ? '—' : n.toLocaleString();
+  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const card = (v, label) => '<div class="card"><b>' + v + '</b><span>' + label + '</span></div>';
+  const meter = (f) => '<td class="barcell"><div class="meter"><i style="width:' +
+    Math.round(100 * Math.max(0, Math.min(1, f))) + '%"></i></div></td>';
+
+  async function load() {
+    let u;
+    try {
+      u = await (await fetch(API + '/usage-stats?days=' + $('days').value, { cache: 'no-store' })).json();
+    } catch (e) {
+      $('updated').innerHTML = '<span class="err">Cannot reach the service.</span>';
+      return;
+    }
+    if (!u.ok) { $('updated').innerHTML = '<span class="err">' + esc(u.reason || 'unavailable') + '</span>'; return; }
+    $('updated').textContent = 'Updated ' + new Date().toLocaleTimeString() + '.';
+    const opens = u.uses.reduce((a, f) => a + f.opens, 0);
+    const top = u.uses[0];
+    $('cards').innerHTML = card(num(u.installs), 'active installs') + card(num(opens), 'features opened') +
+      card(top ? esc(top.feature) : '—', 'most used');
+    $('uses').querySelector('tbody').innerHTML = u.switches.map((s) =>
+      '<tr><td>' + esc(s.name.replace(/^show/, '')) + '</td><td>' + num(s.on) + ' of ' + num(s.total) +
+      '</td><td>' + (s.total ? Math.round(100 * s.on / s.total) + '%' : '—') + '</td>' +
+      meter(s.total ? s.on / s.total : 0) + '</tr>').join('') ||
+      '<tr><td colspan="4" class="wide">Nothing reported yet.</td></tr>';
+    const max = top ? top.opens : 1;
+    $('opens').querySelector('tbody').innerHTML = u.uses.map((f) =>
+      '<tr><td>' + esc(f.feature) + '</td><td>' + num(f.opens) + '</td><td>' + num(f.installs) +
+      '</td>' + meter(f.opens / max) + '</tr>').join('') ||
+      '<tr><td colspan="4" class="wide">Nothing reported yet.</td></tr>';
+  }
+
+  $('days').addEventListener('change', load);
+  load();
+  setInterval(load, 60000);
+</script>
+"""
+
 
 
 def _rest_get(path, timeout=20):
@@ -3092,6 +3143,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/usage-stats":
             self._send(200, usage_stats(_clamp(query, "days", 30, 1, 365)) if INDEX_READY
                        else {"ok": False, "reason": "channel index not configured"})
+            return
+
+        if path == "/usage":
+            page = USAGE_HTML.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(page)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(page)
             return
 
         if path == "/dashboard":
